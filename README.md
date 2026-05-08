@@ -1,27 +1,46 @@
-![Continuous Integration](https://github.com/biosimulations/biosim-server/actions/workflows/integrate.yml/badge.svg)
-![Continuous Deployment](https://github.com/biosimulations/biosim-server/actions/workflows/deploy.yml/badge.svg)
+![backend-ci](https://github.com/biosimulations/platform/actions/workflows/ci.yaml/badge.svg)
 
-# **`biosim-server`: Biosimulations Services**
+# Biosimulations Platform
 
-This service utilizes separate containers for REST API management, job processing, and datastorage with MongoDB, ensuring scalable and robust performance.
+Monorepo for the **biosimulations/platform** stack. Hosts both the backend services and the webapp frontend, deployed together to Kubernetes.
 
-_The REST API can be accessed via Swagger UI here:_ **[https://biosim.biosimulations.org/docs](https://biosim.biosimulations.org/docs)**
+_Production API:_ **[https://biosim.biosimulations.org/docs](https://biosim.biosimulations.org/docs)**
 
-### **For Developers:**
+## Layout
 
-`biosim-server` uses a microservices architecture which presents the following libraries:
+| Directory | Purpose |
+|-----------|---------|
+| [`backend/`](./backend) | Python FastAPI + Temporal worker services. See [`backend/README.md`](./backend/README.md). |
+| `frontend/` | Webapp + Express server _(added in Phase 2)_. |
+| [`kustomize/`](./kustomize) | Shared Kubernetes manifests and per-cluster overlays. |
+| `.github/workflows/` | CI pipelines (path-filtered per service). |
 
-- `api`: This library handles all requests including saving uploaded files, pending job creation, fetching results, and contains the user-facing endpoints.
-- `common`: This library contains shared content.
-- `workflows`: This library handles all job processing tasks for verification services such as job status adjustment, job retrieval, and comparison execution
-- `worker`: This library performs all workflow tasks
+## Quickstart
 
-**_Container management_** is handled by Kubernetes in Google Cloud. The full K8 config/spec can be found in the `kustomize` directory. **_Dependency management_** is handled by `poetry`.
+Backend:
 
-#### Getting started:
+```bash
+cd backend
+poetry install
+poetry run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000
+poetry run python -m biosim_server.worker.worker_main
+```
 
+See [`backend/README.md`](./backend/README.md) and [`backend/CLAUDE.md`](./backend/CLAUDE.md) for full backend docs.
 
-### Notes:
-- This application currently uses the Temporal durable execution technology to manage distributed and fault tolerant workflow tasks.
+## Build & deploy
 
-- If running temporal workflows in the pycharm debugger fails, please read https://youtrack.jetbrains.com/issue/PY-62467/TypeError-Task-object-is-not-callable-debugging-uvloop-with-asyncio-support-enabled
+Images are published to `ghcr.io/biosimulations/platform-*` (`platform-api`, `platform-worker`, `platform-frontend`). Tags use the form `<arch>_<version>`, e.g. `amd64_0.4.0`.
+
+```bash
+# Build and push backend images for amd64 + arm64 (reads version from backend/biosim_server/version.py)
+bash kustomize/scripts/build_and_push.sh
+
+# Apply an overlay
+export KUBECONFIG=<path-to-kubeconfig>
+kubectl kustomize kustomize/overlays/biosim-gke | kubectl apply -f -
+```
+
+## License
+
+See [LICENSE](./LICENSE).

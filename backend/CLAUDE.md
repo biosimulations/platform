@@ -1,10 +1,14 @@
-# CLAUDE.md - Biosim-Server Development Guide
+# CLAUDE.md - Platform Backend Development Guide
+
+This guide covers the backend service. For monorepo orientation (frontend, kustomize, deployment), see the root `CLAUDE.md`.
+
+All commands below assume the working directory is `backend/` (i.e., `cd backend` from the repo root first).
 
 ## Project Overview
 
-Biosim-Server is a distributed microservices platform for biosimulation verification and comparison. It runs biological simulations across multiple simulators (AMICI, COPASI, PySCES, Tellurium, VCell) and compares outputs to verify model correctness.
+The platform backend is a distributed microservices application for biosimulation verification and comparison. It runs biological simulations across multiple simulators (AMICI, COPASI, PySCES, Tellurium, VCell) and compares outputs to verify model correctness.
 
-**Version:** 0.3.4
+**Version:** 0.4.0
 **Python:** 3.13
 **Production URL:** https://biosim.biosimulations.org/docs
 
@@ -74,44 +78,57 @@ poetry run pytest -m "not integration"
 ## Directory Structure
 
 ```
-biosim_server/
-├── api/                    # FastAPI REST endpoints
-│   └── main.py            # App entry, all endpoints
-├── biosim_runs/           # Simulation execution
-│   ├── activities.py      # Temporal activities (submit, poll, retrieve)
-│   ├── biosim_service.py  # HTTP client for biosimulations.org API
-│   ├── database.py        # MongoDB operations for sim runs
-│   ├── models.py          # Pydantic models (BiosimulatorVersion, etc.)
-│   └── workflows.py       # OmexSimWorkflow
-├── biosim_verify/         # Verification workflows
-│   ├── activities.py      # generate_statistics_activity
-│   ├── models.py          # Verification models
-│   ├── omex_verify_workflow.py  # Multi-simulator OMEX verification
-│   ├── runs_verify_workflow.py  # Compare existing runs
-│   └── hdf5_compare.py    # Comparison logic
-├── biosim_omex/           # OMEX file handling
-│   ├── database.py        # MongoDB for OMEX metadata
-│   ├── models.py          # OmexFile model
-│   └── omex_storage.py    # Upload/caching logic
-├── compatibility/         # OMEX compatibility checking
-│   ├── models.py          # CompatibilityResponse, EligibleSimulator, etc.
-│   ├── router.py          # POST /compatibility/check
-│   ├── omex_parser.py     # Parse OMEX archives for model/algorithm info
-│   └── simulator_matcher.py # Match simulators to OMEX requirements
-├── simulations/           # Simulation run management (backend-for-frontend)
-│   ├── models.py          # RunSimulationRequest, ConglomerateStatus, etc.
-│   ├── router.py          # POST /simulations/run, GET /simulations/{id}
-│   └── workflow.py        # SimulationRunWorkflow (Temporal)
-├── common/
-│   ├── storage/           # GCS file operations
-│   ├── temporal/          # Temporal client utilities
-│   ├── hpc/               # SLURM integration
-│   └── ssh/               # SSH service
-├── worker/
-│   └── worker_main.py     # Worker entry point
-├── config.py              # Pydantic Settings
-├── dependencies.py        # Global service instances
-└── version.py             # Version string
+backend/
+├── biosim_server/
+│   ├── api/                    # FastAPI REST endpoints
+│   │   └── main.py            # App entry, all endpoints
+│   ├── biosim_runs/           # Simulation execution
+│   │   ├── activities.py      # Temporal activities (submit, poll, retrieve)
+│   │   ├── biosim_service.py  # HTTP client for biosimulations.org API
+│   │   ├── database.py        # MongoDB operations for sim runs
+│   │   ├── models.py          # Pydantic models (BiosimulatorVersion, etc.)
+│   │   └── workflows.py       # OmexSimWorkflow
+│   ├── biosim_verify/         # Verification workflows
+│   │   ├── activities.py      # generate_statistics_activity
+│   │   ├── models.py          # Verification models
+│   │   ├── omex_verify_workflow.py  # Multi-simulator OMEX verification
+│   │   ├── runs_verify_workflow.py  # Compare existing runs
+│   │   └── hdf5_compare.py    # Comparison logic
+│   ├── biosim_omex/           # OMEX file handling
+│   │   ├── database.py        # MongoDB for OMEX metadata
+│   │   ├── models.py          # OmexFile model
+│   │   └── omex_storage.py    # Upload/caching logic
+│   ├── compatibility/         # OMEX compatibility checking
+│   │   ├── models.py          # CompatibilityResponse, EligibleSimulator, etc.
+│   │   ├── router.py          # POST /compatibility/check
+│   │   ├── omex_parser.py     # Parse OMEX archives for model/algorithm info
+│   │   ├── simulator_matcher.py # Match simulators to OMEX requirements
+│   │   ├── kisao_data.py      # KiSAO ontology data for algorithm matching
+│   │   └── equivalence_categories.yaml # Algorithm equivalence groups
+│   ├── simulations/           # Simulation run management (backend-for-frontend)
+│   │   ├── activities.py      # Temporal activities (submit, poll, retrieve results)
+│   │   ├── models.py          # RunSimulationRequest, ConglomerateStatus, etc.
+│   │   ├── router.py          # POST /simulations/run, GET /simulations/{id}
+│   │   └── workflow.py        # SimulationRunWorkflow (Temporal)
+│   ├── common/
+│   │   ├── storage/           # GCS file operations
+│   │   ├── temporal/          # Temporal client utilities
+│   │   ├── hpc/               # SLURM integration
+│   │   └── ssh/               # SSH service
+│   ├── worker/
+│   │   └── worker_main.py     # Worker entry point
+│   ├── config.py              # Pydantic Settings
+│   ├── dependencies.py        # Global service instances
+│   └── version.py             # Version string
+├── tests/                     # pytest suite
+├── scripts/                   # backend tooling (KiSAO data generation, etc.)
+├── docs/                      # backend-specific docs
+├── pyproject.toml
+├── poetry.lock
+├── pytest.ini
+├── Dockerfile.api
+├── Dockerfile.worker
+└── .dockerignore
 ```
 
 ## Key API Endpoints
@@ -188,14 +205,14 @@ pytest -m "not integration"
 
 ## Deploy
 
-To release a new version:
+Backend release steps (run from repo root unless noted):
 
-1. **Bump version** in `biosim_server/version.py` and `pyproject.toml`
+1. **Bump version** in `backend/biosim_server/version.py` and `backend/pyproject.toml`
 2. **Update kustomize overlays** — set `newTag` in each overlay's `kustomization.yaml`:
    - `kustomize/overlays/biosim-gke/kustomization.yaml` (amd64)
    - `kustomize/overlays/biosim-rke/kustomization.yaml` (amd64)
    - `kustomize/overlays/biosim-local/kustomization.yaml` (arm64)
-3. **Build and push Docker images** (builds api + worker for amd64 + arm64):
+3. **Build and push Docker images** (builds api + worker for amd64 + arm64; pushes to `ghcr.io/biosimulations/platform-{api,worker}`):
    ```bash
    bash kustomize/scripts/build_and_push.sh
    ```
@@ -220,8 +237,8 @@ To release a new version:
 1. **Temporal Required** - Workers need a running Temporal server at `localhost:7233`
 2. **MongoDB Required** - Database must be running for most operations
 3. **GCS Credentials** - Set `STORAGE_GCS_CREDENTIALS_FILE` for cloud storage
-4. **PyCharm Debug Issue** - See README.md for uvloop debugging workaround
-5. **Version Source of Truth** - `biosim_server/version.py`
+4. **PyCharm Debug Issue** - See `README.md` for uvloop debugging workaround
+5. **Version Source of Truth** - `backend/biosim_server/version.py`
 
 ## External Services
 
