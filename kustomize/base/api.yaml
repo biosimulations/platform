@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: ghcr.io/biosimulations/biosim-api:latest
+          image: ghcr.io/biosimulations/platform-api:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

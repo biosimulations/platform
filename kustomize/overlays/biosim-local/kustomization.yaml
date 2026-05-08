@@ -4,10 +4,10 @@ kind: Kustomization
 namespace: biosim-local
 
 images:
-- name: ghcr.io/biosimulations/biosim-api
-  newTag: arm64_0.3.4
-- name: ghcr.io/biosimulations/biosim-worker
-  newTag: arm64_0.3.4
+- name: ghcr.io/biosimulations/platform-api
+  newTag: arm64_0.4.0
+- name: ghcr.io/biosimulations/platform-worker
+  newTag: arm64_0.4.0
 - name: docker.io/library/mongo
   newTag: 8.0.4
 
