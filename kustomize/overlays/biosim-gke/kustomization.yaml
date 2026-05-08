@@ -4,10 +4,10 @@ kind: Kustomization
 namespace: biosim-gke
 
 images:
-- name: ghcr.io/biosimulations/biosim-api
-  newTag: amd64_0.3.4
-- name: ghcr.io/biosimulations/biosim-worker
-  newTag: amd64_0.3.4
+- name: ghcr.io/biosimulations/platform-api
+  newTag: amd64_0.4.0
+- name: ghcr.io/biosimulations/platform-worker
+  newTag: amd64_0.4.0
 - name: docker.io/library/mongo
   newTag: 8.0.4
 

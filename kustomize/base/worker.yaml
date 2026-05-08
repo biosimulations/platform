@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: worker
-          image: ghcr.io/biosimulations/biosim-worker:latest
+          image: ghcr.io/biosimulations/platform-worker:latest
           imagePullPolicy: Always
           envFrom:
             - configMapRef:
