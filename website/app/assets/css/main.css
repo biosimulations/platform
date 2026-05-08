@@ -1,0 +1,9 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+@import 'lenis/dist/lenis.css';
+
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+@theme {
+  --font-display: 'Fustat', sans-serif;
+}
