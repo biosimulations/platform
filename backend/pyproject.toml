@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "biosim-server"
-version = "0.3.4"
+version = "0.4.0"
 description = "Server for the consolidated Biosimulations API"
 authors = ["Alex Patrie <alexanderpatrie@gmail.com>, Jim Schaff <schaff@uchc.edu>"]
 readme = "README.md"

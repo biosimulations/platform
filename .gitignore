@@ -200,3 +200,6 @@ build
 .python-version
 
 config.env
+
+# slurm test artifacts
+*.sbatch
