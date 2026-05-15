@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings
 
 KV_DRIVER = Literal['file', 's3', 'gcs']
 TS_DRIVER = Literal['zarr', 'n5', 'zarr3']
+STORAGE_BACKEND = Literal['gcs', 'local', 'minio']
 
 load_dotenv()
 
@@ -22,9 +23,13 @@ if os.getenv(ENV_SECRET_ENV_FILE) is not None and os.path.exists(str(os.getenv(E
 
 
 class Settings(BaseSettings):
+    storage_backend: STORAGE_BACKEND = "gcs"
     storage_bucket: str = "files.biosimulations.dev"
     storage_endpoint_url: str = "https://storage.googleapis.com"
     storage_region: str = "us-east4"
+    # S3-compatible credentials, used by FileServiceMinio.
+    storage_access_key: str = ""
+    storage_secret_key: str = ""
     storage_tensorstore_driver: TS_DRIVER = "zarr3"
     storage_tensorstore_kvstore_driver: KV_DRIVER = "gcs"
 

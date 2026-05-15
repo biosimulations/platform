@@ -1,19 +1,19 @@
 # CLAUDE.md - Platform Monorepo Guide
 
-This is the **biosimulations/platform** monorepo, hosting both the Python backend and the TypeScript/Express frontend webapp behind a single Kubernetes deployment.
+This is the **biosimulations/platform** monorepo, hosting both the Python backend and the Nuxt (Vue 3) frontend webapp, deployed together to Kubernetes.
 
 ## Layout
 
 ```
 platform/
 ├── backend/          # Python FastAPI + Temporal services (see backend/CLAUDE.md)
-├── frontend/         # Webapp + Express server (added in Phase 2)
+├── frontend/         # Nuxt 4 / Nuxt UI webapp (pnpm). Merged 2026-05; deploy wiring still TBD.
 ├── kustomize/        # Shared Kubernetes manifests + overlays
-│   ├── base/         # Deployments, services for api / worker / mongodb (and frontend, when added)
+│   ├── base/         # Deployments, services for api / worker / mongodb (frontend not yet added)
 │   ├── config/       # Per-cluster ConfigMaps
 │   ├── overlays/     # biosim-gke, biosim-rke, biosim-local
 │   └── scripts/      # build_and_push.sh, sealed_secret_*
-├── .github/workflows/  # Path-filtered CI per service
+├── .github/workflows/  # Path-filtered CI (backend only at the root; frontend has its own)
 ├── README.md
 ├── LICENSE
 └── CLAUDE.md         # this file
@@ -22,28 +22,29 @@ platform/
 ## Per-service guides
 
 - **Backend** — see `backend/CLAUDE.md` for architecture, commands, and deploy steps
-- **Frontend** — see `frontend/CLAUDE.md` (added in Phase 2)
+- **Frontend** — see `frontend/CLAUDE.md` for stack, commands, and the unfinished deploy wiring
 
 ## Versioning
 
-Single shared monorepo version. Bumping `backend/biosim_server/version.py` (and the matching frontend version file once added) plus a `vX.Y.Z` git tag releases both services together.
+Backend version lives in `backend/biosim_server/version.py`. The frontend `package.json` is not yet coupled to that version. Once the frontend is wired into the shared image pipeline, both should release together under a single `vX.Y.Z` git tag.
 
 ## Image registry
 
-All images published under `ghcr.io/biosimulations/platform-*`:
+Images published under `ghcr.io/biosimulations/platform-*`:
 - `platform-api`
 - `platform-worker`
-- `platform-frontend` (added in Phase 2)
+- `platform-frontend` — **not yet built** (no `frontend/Dockerfile`, not in `build_and_push.sh`)
 
 Tags are of the form `<arch>_<version>`, e.g., `amd64_0.4.0`, `arm64_0.4.0`.
 
 ## Build & push
 
-`bash kustomize/scripts/build_and_push.sh` builds and pushes the backend api + worker images for amd64 and arm64. The version is read from `backend/biosim_server/version.py` unless overridden as the first argument.
+`bash kustomize/scripts/build_and_push.sh` builds and pushes the backend api + worker images for amd64 and arm64. The version is read from `backend/biosim_server/version.py` unless overridden as the first argument. The frontend is not yet included.
 
 ## CI
 
-`.github/workflows/ci.yaml` runs the backend test suite, gated on `paths: ['backend/**', '.github/workflows/**']`. Frontend CI will be added alongside the frontend code in Phase 2.
+- Root `.github/workflows/ci.yaml` — runs the backend test suite, gated on `paths: ['backend/**', '.github/workflows/**']`.
+- `frontend/.github/workflows/ci.yml` — runs `pnpm lint` + `pnpm typecheck` on every push (carried over from Harrison's standalone repo; not yet consolidated under the root `.github/workflows/` directory or path-filtered).
 
 ## Conventions
 

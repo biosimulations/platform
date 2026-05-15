@@ -4,8 +4,8 @@ from temporalio.client import Client as TemporalClient
 from biosim_server.biosim_omex.database import OmexDatabaseService, OmexDatabaseServiceMongo
 from biosim_server.biosim_runs.biosim_service import BiosimService, BiosimServiceRest
 from biosim_server.biosim_runs.database import DatabaseService, DatabaseServiceMongo
-from biosim_server.common.storage import FileService, FileServiceGCS
-from biosim_server.config import get_settings
+from biosim_server.common.storage import FileService, FileServiceGCS, FileServiceLocal, FileServiceMinio
+from biosim_server.config import get_local_cache_dir, get_settings
 
 #------ file service (standalone or pytest) ------
 
@@ -69,9 +69,19 @@ def get_temporal_client() -> TemporalClient | None:
 
 #------ initialized standalone application (standalone) ------
 
+def _make_file_service(backend: str) -> FileService:
+    if backend == "gcs":
+        return FileServiceGCS()
+    if backend == "local":
+        return FileServiceLocal(base_dir=get_local_cache_dir() / "local_data" / "store")
+    if backend == "minio":
+        return FileServiceMinio()
+    raise ValueError(f"Unknown STORAGE_BACKEND={backend!r}")
+
+
 async def init_standalone() -> None:
     settings = get_settings()
-    set_file_service(FileServiceGCS())
+    set_file_service(_make_file_service(settings.storage_backend))
     set_biosim_service(BiosimServiceRest())
     set_temporal_client(await TemporalClient.connect(settings.temporal_service_url))
 

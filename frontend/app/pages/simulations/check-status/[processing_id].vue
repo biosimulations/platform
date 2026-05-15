@@ -4,6 +4,7 @@
   import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
   import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 
+  const config = useRuntimeConfig()
   const route = useRoute()
   const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
   const breadcrumbs = ref<BreadcrumbItem[]>([])
@@ -23,7 +24,7 @@
     }
 
     try {
-      const response = await $fetch('https://biosim.biosimulations.org/simulations/' + processing_id, {
+      const response = await $fetch(`${config.public.api_url}/simulations/${processing_id}`, {
         method: 'GET'
       })
 

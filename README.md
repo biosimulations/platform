@@ -11,9 +11,9 @@ _Production API:_ **[https://biosim.biosimulations.org/docs](https://biosim.bios
 | Directory | Purpose |
 |-----------|---------|
 | [`backend/`](./backend) | Python FastAPI + Temporal worker services. See [`backend/README.md`](./backend/README.md). |
-| `frontend/` | Webapp + Express server _(added in Phase 2)_. |
+| [`frontend/`](./frontend) | Nuxt 4 / Nuxt UI webapp (pnpm). See [`frontend/README.md`](./frontend/README.md). |
 | [`kustomize/`](./kustomize) | Shared Kubernetes manifests and per-cluster overlays. |
-| `.github/workflows/` | CI pipelines (path-filtered per service). |
+| `.github/workflows/` | CI pipelines. Root workflow covers backend; frontend ships its own under `frontend/.github/workflows/`. |
 
 ## Quickstart
 
@@ -30,7 +30,7 @@ See [`backend/README.md`](./backend/README.md) and [`backend/CLAUDE.md`](./backe
 
 ## Build & deploy
 
-Images are published to `ghcr.io/biosimulations/platform-*` (`platform-api`, `platform-worker`, `platform-frontend`). Tags use the form `<arch>_<version>`, e.g. `amd64_0.4.0`.
+Images are published to `ghcr.io/biosimulations/platform-*` (`platform-api`, `platform-worker`; `platform-frontend` planned). Tags use the form `<arch>_<version>`, e.g. `amd64_0.4.0`.
 
 ```bash
 # Build and push backend images for amd64 + arm64 (reads version from backend/biosim_server/version.py)
