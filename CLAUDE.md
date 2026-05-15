@@ -22,7 +22,7 @@ platform/
 ## Per-service guides
 
 - **Backend** — see `backend/CLAUDE.md` for architecture, commands, and deploy steps
-- **Frontend** — no `frontend/CLAUDE.md` yet. Stack: Nuxt 4 + Nuxt UI + `@nuxtjs/seo`. Dev server: `pnpm dev` (port 4200). Runtime config reads `BASE_URL` and `API_URL` from env.
+- **Frontend** — see `frontend/CLAUDE.md` for stack, commands, and the unfinished deploy wiring
 
 ## Versioning
 
