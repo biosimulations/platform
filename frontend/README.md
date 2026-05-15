@@ -44,7 +44,7 @@ Read from environment via `nuxt.config.ts` → `runtimeConfig.public`:
 
 ## CI
 
-`.github/workflows/ci.yml` runs `pnpm lint` and `pnpm typecheck` on every push. (Lives under `frontend/.github/workflows/` rather than the repo-root workflows directory — to be consolidated.)
+`.github/workflows/frontend-ci.yaml` (at repo root, path-filtered to `frontend/**`) runs `npm run lint` and `npm run typecheck` on every push and PR.
 
 ## Deployment
 

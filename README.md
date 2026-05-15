@@ -13,7 +13,7 @@ _Production API:_ **[https://biosim.biosimulations.org/docs](https://biosim.bios
 | [`backend/`](./backend) | Python FastAPI + Temporal worker services. See [`backend/README.md`](./backend/README.md). |
 | [`frontend/`](./frontend) | Nuxt 4 / Nuxt UI webapp (npm). See [`frontend/README.md`](./frontend/README.md). |
 | [`kustomize/`](./kustomize) | Shared Kubernetes manifests and per-cluster overlays. |
-| `.github/workflows/` | CI pipelines. Root workflow covers backend; frontend ships its own under `frontend/.github/workflows/`. |
+| `.github/workflows/` | CI pipelines. `ci.yaml` runs backend tests; `frontend-ci.yaml` runs frontend lint + typecheck. Both are path-filtered. |
 
 ## Local development
 

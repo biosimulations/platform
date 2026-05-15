@@ -13,7 +13,7 @@ platform/
 │   ├── config/       # Per-cluster ConfigMaps
 │   ├── overlays/     # biosim-gke, biosim-rke, biosim-local
 │   └── scripts/      # build_and_push.sh, sealed_secret_*
-├── .github/workflows/  # Path-filtered CI (backend only at the root; frontend has its own)
+├── .github/workflows/  # Path-filtered CI: ci.yaml (backend) + frontend-ci.yaml
 ├── README.md
 ├── LICENSE
 └── CLAUDE.md         # this file
@@ -43,8 +43,8 @@ Tags are of the form `<arch>_<version>`, e.g., `amd64_0.4.0`, `arm64_0.4.0`.
 
 ## CI
 
-- Root `.github/workflows/ci.yaml` — runs the backend test suite, gated on `paths: ['backend/**', '.github/workflows/**']`.
-- `frontend/.github/workflows/ci.yml` — runs `pnpm lint` + `pnpm typecheck` on every push (carried over from Harrison's standalone repo; not yet consolidated under the root `.github/workflows/` directory or path-filtered).
+- Root `.github/workflows/ci.yaml` — runs the backend test suite, gated on `paths: ['backend/**']`.
+- `.github/workflows/frontend-ci.yaml` — runs `npm run lint` + `npm run typecheck`, path-filtered to `frontend/**`.
 
 ## Conventions
 
