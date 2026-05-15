@@ -1,6 +1,6 @@
 # CLAUDE.md - Platform Frontend Development Guide
 
-This guide covers the webapp. For monorepo orientation (backend, kustomize, deployment), see the root `CLAUDE.md`.
+This guide covers the webapp. For monorepo orientation (backend, kustomize, deployment), see the root `CLAUDE.md`. For the integrated local-dev workflow (Mongo + Temporal in containers, backend + frontend native), see the **Local development** section of the root `README.md`.
 
 All commands below assume the working directory is `frontend/` (i.e., `cd frontend` from the repo root first).
 

@@ -196,6 +196,9 @@ worker/.worker_STABLE
 build
 .DS_Store
 
+# Local-dev artifacts
+/local_cache/
+
 
 .python-version
 

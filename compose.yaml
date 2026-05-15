@@ -1,0 +1,50 @@
+# Local development infrastructure.
+#
+# Brings up Mongo and Temporal (always) and minio (opt-in via `--profile minio`).
+# The application code (backend api, backend worker, frontend) runs natively on
+# the developer's machine for fast HMR / fast reloads; see scripts/dev-up.sh.
+#
+#   docker compose up -d                  # mongo + temporal
+#   docker compose --profile minio up -d  # mongo + temporal + minio
+#   docker compose down                   # stop everything (keep volumes)
+#   docker compose down -v                # stop and wipe volumes
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: platform-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+  temporal:
+    # Single-binary dev mode (in-memory SQLite, no separate Postgres, no Web UI).
+    # gRPC on 7233. If you need the workflow Web UI, swap to temporalio/auto-setup.
+    image: temporalio/temporal:1.7.0
+    container_name: platform-temporal
+    command: ["server", "start-dev", "--ip", "0.0.0.0"]
+    ports:
+      - "7233:7233"
+    restart: unless-stopped
+
+  minio:
+    # Off by default — enable with `docker compose --profile minio up -d`.
+    image: minio/minio:latest
+    container_name: platform-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio_data:/data
+    profiles: ["minio"]
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
+  minio_data:
