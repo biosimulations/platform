@@ -9,6 +9,8 @@
   import { z } from 'zod'
   //</editor-fold>
 
+  const config = useRuntimeConfig()
+
   //<editor-fold desc="Breadcrumbs"
   const route = useRoute()
   const lenis = useLenis()
@@ -120,7 +122,7 @@
       }
 
       try {
-        const response: ArchiveCompatibilityResponse = await $fetch('https://biosim.biosimulations.org/compatibility/check', {
+        const response: ArchiveCompatibilityResponse = await $fetch(`${config.public.api_url}/compatibility/check`, {
           method: 'POST',
           body: form_data
         })
@@ -182,7 +184,7 @@
     console.log(JSON.stringify(submission_payload, replacer))
 
     try {
-      const response = await $fetch<ConglomerateStatus>('https://biosim.biosimulations.org/simulations/run', {
+      const response = await $fetch<ConglomerateStatus>(`${config.public.api_url}/simulations/run`, {
         method: 'POST',
         body: JSON.stringify(submission_payload, replacer)
       })
