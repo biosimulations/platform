@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Frontend Deployment + Service, factored out as a sub-package so the
+# biosim-rke-frontend-dev overlay can include just the frontend without
+# pulling in api/worker/mongo.
+
+resources:
+  - frontend.yaml

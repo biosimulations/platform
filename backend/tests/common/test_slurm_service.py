@@ -26,7 +26,6 @@ async def test_slurm_job_query(slurm_service: SlurmService) -> None:
                     reason="slurm ssh key file not supplied")
 @pytest.mark.asyncio
 async def test_slurm_job_submit(slurm_service: SlurmService, slurm_template_hello: str) -> None:
-    all_jobs_before_submit: list[SlurmJob] = await slurm_service.get_job_status()
     # write slurm_template_hello to a temp file
     local_sbatch_file = Path(f"job_{uuid.uuid4().hex}.sbatch")
     with open(local_sbatch_file, "w") as f:

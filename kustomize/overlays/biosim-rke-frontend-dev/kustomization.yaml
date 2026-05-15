@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: frontend-dev
+
+# Only the frontend; no api/worker/mongo in this namespace. Backend traffic
+# is sent over the public ingress to api.biosim.biosimulations.org (see the
+# frontend-config envs).
+resources:
+  - ingress.yaml
+  - ../../base/frontend
+  - ../../config/biosim-rke-frontend-dev
+
+images:
+  - name: ghcr.io/biosimulations/platform-frontend
+    newTag: frontend-0.1.0
+
+replicas:
+  - count: 1
+    name: frontend

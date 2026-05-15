@@ -199,6 +199,9 @@ build
 # Local-dev artifacts
 /local_cache/
 
+# Claude Code local state
+/.claude/
+
 
 .python-version
 

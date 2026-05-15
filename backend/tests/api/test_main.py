@@ -41,7 +41,7 @@ async def test_get_output_not_found(omex_verify_workflow_input: OmexVerifyWorkfl
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
         # test with non-existent verification_id
-        response = await test_client.get(f"/verify_omex/non-existent-id")
+        response = await test_client.get("/verify_omex/non-existent-id")
         assert response.status_code == 404
 
 
@@ -115,9 +115,8 @@ async def test_runs_verify_and_get_output(runs_verify_workflow_input: RunsVerify
     }
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
-        with open(omex_test_file, "rb") as file:
-            response = await test_client.post("/verify/runs", params=query_params)
-            assert response.status_code == 200
+        response = await test_client.post("/verify/runs", params=query_params)
+        assert response.status_code == 200
 
         output = VerifyWorkflowOutput.model_validate(response.json())
 
@@ -156,9 +155,8 @@ async def test_runs_verify_not_found(runs_verify_workflow_input: RunsVerifyWorkf
     }
 
     async with (AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client):
-        with open(omex_test_file, "rb") as file:
-            response = await test_client.post("/verify/runs", params=query_params)
-            assert response.status_code == 200
+        response = await test_client.post("/verify/runs", params=query_params)
+        assert response.status_code == 200
 
         output = VerifyWorkflowOutput.model_validate(response.json())
 

@@ -14,8 +14,6 @@ from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkf
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflow, OmexVerifyWorkflowInput
 from biosim_server.common.storage import FileServiceGCS
 from biosim_server.config import get_settings
-from tests.fixtures.database_fixtures import omex_database_service_mongo
-from tests.fixtures.gcs_fixtures import file_service_gcs_test_base_path
 
 
 @pytest.mark.skipif(len(get_settings().storage_gcs_credentials_file) == 0,

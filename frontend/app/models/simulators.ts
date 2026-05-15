@@ -26,17 +26,17 @@ export interface ArchiveCompatibilityResponse {
   omex_content: OmexContent
   eligible_simulators: Simulator[]
 }
-//</editor-fold>
+// </editor-fold>
 
-//<editor-fold desc="For submitting a simulation run request"
+// <editor-fold desc="For submitting a simulation run request"
 export interface SimulatorSelection {
-  id: string, // e.g., "copasi"
-  version: string //x.xx.xxx
+  id: string // e.g., "copasi"
+  version: string // x.xx.xxx
 }
 export interface RunSimulationPayloadInterface {
   omex_id?: string // sha hash or something
   name?: string // No uniqueness constraint
-  simulators: SimulatorSelection[],
+  simulators: SimulatorSelection[]
   email_address?: string
   is_commercial: boolean // Default to false
   newsletter_consent: boolean
@@ -56,9 +56,9 @@ export class RunSimulationPayload implements RunSimulationPayloadInterface {
   ) {}
 }
 
-//</editor-fold>
+// </editor-fold>
 
-//<editor-fold desc="For once a simulation run request is submitted"
+// <editor-fold desc="For once a simulation run request is submitted"
 export interface ConglomerateStatus {
   processing_id: string
   jobs: SimulationProcessingStatus[]
@@ -72,7 +72,7 @@ export interface SimulationProcessingStatus {
   error: string | undefined
   biosimulations_run_id: string
 }
-//</editor-fold>
+// </editor-fold>
 
 // <editor-fold desc="For when viewing a simulation result">
 export interface SimulationRun {

@@ -1,4 +1,4 @@
-import type {Simulator} from "~/models/simulators";
+import type { Simulator } from '~/models/simulators'
 
 export interface SimpleEnum {
   id: number
