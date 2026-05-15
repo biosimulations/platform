@@ -8,7 +8,7 @@ from testcontainers.mongodb import MongoDbContainer  # type: ignore
 from biosim_server.common.storage import FileServiceGCS
 from biosim_server.common.storage import create_token
 from biosim_server.dependencies import get_file_service, set_file_service
-from tests.fixtures.file_service_local import FileServiceLocal
+from biosim_server.common.storage.file_service_local import FileServiceLocal
 
 
 @pytest_asyncio.fixture(scope="function")
