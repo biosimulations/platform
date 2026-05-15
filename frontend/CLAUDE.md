@@ -90,16 +90,18 @@ frontend/
 
 Defined in `nuxt.config.ts` → `runtimeConfig.public`. Read in components via `useRuntimeConfig().public`.
 
-| Variable                 | Purpose |
-|--------------------------|---------|
-| `BASE_URL`               | Public origin the app is served from (used by `@nuxtjs/seo`) |
-| `API_URL`                | Platform backend API base URL — points at the FastAPI service in `../backend/` |
-| `BIOSIMULATIONS_API_URL` | Public biosimulations.org project DB API base URL (different service from the platform backend) — used by `pages/biosim-db.vue` |
+| Variable                 | Side             | Purpose |
+|--------------------------|------------------|---------|
+| `BASE_URL`               | browser + server | Public origin the app is served from (used by `@nuxtjs/seo`) |
+| `API_URL`                | browser + server | Platform backend API base URL — points at the FastAPI service in `../backend/` |
+| `API_URL_INTERNAL`       | server only      | In-cluster URL Nitro uses for SSR-time fetches to the backend (e.g., `http://api:8000`). Skips the public ingress when the frontend is deployed alongside `api`. Falls back to `API_URL` if unset. Read via `useRuntimeConfig().apiUrl` from server-side code (`import.meta.server`); not exposed to the browser. |
+| `BIOSIMULATIONS_API_URL` | browser + server | Public biosimulations.org project DB API base URL (different service from the platform backend) — used by `pages/biosim-db.vue` |
 
 Set via env (or a `.env` file — `dotenv` is a dependency). Example:
 ```
 BASE_URL=https://biosim.biosimulations.org
-API_URL=https://biosim.biosimulations.org
+API_URL=https://api.biosim.biosimulations.org
+API_URL_INTERNAL=http://api:8000           # in-cluster only; SSR shortcut
 BIOSIMULATIONS_API_URL=https://api.biosimulations.org
 ```
 
@@ -130,7 +132,7 @@ Backend endpoints consumed (see `../backend/CLAUDE.md` for the full list):
 2. `npm run lint`
 3. `npm run typecheck`
 
-This workflow lives under `frontend/.github/workflows/` rather than the repo-root `.github/workflows/` — it was carried over from Harrison's standalone repo and is **not yet consolidated** with the root CI. The root `ci.yaml` is path-filtered to `backend/**` and does not run on frontend-only changes.
+The workflow lives at `.github/workflows/frontend-ci.yaml` (repo root) and is path-filtered to `frontend/**`. Sibling to the backend's `ci.yaml`.
 
 ## Deploy
 
@@ -142,7 +144,7 @@ As of writing, still TBD: `frontend/Dockerfile`, `kustomize/base/frontend/` sub-
 
 1. **Node version matters** — several deps (notably oxc-parser native bindings) require Node 22+. On older Node, `npm install` silently skips optional platform bindings and `nuxt prepare` fails on `require()` of bindings. Use `nvm install 22 && nvm use 22` if needed.
 2. **No `frontend/Dockerfile`** — see Deploy section above.
-3. **Pre-existing lint/typecheck failures** — the in-tree CI workflow (`frontend/.github/workflows/ci.yml`) has never run in the monorepo (GitHub Actions only discovers workflows at the repo-root `.github/workflows/`), so lint and typecheck have accumulated many failures (1500+ lint errors, several TS errors). Cleanup is its own task; consolidating the workflow to repo root is part of Phase 2.
+3. **Pre-existing lint/typecheck failures** — frontend CI was off in the monorepo until Phase 2 of the integration plan moved the workflow to `.github/workflows/frontend-ci.yaml`. By then ~1500 lint errors and several TS errors had accumulated. Expect `npm run lint` and `npm run typecheck` to fail on `main` until cleanup. Cleanup is its own task.
 4. **README is project-specific** — `frontend/README.md` was replaced with a project-specific quickstart on `frontend-backend-int`; the original Nuxt starter README is gone.
 
 ## External Services
