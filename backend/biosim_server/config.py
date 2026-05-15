@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     storage_bucket: str = "files.biosimulations.dev"
     storage_endpoint_url: str = "https://storage.googleapis.com"
     storage_region: str = "us-east4"
+    # S3-compatible credentials, used by FileServiceMinio.
+    storage_access_key: str = ""
+    storage_secret_key: str = ""
     storage_tensorstore_driver: TS_DRIVER = "zarr3"
     storage_tensorstore_kvstore_driver: KV_DRIVER = "gcs"
 

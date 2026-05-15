@@ -4,7 +4,7 @@ from temporalio.client import Client as TemporalClient
 from biosim_server.biosim_omex.database import OmexDatabaseService, OmexDatabaseServiceMongo
 from biosim_server.biosim_runs.biosim_service import BiosimService, BiosimServiceRest
 from biosim_server.biosim_runs.database import DatabaseService, DatabaseServiceMongo
-from biosim_server.common.storage import FileService, FileServiceGCS, FileServiceLocal
+from biosim_server.common.storage import FileService, FileServiceGCS, FileServiceLocal, FileServiceMinio
 from biosim_server.config import get_local_cache_dir, get_settings
 
 #------ file service (standalone or pytest) ------
@@ -75,9 +75,7 @@ def _make_file_service(backend: str) -> FileService:
     if backend == "local":
         return FileServiceLocal(base_dir=get_local_cache_dir() / "local_data" / "store")
     if backend == "minio":
-        raise NotImplementedError(
-            "STORAGE_BACKEND=minio is not implemented yet (planned: file_service_minio.py)"
-        )
+        return FileServiceMinio()
     raise ValueError(f"Unknown STORAGE_BACKEND={backend!r}")
 
 
