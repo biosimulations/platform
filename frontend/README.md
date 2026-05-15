@@ -1,60 +1,51 @@
-# Nuxt Starter Template
+# Biosimulations Platform — Frontend
 
-[![Nuxt UI](https://img.shields.io/badge/Made%20with-Nuxt%20UI-00DC82?logo=nuxt&labelColor=020420)](https://ui.nuxt.com)
+Webapp for the [biosimulations/platform](../) monorepo. Calls the FastAPI backend in [`../backend/`](../backend) (production: <https://biosim.biosimulations.org/docs>).
 
-Use this template to get started with [Nuxt UI](https://ui.nuxt.com) quickly.
+## Stack
 
-- [Live demo](https://starter-template.nuxt.dev/)
-- [Documentation](https://ui.nuxt.com/docs/getting-started/installation/nuxt)
-
-<a href="https://starter-template.nuxt.dev/" target="_blank">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://ui.nuxt.com/assets/templates/nuxt/starter-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://ui.nuxt.com/assets/templates/nuxt/starter-light.png">
-    <img alt="Nuxt Starter Template" src="https://ui.nuxt.com/assets/templates/nuxt/starter-light.png">
-  </picture>
-</a>
-
-> The starter template for Vue is on https://github.com/nuxt-ui-templates/starter-vue.
-
-## Quick Start
-
-```bash [Terminal]
-npm create nuxt@latest -- -t github:nuxt-ui-templates/starter
-```
-
-## Deploy your own
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-name=starter&repository-url=https%3A%2F%2Fgithub.com%2Fnuxt-ui-templates%2Fstarter&demo-image=https%3A%2F%2Fui.nuxt.com%2Fassets%2Ftemplates%2Fnuxt%2Fstarter-dark.png&demo-url=https%3A%2F%2Fstarter-template.nuxt.dev%2F&demo-title=Nuxt%20Starter%20Template&demo-description=A%20minimal%20template%20to%20get%20started%20with%20Nuxt%20UI.)
+- [Nuxt 4](https://nuxt.com) (Vue 3, server-rendered via Nitro)
+- [Nuxt UI 4](https://ui.nuxt.com)
+- [`@nuxtjs/seo`](https://nuxtseo.com), `nuxt-aos`, `nuxt-lottie`, `lenis`
+- pnpm (CI uses pnpm; `package-lock.json` is also present but `pnpm-lock.yaml` is authoritative)
+- Node 22 (matches CI)
 
 ## Setup
-
-Make sure to install the dependencies:
 
 ```bash
 pnpm install
 ```
 
-## Development Server
-
-Start the development server on `http://localhost:3000`:
+## Development
 
 ```bash
-pnpm dev
+pnpm dev        # http://localhost:4200
+pnpm lint
+pnpm typecheck
 ```
 
-## Production
-
-Build the application for production:
+## Production build
 
 ```bash
 pnpm build
-```
-
-Locally preview production build:
-
-```bash
 pnpm preview
 ```
 
-Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
+## Runtime config
+
+Read from environment via `nuxt.config.ts` → `runtimeConfig.public`:
+
+| Variable | Purpose |
+|----------|---------|
+| `BASE_URL` | Public origin the app is served from (used by `@nuxtjs/seo`) |
+| `API_URL`  | Backend API base URL — should point at the FastAPI service from `../backend/` |
+
+> **Note:** Some pages currently hardcode `https://biosim.biosimulations.org` instead of reading `API_URL`. Migrate those to `useRuntimeConfig().public.api_url` before deploying against a non-prod backend.
+
+## CI
+
+`.github/workflows/ci.yml` runs `pnpm lint` and `pnpm typecheck` on every push. (Lives under `frontend/.github/workflows/` rather than the repo-root workflows directory — to be consolidated.)
+
+## Deployment
+
+The frontend is **not yet wired into the shared kustomize pipeline** (no `Dockerfile`, no entry in `kustomize/base/`, no build step in `kustomize/scripts/build_and_push.sh`). See the parent [`CLAUDE.md`](../CLAUDE.md) for the current monorepo deploy story.
