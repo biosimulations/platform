@@ -1,14 +1,12 @@
 <script setup lang="ts">
 import { h, resolveComponent, ref, useTemplateRef } from 'vue'
 import { upperFirst } from 'scule'
-import type {TableColumn, TableRow} from '@nuxt/ui'
+import type { TableColumn } from '@nuxt/ui'
 import { useClipboard } from '@vueuse/core'
-import type {Project, SimulationRun} from "~/models/simulators";
-import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
-import Loading from "~/components/Loading.vue";
+import type { SimulationRun } from '~/models/simulators'
+import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 
 const UButton = resolveComponent('UButton')
-const UCheckbox = resolveComponent('UCheckbox')
 const UBadge = resolveComponent('UBadge')
 const UDropdownMenu = resolveComponent('UDropdownMenu')
 
@@ -17,21 +15,21 @@ const { copy } = useClipboard()
 const runtimeConfig = useRuntimeConfig()
 
 export interface TableFilter {
-  id: 'createdAt' | 'simulator',
-  operator: 'starts_with' | 'ends_with' | 'contains' | 'less_than' | 'equal' | 'greater_than' | 'before' | 'after' | 'on' | 'is',
-  value: any
+  id: 'createdAt' | 'simulator'
+  operator: 'starts_with' | 'ends_with' | 'contains' | 'less_than' | 'equal' | 'greater_than' | 'before' | 'after' | 'on' | 'is'
+  value: unknown
 }
 
-const columns: TableColumn[] = [
+const columns: TableColumn<SimulationRun>[] = [
   {
     accessorKey: 'id',
     header: 'Id',
-    cell: ({row}) => row.getValue('id')
+    cell: ({ row }) => row.getValue('id')
   },
   {
     accessorKey: 'name',
     header: 'Name',
-    cell: ({row}) => row.getValue('name')
+    cell: ({ row }) => row.getValue('name')
   },
   {
     accessorKey: 'status',
@@ -49,13 +47,13 @@ const columns: TableColumn[] = [
   {
     accessorKey: 'simulator',
     header: 'Simulator',
-    cell: ({row}) => row.getValue('simulator')
+    cell: ({ row }) => row.getValue('simulator')
   },
   {
     accessorKey: 'submitted',
     header: 'Submitted',
 
-    cell: ({row}) => {
+    cell: ({ row }) => {
       return new Date(row.getValue('submitted')).toLocaleString('en-US', {
         day: 'numeric',
         month: 'short',
@@ -157,13 +155,6 @@ const columns: TableColumn[] = [
       }))
     }
   }]
-const column_filters = ref([
-  {
-    id: 'email',
-    value: 'james'
-  }
-])
-
 const table = useTemplateRef('table')
 const loading = ref(true)
 const fetched_data = ref<SimulationRun[]>([])
@@ -177,12 +168,8 @@ onMounted(async () => {
   await fetch_runs()
 })
 
-function open_column_filter(column: any) {
+function open_column_filter(column: unknown) {
   console.log(column)
-}
-
-function set_column_filter(column: any, operator: string, value: any) {
-
 }
 
 async function fetch_runs() {
@@ -193,7 +180,7 @@ async function fetch_runs() {
   loading.value = true
 
   try {
-    /*fetched_data.value = await $fetch(`${runtimeConfig.public.api_url}/runs}`, {
+    /* fetched_data.value = await $fetch(`${runtimeConfig.public.api_url}/runs}`, {
       method: 'POST'
       data: {
         type: 'all' | 'user'
@@ -217,168 +204,193 @@ async function fetch_runs() {
       }
     })
 
-    console.log(fetched_data.value)*/
+    console.log(fetched_data.value) */
 
     setTimeout(() => {
       fetched_data.value = [
         {
-          "id": "sim-72f4e48c-9419-4e6a-b4c5-2a80973e77c1",
-          "name": "Run 1",
-          "simulator": "Simulator A",
-          "simulatorVersion": "123",
-          "simulatorDigest": "digest-c9a0d845-67b3-4f21-9d8a-4c12356789ab",
-          "cpus": 2,
-          "memory": 8,
-          "maxTime": 120,
-          "envVars": [
-            "VAR_3",
-            "ENV_FLAG_0",
-            "VALUE_87"
+          id: 'sim-72f4e48c-9419-4e6a-b4c5-2a80973e77c1',
+          name: 'Run 1',
+          simulator: 'Simulator A',
+          simulatorVersion: '123',
+          simulatorDigest: 'digest-c9a0d845-67b3-4f21-9d8a-4c12356789ab',
+          cpus: 2,
+          memory: 8,
+          maxTime: 120,
+          envVars: [
+            'VAR_3',
+            'ENV_FLAG_0',
+            'VALUE_87'
           ],
-          "purpose": "Performance Analysis",
-          "email": "user0@example.com",
-          "status": "FAILED",
-          "runtime": 1400000,
-          "projectSize": 567,
-          "resultsSize": 23,
-          "submitted": "2024-01-26T10:00:00.000Z",
-          "updated": "2024-01-26T10:00:00.000Z"
+          purpose: 'Performance Analysis',
+          email: 'user0@example.com',
+          status: 'FAILED',
+          runtime: 1400000,
+          projectSize: 567,
+          resultsSize: 23,
+          submitted: '2024-01-26T10:00:00.000Z',
+          updated: '2024-01-26T10:00:00.000Z'
         },
         {
-          "id": "sim-04a71d6b-5f28-4f8e-a5d6-f1b90934d173",
-          "name": "Run 2",
-          "simulator": "Simulator B",
-          "simulatorVersion": "456",
-          "simulatorDigest": "digest-e6f2d75a-2c9b-4a7f-a83b-e90c1487d123",
-          "cpus": 1,
-          "memory": 4,
-          "maxTime": 90,
-          "envVars": [
-            "VAR_1",
-            "ENV_FLAG_1",
-            "VALUE_92"
+          id: 'sim-04a71d6b-5f28-4f8e-a5d6-f1b90934d173',
+          name: 'Run 2',
+          simulator: 'Simulator B',
+          simulatorVersion: '456',
+          simulatorDigest: 'digest-e6f2d75a-2c9b-4a7f-a83b-e90c1487d123',
+          cpus: 1,
+          memory: 4,
+          maxTime: 90,
+          envVars: [
+            'VAR_1',
+            'ENV_FLAG_1',
+            'VALUE_92'
           ],
-          "purpose": "Data Validation",
-          "email": "user1@example.com",
-          "status": "SUCCEEDED",
-          "runtime": 840000,
-          "projectSize": 123,
-          "resultsSize": 11,
-          "submitted": "2024-01-26T10:00:00.000Z",
-          "updated": "2024-01-26T10:00:00.000Z"
+          purpose: 'Data Validation',
+          email: 'user1@example.com',
+          status: 'SUCCEEDED',
+          runtime: 840000,
+          projectSize: 123,
+          resultsSize: 11,
+          submitted: '2024-01-26T10:00:00.000Z',
+          updated: '2024-01-26T10:00:00.000Z'
         },
         {
-          "id": "sim-9b329c5f-7d83-4e1d-a39f-d84916a2b93c",
-          "name": "Run 3",
-          "simulator": "Simulator C",
-          "simulatorVersion": "789",
-          "simulatorDigest": "digest-93f1a8d4-3c5e-4587-b92d-6f48d9d0a1b3",
-          "cpus": 3,
-          "memory": 12,
-          "maxTime": 180,
-          "envVars": [
-            "VAR_7",
-            "ENV_FLAG_0",
-            "VALUE_35"
+          id: 'sim-9b329c5f-7d83-4e1d-a39f-d84916a2b93c',
+          name: 'Run 3',
+          simulator: 'Simulator C',
+          simulatorVersion: '789',
+          simulatorDigest: 'digest-93f1a8d4-3c5e-4587-b92d-6f48d9d0a1b3',
+          cpus: 3,
+          memory: 12,
+          maxTime: 180,
+          envVars: [
+            'VAR_7',
+            'ENV_FLAG_0',
+            'VALUE_35'
           ],
-          "purpose": "Test Run",
-          "email": "user2@example.com",
-          "status": "CREATED",
-          "runtime": 2160000,
-          "projectSize": 890,
-          "resultsSize": 32,
-          "submitted": "2024-01-26T10:00:00.000Z",
-          "updated": "2024-01-26T10:00:00.000Z"
+          purpose: 'Test Run',
+          email: 'user2@example.com',
+          status: 'CREATED',
+          runtime: 2160000,
+          projectSize: 890,
+          resultsSize: 32,
+          submitted: '2024-01-26T10:00:00.000Z',
+          updated: '2024-01-26T10:00:00.000Z'
         },
         {
-          "id": "sim-5a1d63e7-8d96-448e-9970-6f8a9b3c4d12",
-          "name": "Run 4",
-          "simulator": "Simulator A",
-          "simulatorVersion": "124",
-          "simulatorDigest": "digest-74c8e0d2-93f5-4d1c-a8d6-5b1342968e7a",
-          "cpus": 4,
-          "memory": 10,
-          "maxTime": 150,
-          "envVars": [
-            "VAR_4",
-            "ENV_FLAG_1",
-            "VALUE_16"
+          id: 'sim-5a1d63e7-8d96-448e-9970-6f8a9b3c4d12',
+          name: 'Run 4',
+          simulator: 'Simulator A',
+          simulatorVersion: '124',
+          simulatorDigest: 'digest-74c8e0d2-93f5-4d1c-a8d6-5b1342968e7a',
+          cpus: 4,
+          memory: 10,
+          maxTime: 150,
+          envVars: [
+            'VAR_4',
+            'ENV_FLAG_1',
+            'VALUE_16'
           ],
-          "purpose": "Experimentation",
-          "email": "user3@example.com",
-          "status": "SUCCEEDED",
-          "runtime": 1500000,
-          "projectSize": 345,
-          "resultsSize": 18,
-          "submitted": "2024-01-26T10:00:00.000Z",
-          "updated": "2024-01-26T10:00:00.000Z"
+          purpose: 'Experimentation',
+          email: 'user3@example.com',
+          status: 'SUCCEEDED',
+          runtime: 1500000,
+          projectSize: 345,
+          resultsSize: 18,
+          submitted: '2024-01-26T10:00:00.000Z',
+          updated: '2024-01-26T10:00:00.000Z'
         },
         {
-          "id": "sim-8c7e4b9a-6d29-4f9f-a39e-990a31845b5d",
-          "name": "Run 5",
-          "simulator": "Simulator B",
-          "simulatorVersion": "457",
-          "simulatorDigest": "digest-29c1d34f-036d-4a1e-95a8-f15a00b7c297",
-          "cpus": 2,
-          "memory": 6,
-          "maxTime": 75,
-          "envVars": [
-            "VAR_9",
-            "ENV_FLAG_0",
-            "VALUE_42"
+          id: 'sim-8c7e4b9a-6d29-4f9f-a39e-990a31845b5d',
+          name: 'Run 5',
+          simulator: 'Simulator B',
+          simulatorVersion: '457',
+          simulatorDigest: 'digest-29c1d34f-036d-4a1e-95a8-f15a00b7c297',
+          cpus: 2,
+          memory: 6,
+          maxTime: 75,
+          envVars: [
+            'VAR_9',
+            'ENV_FLAG_0',
+            'VALUE_42'
           ],
-          "purpose": "Data Validation",
-          "email": "user4@example.com",
-          "status": "SUCCEEDED",
-          "runtime": 750000,
-          "projectSize": 234,
-          "resultsSize": 8,
-          "submitted": "2024-01-26T10:00:00.000Z",
-          "updated": "2024-01-26T10:00:00.000Z"
-        },
+          purpose: 'Data Validation',
+          email: 'user4@example.com',
+          status: 'SUCCEEDED',
+          runtime: 750000,
+          projectSize: 234,
+          resultsSize: 8,
+          submitted: '2024-01-26T10:00:00.000Z',
+          updated: '2024-01-26T10:00:00.000Z'
+        }
       ]
       loading.value = false
       return
     }, 500)
   } catch (error) {
-    error_encountered.value = error.message
+    error_encountered.value = error instanceof Error ? error.message : String(error)
     throw error
   }
 }
 
-function process_click(_e: Event, row: TableRow<SimulationRun>) {
-  console.log(row)
-}
-
 const checkValidity = () => {
-  if (user_input.value?.inputRef.value) {
-    user_input_valid.value = user_input.value.inputRef.validity.valid
+  const ref = user_input.value?.inputRef
+  if (ref?.value) {
+    user_input_valid.value = ref.validity.valid
   }
 }
 </script>
 
 <template>
-  <section class="w-full min-h-[calc(100vh-var(--ui-header-height))] p-6 max-w-(--ui-container) mx-auto flex flex-col gap-4" :class="{'items-center justify-center': !fetched_data || error_encountered, 'items-start justify-start': fetched_data && !error_encountered}">
-    <Loading v-if="!fetched_data && !error_encountered" message="Fetching simulation runs..."/>
+  <section
+    class="w-full min-h-[calc(100vh-var(--ui-header-height))] p-6 max-w-(--ui-container) mx-auto flex flex-col gap-4"
+    :class="{ 'items-center justify-center': !fetched_data || error_encountered, 'items-start justify-start': fetched_data && !error_encountered }"
+  >
+    <AppLoading
+      v-if="!fetched_data && !error_encountered"
+      message="Fetching simulation runs..."
+    />
 
-    <div class="w-full" v-if="fetched_data && !error_encountered">
+    <div
+      v-if="fetched_data && !error_encountered"
+      class="w-full"
+    >
       <div class="w-full flex items-center justify-between px-4 py-3.5 border-b border-accented">
-        <h3 class="w-full text-xl font-bold">Simulation Runs</h3>
+        <h3 class="w-full text-xl font-bold">
+          Simulation Runs
+        </h3>
         <div class="w-max flex items-center gap-4">
           <div class="w-max flex items-center gap-2">
-            <p class="text-sm font-semibold" :class="{'text-muted': fetch_user, 'text-color': !fetch_user}">All Runs</p>
-            <USwitch v-model="fetch_user" :disabled="loading" @change="fetch_runs()"/>
-            <p class="text-sm font-semibold" :class="{'text-muted': !fetch_user, 'text-color': fetch_user}">My Runs</p>
+            <p
+              class="text-sm font-semibold"
+              :class="{ 'text-muted': fetch_user, 'text-color': !fetch_user }"
+            >
+              All Runs
+            </p>
+            <USwitch
+              v-model="fetch_user"
+              :disabled="loading"
+              @change="fetch_runs()"
+            />
+            <p
+              class="text-sm font-semibold"
+              :class="{ 'text-muted': !fetch_user, 'text-color': fetch_user }"
+            >
+              My Runs
+            </p>
             <UInput
               v-if="fetch_user"
-              v-model="user_email"
               ref="user_email_input"
+              v-model="user_email"
               type="email"
-              @input="checkValidity"
               placeholder="Enter your email address"
               :ui="{ trailing: 'pe-1' }"
+              @input="checkValidity"
             >
-              <template v-if="user_email && user_email.length" #trailing>
+              <template
+                v-if="user_email && user_email.length"
+                #trailing
+              >
                 <UButton
                   color="primary"
                   variant="solid"
@@ -397,39 +409,49 @@ const checkValidity = () => {
             :content="{ align: 'end' }"
             :items="
               table?.tableApi
-              ?.getAllColumns()
-              .filter((column) => column.getCanHide())
-              .map((column) => ({
-                label: upperFirst(column.id),
-                type: 'checkbox' as const,
-                checked: column.getIsVisible(),
-                onUpdateChecked(checked: boolean) {
-                  table?.tableApi?.getColumn(column.id)?.toggleVisibility(!!checked)
-                },
-                onSelect(e: Event) {
-                  e.preventDefault()
-                }
-              }))
-            ">
-          <UButton
-            label="Columns"
-            color="neutral"
-            variant="outline"
-            trailing-icon="i-lucide-chevron-down"
-          />
-        </UDropdownMenu>
+                ?.getAllColumns()
+                .filter((column) => column.getCanHide())
+                .map((column) => ({
+                  label: upperFirst(column.id),
+                  type: 'checkbox' as const,
+                  checked: column.getIsVisible(),
+                  onUpdateChecked(checked: boolean) {
+                    table?.tableApi?.getColumn(column.id)?.toggleVisibility(!!checked)
+                  },
+                  onSelect(e: Event) {
+                    e.preventDefault()
+                  }
+                }))
+            "
+          >
+            <UButton
+              label="Columns"
+              color="neutral"
+              variant="outline"
+              trailing-icon="i-lucide-chevron-down"
+            />
+          </UDropdownMenu>
         </div>
       </div>
 
-      <Loading class="mx-auto w-max py-4" v-if="loading" message="Fetching simulation runs..."/>
+      <AppLoading
+        v-if="loading"
+        class="mx-auto w-max py-4"
+        message="Fetching simulation runs..."
+      />
       <UTable
         v-if="!loading"
-        class="w-full"
         ref="table"
+        class="w-full"
         :data="fetched_data"
         :columns="columns"
-        sticky>
-        <template v-for="column in columns" :key="column.accessorKey" #[`${column.accessorKey}-header`]="{ column: tableColumn }">
+        sticky
+      >
+        <template
+          v-for="column in (columns as { accessorKey: string }[])"
+          :key="column.accessorKey"
+          #[`${column.accessorKey}-header`]="{ column: tableColumn }"
+        >
           <div class="flex items-center gap-2">
             <UButton
               color="neutral"
@@ -455,24 +477,47 @@ const checkValidity = () => {
             </UPopover>
           </div>
         </template>
-<!--        <template #name-cell="{ row }">
+        <!--        <template #name-cell="{ row }">
           <p @click="process_click(row)">{{row}}</p>
-        </template>-->
+        </template> -->
       </UTable>
     </div>
 
-    <div class="w-full md:w-max md:max-w-[700px] lg:max-w-[900px] flex flex-col items-center justify-center gap-2" v-if="error_encountered">
-      <DotLottieVue class="w-[150px] aspect-square" autoplay src="/animations/error.lottie" />
-      <h1 class="text-2xl font-bold">An error occurred while fetching simulation runs</h1>
-      <pre class="bg-neutral-100 rounded p-2">{{error_encountered}}</pre>
+    <div
+      v-if="error_encountered"
+      class="w-full md:w-max md:max-w-[700px] lg:max-w-[900px] flex flex-col items-center justify-center gap-2"
+    >
+      <DotLottieVue
+        class="w-[150px] aspect-square"
+        autoplay
+        src="/animations/error.lottie"
+      />
+      <h1 class="text-2xl font-bold">
+        An error occurred while fetching simulation runs
+      </h1>
+      <pre class="bg-neutral-100 rounded p-2">{{ error_encountered }}</pre>
 
       <div class="w-full flex-1 flex items-center justify-center gap-3 mt-4">
-        <UButton color="primary" class="cursor-pointer" to="/" icon="i-lucide-home" label="Go Home"></UButton>
-        <UButton color="neutral" class="cursor-pointer" variant="outline" icon="i-lucide-rotate-ccw" label="Retry" @click="fetch_runs()"></UButton>
+        <UButton
+          color="primary"
+          class="cursor-pointer"
+          to="/"
+          icon="i-lucide-home"
+          label="Go Home"
+        />
+        <UButton
+          color="neutral"
+          class="cursor-pointer"
+          variant="outline"
+          icon="i-lucide-rotate-ccw"
+          label="Retry"
+          @click="fetch_runs()"
+        />
       </div>
     </div>
   </section>
 </template>
+
 <style>
   tr:hover {
     background-color: #fbfbfb !important;

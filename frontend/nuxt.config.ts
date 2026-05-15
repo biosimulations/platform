@@ -6,11 +6,17 @@ export default defineNuxtConfig({
     '@nuxt/fonts',
     'lenis/nuxt',
     'nuxt-aos',
-    '@nuxtjs/seo',
+    '@nuxtjs/seo'
   ],
 
   devtools: {
     enabled: true
+  },
+
+  css: ['~/assets/css/main.css'],
+
+  colorMode: {
+    preference: 'light'
   },
 
   runtimeConfig: {
@@ -26,12 +32,6 @@ export default defineNuxtConfig({
       biosimulations_api_url: process.env.BIOSIMULATIONS_API_URL
     }
   },
-
-  colorMode: {
-    preference: 'light',
-  },
-
-  css: ['~/assets/css/main.css'],
 
   routeRules: {
     '/': { prerender: true }
