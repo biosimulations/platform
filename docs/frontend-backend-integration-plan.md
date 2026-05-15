@@ -15,12 +15,12 @@ After Harrison merged the Nuxt 4 webapp into `frontend/` (2026-05-15), the monor
 
 | Decision | Choice |
 |---|---|
-| Local orchestration | Hybrid: docker-compose for infra (Mongo + Temporal + optional minio); backend and frontend run native via poetry/pnpm for fast HMR. |
+| Local orchestration | Hybrid: docker-compose for infra (Mongo + Temporal + optional minio); backend and frontend run native via poetry/npm for fast HMR. |
 | External APIs in local dev | Call the real public biosimulations.org / simdata / biosimulators APIs. The OMEX flow ferries bytes through the backend (`biosim_service.py:84` uses multipart upload), so local filesystem storage works fine. |
 | Frontend packaging | Separate container running the Nuxt Nitro node server. New `platform-frontend` image with its own Deployment + Service. |
 | Test scope | Backend integration tests against the local-mode backend + CI smoke test of the assembled local stack. (No frontend unit/E2E tests in this plan.) |
 | Local file storage | Both: `FileServiceLocal` (filesystem under `./local_cache/`) is default; opt into `FileServiceMinio` via env var. |
-| Joint deploy meaning | Shared monorepo version; single `git tag vX.Y.Z` rebuilds all three images. |
+| Joint deploy meaning | Independent versions per service (`backend-vX.Y.Z`, `frontend-vX.Y.Z`); coordinated `vX.Y.Z` tags from `main` rebuild all three images together. |
 | CI smoke trigger | Every PR (all paths). |
 
 ## Existing building blocks (no work needed)
@@ -47,12 +47,12 @@ Small, independent, low-risk changes that unblock the rest.
    - `frontend/app/pages/simulations/check-status/[processing_id].vue:26`
 6. **Fix `frontend/app/pages/biosim-db.vue:209`** — it reads `runtimeConfig.public.api_base` which isn't declared in `nuxt.config.ts`. Either declare it (it's a different base — the public biosimulations.org API, not the platform backend) or rename for clarity.
 7. **Rename `frontend/package.json` `name`** from `"website"` to `"platform-frontend"` to match the directory and image name.
-8. **Add a `version` field to `frontend/package.json`** (none exists today). Seed at `0.1.0` — fresh version stream for the monorepo-aligned frontend. From there, `scripts/bump-frontend.sh` advances the patch.
-9. **Add `scripts/bump-frontend.sh`** — bumps patch in `package.json`, commits with message like `Bump frontend to X.Y.Z`, and tags `frontend-vX.Y.Z` on the current branch.
+8. **Add a `version` field to `frontend/package.json`** (none exists today). Seed at `0.1.0` — fresh version stream for the monorepo-aligned frontend. From there, `frontend/scripts/bump-frontend.sh` advances the patch.
+9. **Add `frontend/scripts/bump-frontend.sh`** — bumps patch in `package.json`, commits with message like `Bump frontend to X.Y.Z`, and tags `frontend-vX.Y.Z` on the current branch.
 
 ## Phase 1 — Local stack for frontend dev
 
-**Goal:** A developer runs `docker compose up -d` for infra, then `poetry run ...` (backend api + worker) and `pnpm dev` (frontend) natively. Frontend at `http://localhost:4200` talks to backend at `http://localhost:8000`. Real biosimulations.org runs the actual simulations.
+**Goal:** A developer runs `docker compose up -d` for infra, then `poetry run ...` (backend api + worker) and `npm run dev` (frontend) natively. Frontend at `http://localhost:4200` talks to backend at `http://localhost:8000`. Real biosimulations.org runs the actual simulations.
 
 - **`compose.yaml`** at repo root. Services:
   - `mongo` — `mongo:7` on `27017`, named volume
@@ -79,7 +79,7 @@ Small, independent, low-risk changes that unblock the rest.
 
 **Process model:** single container running Nuxt's Nitro Node server (`node .output/server/index.mjs`) on port `3000`. Nitro serves both SSR HTML and static assets from `.output/public/` in one process — no nginx sidecar, no separate static-content server. The container is stateless and horizontally scalable.
 
-- **`frontend/Dockerfile`** — runtime-only image; **build happens outside Docker** (in CI / on the dev's machine via `pnpm build`), and the image just copies the prebuilt artifact and runs it. Mirrors the Angular SSR pattern Harrison uses elsewhere.
+- **`frontend/Dockerfile`** — runtime-only image; **build happens outside Docker** (in CI / on the dev's machine via `npm run build`), and the image just copies the prebuilt artifact and runs it. Mirrors the Angular SSR pattern Harrison uses elsewhere.
   - **Nuxt-specific note:** Nitro emits `.output/` containing the server entrypoint, all static assets, and *bundled* server dependencies under `.output/server/node_modules/`. The output directory is self-contained — no separate `npm ci --omit=dev` step needed (unlike the Angular pattern where prod `node_modules` are copied alongside `dist/`).
   - Dockerfile:
     ```dockerfile
@@ -92,7 +92,7 @@ Small, independent, low-risk changes that unblock the rest.
     CMD ["node", ".output/server/index.mjs"]
     ```
   - `frontend/.dockerignore` should exclude `node_modules/`, `.nuxt/`, source dirs, etc. — only `.output/` needs to be in the build context.
-  - `kustomize/scripts/build_and_push.sh frontend` runs `cd frontend && pnpm install --frozen-lockfile && pnpm build` **before** `docker build`, so the build is reproducible from a clean checkout and not dependent on the dev's local state.
+  - `kustomize/scripts/build_and_push.sh frontend` runs `cd frontend && npm ci && npm run build` **before** `docker build`, so the build is reproducible from a clean checkout and not dependent on the dev's local state.
 - **`kustomize/base/frontend.yaml`** — Deployment + Service:
   - **Deployment** `frontend`, default `replicas: 2` (override per overlay). Image `ghcr.io/biosimulations/platform-frontend:latest` (pending registry decision — see follow-up). `imagePullPolicy: Always`. `containerPort: 3000`.
   - **Probes:** `readinessProbe` and `livenessProbe` both HTTP GET `/` on `3000`. (Optionally add a `server/api/healthz.ts` Nitro route returning 200 to avoid full SSR on probes — defer unless probe latency becomes an issue.)
@@ -108,7 +108,7 @@ Small, independent, low-risk changes that unblock the rest.
   - Backend version in `backend/biosim_server/version.py`. Backend git tags: `backend-vX.Y.Z`. Image tags: `backend-X.Y.Z` (rebuilds `platform-api` + `platform-worker`).
   - Frontend version in `frontend/package.json` (currently missing — add it, seed at `0.1.0` as a fresh monorepo-aligned version stream). Frontend git tags: `frontend-vX.Y.Z`. Image tags: `frontend-X.Y.Z`.
   - **Coordinated full releases** use plain `vX.Y.Z` tags, **only on `main`**. A `vX.Y.Z` tag is a coordinated bump: both `version.py` and `package.json` are set to the same `X.Y.Z`, all three images rebuild at that version.
-  - **Branch deploys are allowed for the frontend.** A helper script `scripts/bump-frontend.sh` bumps the patch in `package.json`, commits, and tags `frontend-vX.Y.Z` on whatever branch is current. Build + push consumes that tag. (No CI guard requiring main.)
+  - **Branch deploys are allowed for the frontend.** A helper script `frontend/scripts/bump-frontend.sh` bumps the patch in `package.json`, commits, and tags `frontend-vX.Y.Z` on whatever branch is current. Build + push consumes that tag. (No CI guard requiring main.)
   - Kustomize overlays' `images:` entries are independent per service — overlays cherry-pick whichever version of each they want.
 - **Frontend image registry** — no overlay currently references the frontend image; the root `CLAUDE.md` documents `ghcr.io/biosimulations/platform-frontend` as the intended name (not yet built), and Harrison's prior standalone-repo builds published to `docker.io/biosimulations/frontend`. **Open follow-up:** pick the registry before publishing the first monorepo build (GHCR for consistency with `platform-api` / `platform-worker`, or dockerhub if there's tooling that needs it). Update `build_and_push.sh` and each overlay's `images:` entry to match.
 - **`kustomize/scripts/build_and_push.sh`** — parameterize: `build_and_push.sh backend|frontend|all [version]`. Each subcommand reads its own service's version file by default. `all` is used by a coordinated `vX.Y.Z` release; it requires the version argument and writes both files.
@@ -151,14 +151,14 @@ Small, independent, low-risk changes that unblock the rest.
 ### CI smoke test on every PR
 - New workflow `.github/workflows/smoke.yaml`:
   - Trigger: `on: pull_request` (all paths).
-  - Steps: `docker compose up -d mongo temporal`, install poetry + pnpm, build backend + frontend, start them in the background, wait for `:8000/version` and `:4200/`, hit a handful of endpoints (e.g., `GET /version`, `GET /docs`, frontend root render).
+  - Steps: `docker compose up -d mongo temporal`, install poetry, set up Node 22, build backend + frontend, start them in the background, wait for `:8000/version` and `:4200/`, hit a handful of endpoints (e.g., `GET /version`, `GET /docs`, frontend root render).
   - **Do not run a real simulation** — biosimulations.org submission is minutes-long. Test only the wiring (frontend boots, backend boots, CORS works, runtime config reaches the frontend).
   - Budget: aim for under 5 minutes.
 
 ## Resolved decisions (2026-05-15)
 
 1. **Ingress routing in prod** — subdomain split. Frontend on `biosim.biosimulations.org`, backend moved to `api.biosim.biosimulations.org`. Keeps existing backend paths unchanged; lowest-disruption.
-2. **Versioning model** — services version independently. Backend → `backend/biosim_server/version.py` + git tag `backend-vX.Y.Z` + image tag `backend-X.Y.Z`. Frontend → `frontend/package.json` (add it, seed at `0.1.0`; resets the prior `3.0.6` stream from Harrison's standalone repo) + git tag `frontend-vX.Y.Z` + image tag `frontend-X.Y.Z`. Coordinated full releases use plain `vX.Y.Z` tags **only from main**, bumping both files to the same version. A `scripts/bump-frontend.sh` helper bumps patch + commits + tags; branch deploys allowed. Open follow-up: consolidate frontend image registry on GHCR vs. dockerhub.
+2. **Versioning model** — services version independently. Backend → `backend/biosim_server/version.py` + git tag `backend-vX.Y.Z` + image tag `backend-X.Y.Z`. Frontend → `frontend/package.json` (add it, seed at `0.1.0`; resets the prior `3.0.6` stream from Harrison's standalone repo) + git tag `frontend-vX.Y.Z` + image tag `frontend-X.Y.Z`. Coordinated full releases use plain `vX.Y.Z` tags **only from main**, bumping both files to the same version. A `frontend/scripts/bump-frontend.sh` helper bumps patch + commits + tags; branch deploys allowed. Open follow-up: consolidate frontend image registry on GHCR vs. dockerhub.
 3. **Temporal image (local dev)** — `temporalio/temporal server start-dev` (single binary, no UI). Swap to `auto-setup` later only if workflow-UI debugging becomes necessary.
 4. **Frontend `package.json` name** — rename `"website"` → `"platform-frontend"` (folded into Pre-work step 7).
 5. **Phasing** — three separate PRs off `frontend-backend-int`: (a) Pre-work + Phase 1, (b) Phase 2, (c) Phase 3. Phase 1 lands first to unblock Harrison's webapp dev.

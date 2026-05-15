@@ -9,30 +9,30 @@ All commands below assume the working directory is `frontend/` (i.e., `cd fronte
 The platform frontend is the [biosimulations.org](https://biosim.biosimulations.org) webapp — a Nuxt 4 SSR app that lets users upload OMEX archives, run simulations against the FastAPI backend, browse the biosim project DB, and consume related utilities.
 
 **Stack:** Nuxt 4 (Vue 3, Nitro SSR), Nuxt UI 4, `@nuxtjs/seo`, `nuxt-aos`, `nuxt-lottie`, `lenis`, Zod
-**Node:** 22 (matches CI)
-**Package manager:** pnpm (CI uses pnpm; `package-lock.json` is also present but `pnpm-lock.yaml` is authoritative)
+**Node:** 22 (use `nvm install 22 && nvm use 22` if your default is older — several deps require Node ≥ 22)
+**Package manager:** npm (`package-lock.json` is authoritative; `pnpm-lock.yaml` removed)
 **Dev port:** 4200
 
 ## Quick Commands
 
 ```bash
 # Install dependencies
-pnpm install
+npm install
 
 # Run dev server (http://localhost:4200, HMR, devtools)
-pnpm dev
+npm run dev
 
 # Lint
-pnpm lint
+npm run lint
 
 # Type check
-pnpm typecheck
+npm run typecheck
 
 # Production build
-pnpm build
+npm run build
 
 # Preview production build
-pnpm preview
+npm run preview
 ```
 
 ## Verification
@@ -40,11 +40,11 @@ pnpm preview
 Run these on every changeset before considering work complete:
 
 ```bash
-pnpm lint
-pnpm typecheck
+npm run lint
+npm run typecheck
 ```
 
-CI runs the same two commands on every push (see `.github/workflows/ci.yml`). There is no unit/E2E test suite yet — verify UI changes manually in `pnpm dev`.
+CI runs the same two commands on every push (see `.github/workflows/ci.yml`). There is no unit/E2E test suite yet — verify UI changes manually in `npm run dev`.
 
 ## Directory Structure
 
@@ -80,8 +80,7 @@ frontend/
 ├── public/                     # Static assets (images, fonts, lottie)
 ├── nuxt.config.ts
 ├── package.json
-├── pnpm-lock.yaml              # Authoritative lockfile
-├── package-lock.json           # Also present (legacy)
+├── package-lock.json           # Authoritative lockfile (npm)
 ├── tsconfig.json
 ├── eslint.config.mjs
 └── .github/workflows/ci.yml    # Separate from root CI; lint + typecheck
@@ -127,9 +126,9 @@ Backend endpoints consumed (see `../backend/CLAUDE.md` for the full list):
 ## CI
 
 `.github/workflows/ci.yml` runs on every push:
-1. `pnpm install`
-2. `pnpm run lint`
-3. `pnpm run typecheck`
+1. `npm ci`
+2. `npm run lint`
+3. `npm run typecheck`
 
 This workflow lives under `frontend/.github/workflows/` rather than the repo-root `.github/workflows/` — it was carried over from Harrison's standalone repo and is **not yet consolidated** with the root CI. The root `ci.yaml` is path-filtered to `backend/**` and does not run on frontend-only changes.
 
@@ -141,9 +140,10 @@ As of writing, still TBD: `frontend/Dockerfile`, `kustomize/base/frontend/` sub-
 
 ## Important Notes
 
-1. **Package manager** — Use `pnpm`, not `npm`. The presence of `package-lock.json` alongside `pnpm-lock.yaml` is incidental; CI uses pnpm. Note: `package.json` declares `"packageManager": "npm@..."` which is inconsistent with this and will trip up pnpm; cleanup pending.
+1. **Node version matters** — several deps (notably oxc-parser native bindings) require Node 22+. On older Node, `npm install` silently skips optional platform bindings and `nuxt prepare` fails on `require()` of bindings. Use `nvm install 22 && nvm use 22` if needed.
 2. **No `frontend/Dockerfile`** — see Deploy section above.
-3. **README is project-specific** — `frontend/README.md` was replaced with a project-specific quickstart on `frontend-backend-int`; the original Nuxt starter README is gone.
+3. **Pre-existing lint/typecheck failures** — the in-tree CI workflow (`frontend/.github/workflows/ci.yml`) has never run in the monorepo (GitHub Actions only discovers workflows at the repo-root `.github/workflows/`), so lint and typecheck have accumulated many failures (1500+ lint errors, several TS errors). Cleanup is its own task; consolidating the workflow to repo root is part of Phase 2.
+4. **README is project-specific** — `frontend/README.md` was replaced with a project-specific quickstart on `frontend-backend-int`; the original Nuxt starter README is gone.
 
 ## External Services
 
