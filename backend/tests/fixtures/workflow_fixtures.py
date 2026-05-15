@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Generator
 
 import pytest
-from testcontainers.mongodb import MongoDbContainer  # type: ignore
 
 from biosim_server.biosim_omex import OmexFile
 from biosim_server.biosim_runs import BiosimulatorVersion

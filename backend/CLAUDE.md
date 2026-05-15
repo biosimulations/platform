@@ -39,18 +39,20 @@ poetry run pytest tests/biosim_runs/test_sim_workflow.py -v
 
 ## Verification
 
-Run these checks on every changeset before considering work complete:
+Run these checks on every changeset before considering work complete (both `biosim_server/` source and the `tests/` suite are in scope):
 
 ```bash
 # Linting
-poetry run ruff check biosim_server/
+poetry run ruff check .
 
 # Type checking (strict mode)
-poetry run mypy biosim_server
+poetry run mypy biosim_server tests
 
 # Tests (exclude integration tests that hit external APIs)
 poetry run pytest -m "not integration"
 ```
+
+These are the same checks the repo-root `lefthook.yml` runs on commit/push and that `frontend-ci` / `backend-ci` gate on `main`.
 
 ## Architecture
 

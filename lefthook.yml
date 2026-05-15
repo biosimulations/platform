@@ -10,13 +10,19 @@
 # local bypass can't ship.
 
 # Fast lint runs on every commit, scoped to staged files.
+# `nvm_use` shorthand: if nvm is installed, switch to the Node version from
+# the nearest .nvmrc before running the frontend commands. Silently no-op if
+# nvm isn't available — the dev's default Node is used, and lefthook fails
+# loudly if it isn't 22.
 pre-commit:
   parallel: true
   commands:
     frontend-lint:
       root: 'frontend/'
       glob: '*.{js,jsx,ts,tsx,vue,mjs,cjs}'
-      run: npx eslint {staged_files}
+      run: |
+        [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" --no-use && nvm use --silent
+        npx eslint {staged_files}
     backend-ruff:
       root: 'backend/'
       glob: '*.py'
@@ -29,8 +35,10 @@ pre-push:
     frontend-typecheck:
       root: 'frontend/'
       glob: '*.{ts,tsx,vue}'
-      run: npm run typecheck
+      run: |
+        [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" --no-use && nvm use --silent
+        npm run typecheck
     backend-mypy:
       root: 'backend/'
       glob: '*.py'
-      run: poetry run mypy biosim_server
+      run: poetry run mypy biosim_server tests

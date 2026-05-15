@@ -6,7 +6,6 @@ import pytest
 
 from biosim_server.common.storage import FileServiceGCS, FileServiceLocal
 from biosim_server.config import get_settings
-from tests.fixtures.gcs_fixtures import file_service_gcs_test_base_path
 
 
 @pytest.mark.asyncio

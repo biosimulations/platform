@@ -42,7 +42,7 @@ MOCK_SIMULATOR_VERSIONS = [
 def _make_request(
     omex_id: str = "abc123def456",
     simulators: list[dict[str, str]] | None = None,
-) -> dict:
+) -> dict[str, object]:
     return {
         "omex_id": omex_id,
         "name": "Test Run",

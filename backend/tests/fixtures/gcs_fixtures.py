@@ -3,7 +3,6 @@ from typing import AsyncGenerator
 
 import pytest_asyncio
 from gcloud.aio.auth import Token
-from testcontainers.mongodb import MongoDbContainer  # type: ignore
 
 from biosim_server.common.storage import FileServiceGCS
 from biosim_server.common.storage import create_token
