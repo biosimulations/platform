@@ -16,7 +16,8 @@ export default defineNuxtConfig({
   runtimeConfig: {
     public: {
       base_url: process.env.BASE_URL,
-      api_url: process.env.API_URL
+      api_url: process.env.API_URL,
+      biosimulations_api_url: process.env.BIOSIMULATIONS_API_URL
     }
   },
 

@@ -206,7 +206,7 @@ async function fetch_projects() {
   fetched_data.value = undefined
 
   try {
-    fetched_data.value = await $fetch(`${runtimeConfig.public.api_base}/projects`, {
+    fetched_data.value = await $fetch(`${runtimeConfig.public.biosimulations_api_url}/projects`, {
       method: 'GET'
     })
 

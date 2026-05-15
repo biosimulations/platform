@@ -91,15 +91,17 @@ frontend/
 
 Defined in `nuxt.config.ts` → `runtimeConfig.public`. Read in components via `useRuntimeConfig().public`.
 
-| Variable   | Purpose |
-|------------|---------|
-| `BASE_URL` | Public origin the app is served from (used by `@nuxtjs/seo`) |
-| `API_URL`  | Backend API base URL — should point at the FastAPI service in `../backend/` |
+| Variable                 | Purpose |
+|--------------------------|---------|
+| `BASE_URL`               | Public origin the app is served from (used by `@nuxtjs/seo`) |
+| `API_URL`                | Platform backend API base URL — points at the FastAPI service in `../backend/` |
+| `BIOSIMULATIONS_API_URL` | Public biosimulations.org project DB API base URL (different service from the platform backend) — used by `pages/biosim-db.vue` |
 
 Set via env (or a `.env` file — `dotenv` is a dependency). Example:
 ```
 BASE_URL=https://biosim.biosimulations.org
 API_URL=https://biosim.biosimulations.org
+BIOSIMULATIONS_API_URL=https://api.biosimulations.org
 ```
 
 ## Backend API Integration
@@ -111,16 +113,7 @@ Backend endpoints consumed (see `../backend/CLAUDE.md` for the full list):
 | `pages/simulations/run.vue` | `POST /compatibility/check`, `POST /simulations/run` |
 | `pages/simulations/check-status/[processing_id].vue` | `GET /simulations/{processing_id}` |
 | `pages/simulations/index.vue` | `GET /runs` (currently commented out) |
-| `pages/biosim-db.vue` | `GET /projects` (against `runtimeConfig.public.api_base`, not the platform backend) |
-
-**Known issue — hardcoded API URLs:** Several pages call `https://biosim.biosimulations.org/...` directly instead of using `useRuntimeConfig().public.api_url`. Locations:
-- `pages/simulations/run.vue:123` (`/compatibility/check`)
-- `pages/simulations/run.vue:185` (`/simulations/run`)
-- `pages/simulations/check-status/[processing_id].vue:26` (`/simulations/{id}`)
-
-These need to migrate to runtime config before the app can target a non-prod backend.
-
-**Note on runtime keys:** `biosim-db.vue:209` reads `runtimeConfig.public.api_base`, which is **not declared** in `nuxt.config.ts` (only `base_url` and `api_url` are). Either declare it or change the call site.
+| `pages/biosim-db.vue` | `GET /projects` (against `runtimeConfig.public.biosimulations_api_url` — the public biosimulations.org project DB API, not the platform backend) |
 
 ## Key Patterns
 
@@ -142,26 +135,15 @@ This workflow lives under `frontend/.github/workflows/` rather than the repo-roo
 
 ## Deploy
 
-**Not yet wired up.** As of the merge into the monorepo (2026-05-15):
+**In progress on `frontend-backend-int`.** Plan: `docs/frontend-backend-integration-plan.md`. Decisions made: independent version streams (frontend at `0.1.0`, tagged `frontend-vX.Y.Z`), runtime-only Dockerfile (build outside Docker, image just runs `node .output/server/index.mjs`), shared Ingress with subdomain split, separate `frontend-dev` namespace on RKE for the frontend dev's branch deploys.
 
-- No `frontend/Dockerfile` exists.
-- The frontend is not built or pushed by `kustomize/scripts/build_and_push.sh`.
-- `kustomize/base/` has no deployment/service for the frontend.
-- `frontend/package.json` version is decoupled from `backend/biosim_server/version.py`.
-
-When wiring this up:
-1. Add `frontend/Dockerfile` (multi-stage: `pnpm build` → run `node .output/server/index.mjs`).
-2. Extend `kustomize/scripts/build_and_push.sh` to build/push `platform-frontend` for amd64 + arm64.
-3. Add a `frontend.yaml` deployment/service to `kustomize/base/` and reference it from each overlay's `kustomization.yaml`.
-4. Decide whether to couple `frontend/package.json` version to `backend/biosim_server/version.py` for unified releases.
+As of writing, still TBD: `frontend/Dockerfile`, `kustomize/base/frontend/` sub-package, `kustomize/scripts/build_and_push.sh frontend`, frontend image registry choice (GHCR vs. dockerhub).
 
 ## Important Notes
 
-1. **Package manager** — Use `pnpm`, not `npm`. The presence of `package-lock.json` alongside `pnpm-lock.yaml` is incidental; CI uses pnpm.
-2. **Package name still `"website"`** — `package.json` `"name"` field was not updated when the directory was renamed from `website/` → `frontend/`.
-3. **No `frontend/Dockerfile`** — see Deploy section above.
-4. **Hardcoded backend URLs** — see Backend API Integration section above; migrate to runtime config before deploying against a non-prod backend.
-5. **README is project-specific** — `frontend/README.md` was replaced with a project-specific quickstart on `frontend-backend-int`; the original Nuxt starter README is gone.
+1. **Package manager** — Use `pnpm`, not `npm`. The presence of `package-lock.json` alongside `pnpm-lock.yaml` is incidental; CI uses pnpm. Note: `package.json` declares `"packageManager": "npm@..."` which is inconsistent with this and will trip up pnpm; cleanup pending.
+2. **No `frontend/Dockerfile`** — see Deploy section above.
+3. **README is project-specific** — `frontend/README.md` was replaced with a project-specific quickstart on `frontend-backend-int`; the original Nuxt starter README is gone.
 
 ## External Services
 
