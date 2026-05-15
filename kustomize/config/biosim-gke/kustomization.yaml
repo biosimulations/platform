@@ -10,3 +10,6 @@ configMapGenerator:
     envs:
       - worker.env
       - shared.env
+  - name: frontend-config
+    envs:
+      - frontend.env
