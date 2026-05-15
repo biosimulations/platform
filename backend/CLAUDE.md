@@ -178,15 +178,38 @@ get_temporal_client()       # Temporal workflow client
 
 ## Configuration
 
-Environment variables (see `config.py`):
-```
-STORAGE_BUCKET=files.biosimulations.dev
-TEMPORAL_SERVICE_URL=localhost:7233
-MONGODB_URI=mongodb://localhost:27017
-MONGODB_DATABASE=biosimulations
-SIMDATA_API_BASE_URL=https://simdata.api.biosimulations.org
-BIOSIMULATIONS_API_BASE_URL=https://api.biosimulations.org
-```
+Environment variables (see `config.py`). All have defaults; override as needed.
+
+### Storage
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `STORAGE_BACKEND` | `gcs` | Which `FileService` implementation to construct. One of `gcs`, `local`, `minio`. |
+| `STORAGE_BUCKET` | `files.biosimulations.dev` | Bucket name (used by `gcs` and `minio` backends). |
+| `STORAGE_ENDPOINT_URL` | `https://storage.googleapis.com` | S3-compatible endpoint URL (used by `minio`; e.g., `http://localhost:9000` for a local minio). |
+| `STORAGE_REGION` | `us-east4` | Region (used by `minio`). |
+| `STORAGE_ACCESS_KEY` | _empty_ | S3 access key (used by `minio`). |
+| `STORAGE_SECRET_KEY` | _empty_ | S3 secret key (used by `minio`). |
+| `STORAGE_GCS_CREDENTIALS_FILE` | _empty_ | Path to GCS service account JSON (used by `gcs`). |
+| `STORAGE_LOCAL_CACHE_DIR` | `./local_cache` | Base directory for the `local` backend and on-disk caches. |
+
+### External APIs
+
+These point at the public biosimulations.org services. Defaults are production; override only to target a staging instance or a mock for tests.
+
+| Variable | Default | Used by |
+|---|---|---|
+| `BIOSIMULATIONS_API_BASE_URL` | `https://api.biosimulations.org` | `BiosimServiceRest` — submit and poll simulation jobs |
+| `SIMDATA_API_BASE_URL` | `https://simdata.api.biosimulations.org` | `BiosimServiceRest` — fetch HDF5 outputs |
+| `BIOSIMULATORS_API_BASE_URL` | `https://api.biosimulators.org` | Simulator version metadata |
+
+### Infrastructure
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TEMPORAL_SERVICE_URL` | `localhost:7233` | Temporal workflow server |
+| `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGODB_DATABASE` | `biosimulations` | MongoDB database name |
 
 ## Testing
 
