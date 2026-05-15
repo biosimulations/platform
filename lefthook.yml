@@ -1,0 +1,36 @@
+# Lefthook config (https://lefthook.dev).
+# Install once per workstation:
+#   brew install lefthook            # macOS
+#   # or: go install github.com/evilmartians/lefthook@latest
+# Then activate the hooks in this clone:
+#   lefthook install
+#
+# Skip any hook with `git commit --no-verify` / `git push --no-verify`.
+# Branch protection on `main` runs the same checks in CI before merge, so a
+# local bypass can't ship.
+
+# Fast lint runs on every commit, scoped to staged files.
+pre-commit:
+  parallel: true
+  commands:
+    frontend-lint:
+      root: 'frontend/'
+      glob: '*.{js,jsx,ts,tsx,vue,mjs,cjs}'
+      run: npx eslint {staged_files}
+    backend-ruff:
+      root: 'backend/'
+      glob: '*.py'
+      run: poetry run ruff check {staged_files}
+
+# Slower full-project type checks run once per push, not on every commit.
+pre-push:
+  parallel: true
+  commands:
+    frontend-typecheck:
+      root: 'frontend/'
+      glob: '*.{ts,tsx,vue}'
+      run: npm run typecheck
+    backend-mypy:
+      root: 'backend/'
+      glob: '*.py'
+      run: poetry run mypy biosim_server
