@@ -1,0 +1,6 @@
+# Only `.output/` (the Nitro build artifact) needs to be in the image.
+# Everything else is source / dev state and would bloat the build context.
+
+*
+!.output
+!.output/**

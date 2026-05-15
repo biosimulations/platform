@@ -5,3 +5,4 @@ resources:
   - api.yaml
   - worker.yaml
   - mongodb.yaml
+  - frontend/
