@@ -20,31 +20,49 @@ def generate_fake_etag(file_path: Path) -> str:
 
 
 class FileServiceLocal(FileService):
-    # temporary base directory for the mock GCS file store
-    BASE_DIR_PARENT = get_local_cache_dir() / "local_data"
-    BASE_DIR_PARENT.mkdir(exist_ok=True)
-    BASE_DIR = BASE_DIR_PARENT / ("gcs_" + uuid.uuid4().hex)
+    """Filesystem-backed FileService.
 
-    gcs_files_written: list[Path] = []
+    Default constructor (no args) creates an ephemeral random subdir under
+    ``local_cache/local_data/`` and removes it on ``close()`` — appropriate for
+    tests and short-lived processes.
 
-    def init(self) -> None:
-        self.BASE_DIR.mkdir(parents=True, exist_ok=False)
+    Passing ``base_dir`` uses that exact directory and does NOT remove it on
+    close — appropriate for ``STORAGE_BACKEND=local`` in a real process where
+    the cache must persist across restarts.
+    """
+
+    def __init__(
+        self,
+        base_dir: Optional[Path] = None,
+        cleanup_on_close: Optional[bool] = None,
+    ) -> None:
+        if base_dir is None:
+            parent = get_local_cache_dir() / "local_data"
+            parent.mkdir(parents=True, exist_ok=True)
+            base_dir = parent / ("local_" + uuid.uuid4().hex)
+            if cleanup_on_close is None:
+                cleanup_on_close = True
+        elif cleanup_on_close is None:
+            cleanup_on_close = False
+        self.base_dir: Path = base_dir
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.cleanup_on_close: bool = cleanup_on_close
+        self.files_written: list[Path] = []
 
     @override
     async def close(self) -> None:
-        # remove all files in the mock gcs file store
-        shutil.rmtree(self.BASE_DIR)
+        if self.cleanup_on_close:
+            shutil.rmtree(self.base_dir, ignore_errors=True)
 
     @override
     async def download_file(self, gcs_path: str, file_path: Optional[Path]=None) -> tuple[str, str]:
         logger.info(f"Downloading {gcs_path} to {file_path}")
         if file_path is None:
             file_path = get_local_cache_dir() / ("temp_file_"+uuid.uuid4().hex)
-        # copy file from mock gcs to local file system
-        gcs_file_path = self.BASE_DIR / gcs_path
+        src = self.base_dir / gcs_path
         local_file_path = Path(file_path)
         local_file_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(gcs_file_path, mode='rb') as f:
+        async with aiofiles.open(src, mode='rb') as f:
             contents = await f.read()
             async with aiofiles.open(local_file_path, mode='wb') as f2:
                 await f2.write(contents)
@@ -53,46 +71,41 @@ class FileServiceLocal(FileService):
     @override
     async def upload_file(self, file_path: Path, gcs_path: str) -> str:
         logger.info(f"Uploading {file_path} to {gcs_path}")
-        # copy file from local file_path to mock gcs using aoifiles
         local_file_path = Path(file_path)
-        gcs_file_path = self.BASE_DIR / gcs_path
-        gcs_file_path.parent.mkdir(parents=True, exist_ok=True)
+        dest = self.base_dir / gcs_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(local_file_path, mode='rb') as f:
             contents = await f.read()
-            async with aiofiles.open(gcs_file_path, mode='wb') as f2:
+            async with aiofiles.open(dest, mode='wb') as f2:
                 await f2.write(contents)
-        self.gcs_files_written.append(gcs_file_path)
+        self.files_written.append(dest)
         return str(gcs_path)
 
     @override
     async def upload_bytes(self, file_contents: bytes, gcs_path: str) -> str:
         logger.info(f"Uploading bytes to {gcs_path}")
-        # write bytes to mock gcs
-        gcs_file_path = self.BASE_DIR / gcs_path
-        gcs_file_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(gcs_file_path, mode='wb') as f:
+        dest = self.base_dir / gcs_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(dest, mode='wb') as f:
             await f.write(file_contents)
-        self.gcs_files_written.append(gcs_file_path)
+        self.files_written.append(dest)
         return str(gcs_path)
 
     @override
     async def get_modified_date(self, gcs_path: str) -> datetime:
-        # get the modified date of the file in mock gcs
-        gcs_file_path = self.BASE_DIR / gcs_path
-        return datetime.fromtimestamp(gcs_file_path.stat().st_mtime)
+        target = self.base_dir / gcs_path
+        return datetime.fromtimestamp(target.stat().st_mtime)
 
     @override
     async def get_listing(self, gcs_path: str) -> List[ListingItem]:
-        # get the listing of the directory in mock gcs
-        gcs_dir_path = self.BASE_DIR / gcs_path
-        return [ListingItem(Key=str(file.relative_to(self.BASE_DIR)), Size=file.stat().st_size,
+        dir_path = self.base_dir / gcs_path
+        return [ListingItem(Key=str(file.relative_to(self.base_dir)), Size=file.stat().st_size,
                             LastModified=datetime.fromtimestamp(file.stat().st_mtime), ETag=generate_fake_etag(file))
-                for file in gcs_dir_path.rglob("*")]
+                for file in dir_path.rglob("*")]
 
     @override
     async def get_file_contents(self, gcs_path: str) -> bytes | None:
-        # get the file contents from mock gcs
-        gcs_file_path = self.BASE_DIR / gcs_path
-        if not gcs_file_path.exists():
+        target = self.base_dir / gcs_path
+        if not target.exists():
             return None
-        return gcs_file_path.read_bytes()
+        return target.read_bytes()
