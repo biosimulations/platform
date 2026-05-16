@@ -1,0 +1,166 @@
+name: smoke
+
+# Joint local-stack smoke test: boots Mongo + Temporal (via docker compose),
+# the backend api, and the built frontend, then verifies that all three pieces
+# talk to each other. No real biosimulations.org submission — that path takes
+# minutes and pulls in flaky external state. We just prove the wiring.
+#
+# Runs on every PR regardless of paths because the failure modes we care about
+# (CORS, runtime config, ports, compose drift) are cross-cutting.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_CACHE_DIR: ./local_cache
+      MONGODB_URI: mongodb://localhost:27017
+      TEMPORAL_SERVICE_URL: localhost:7233
+      BASE_URL: http://localhost:4200
+      API_URL: http://localhost:8000
+      BIOSIMULATIONS_API_URL: https://api.biosimulations.org
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bring up Mongo + Temporal
+        run: docker compose up -d mongo temporal
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 2.1.1
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: poetry install
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Wait for Temporal + Mongo
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec platform-mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1; then
+              echo "mongo ready"
+              break
+            fi
+            sleep 1
+          done
+          for i in $(seq 1 60); do
+            if (echo > /dev/tcp/localhost/7233) >/dev/null 2>&1; then
+              echo "temporal ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Start backend API
+        working-directory: backend
+        run: |
+          mkdir -p ../logs
+          nohup poetry run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000 \
+            > ../logs/backend.log 2>&1 &
+          echo $! > ../logs/backend.pid
+
+      - name: Start frontend (Nitro server)
+        working-directory: frontend
+        env:
+          PORT: '4200'
+          HOST: 0.0.0.0
+        run: |
+          mkdir -p ../logs
+          nohup node .output/server/index.mjs > ../logs/frontend.log 2>&1 &
+          echo $! > ../logs/frontend.pid
+
+      - name: Wait for backend on :8000
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/version >/dev/null; then
+              echo "backend ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "backend did not come up"; exit 1
+
+      - name: Wait for frontend on :4200
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:4200/ >/dev/null; then
+              echo "frontend ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "frontend did not come up"; exit 1
+
+      - name: Hit backend smoke endpoints
+        run: |
+          set -e
+          curl -fsS http://localhost:8000/version | tee /dev/stderr | grep -E '^"[0-9]+\.[0-9]+\.[0-9]+"$' >/dev/null
+          curl -fsS http://localhost:8000/openapi.json | jq -e '.paths."/simulations/run"' >/dev/null
+          curl -fsS http://localhost:8000/docs | grep -qi 'swagger'
+
+      - name: Verify CORS allows the frontend origin
+        run: |
+          set -e
+          headers=$(curl -fsS -o /dev/null -D - \
+            -X OPTIONS http://localhost:8000/compatibility/check \
+            -H 'Origin: http://localhost:4200' \
+            -H 'Access-Control-Request-Method: POST' \
+            -H 'Access-Control-Request-Headers: content-type')
+          echo "$headers"
+          echo "$headers" | grep -i '^access-control-allow-origin: http://localhost:4200' >/dev/null
+
+      - name: Hit frontend root (SSR)
+        run: |
+          set -e
+          body=$(curl -fsS http://localhost:4200/)
+          echo "$body" | head -c 2000
+          echo "$body" | grep -qi '<html'
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: |
+          echo "===== backend.log ====="
+          cat logs/backend.log || true
+          echo "===== frontend.log ====="
+          cat logs/frontend.log || true
+          echo "===== docker compose ps ====="
+          docker compose ps || true
+          echo "===== mongo logs ====="
+          docker logs platform-mongo --tail=200 || true
+          echo "===== temporal logs ====="
+          docker logs platform-temporal --tail=200 || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          [ -f logs/backend.pid ] && kill "$(cat logs/backend.pid)" || true
+          [ -f logs/frontend.pid ] && kill "$(cat logs/frontend.pid)" || true
+          docker compose down -v || true
