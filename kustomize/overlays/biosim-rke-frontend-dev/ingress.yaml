@@ -10,10 +10,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - biosim-dev.biosimulations.org
-      secretName: letsencrypt-biosim-dev-tls
+        - biosim-dev.cam.uchc.edu
+      secretName: letsencrypt-biosim-dev-cam-tls
   rules:
-    - host: biosim-dev.biosimulations.org
+    - host: biosim-dev.cam.uchc.edu
       http:
         paths:
           - path: /

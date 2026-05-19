@@ -209,3 +209,5 @@ config.env
 
 # slurm test artifacts
 *.sbatch
+
+backend/local_cache/
