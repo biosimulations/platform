@@ -11,11 +11,11 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - rke-cp-01.cam.uchc.edu
-        - api.rke-cp-01.cam.uchc.edu
-      secretName: letsencrypt-prod-api-tls
+        - biosim.cam.uchc.edu
+        - api.biosim.cam.uchc.edu
+      secretName: letsencrypt-biosim-cam-tls
   rules:
-    - host: rke-cp-01.cam.uchc.edu
+    - host: biosim.cam.uchc.edu
       http:
         paths:
           - path: /
@@ -25,7 +25,7 @@ spec:
                 name: frontend
                 port:
                   number: 80
-    - host: api.rke-cp-01.cam.uchc.edu
+    - host: api.biosim.cam.uchc.edu
       http:
         paths:
           - path: /

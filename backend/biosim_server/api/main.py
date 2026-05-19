@@ -37,6 +37,13 @@ dotenv.load_dotenv(DEV_ENV_PATH)  # NOTE: create an env config at this filepath 
 # -- constraints -- #
 APP_VERSION = __version__
 APP_TITLE = "biosim-server"
+# Built-in CORS origins. Two groups, both stable and not deploy-specific:
+#  - local-dev loopbacks (127.0.0.1 / localhost on common dev ports)
+#  - cross-org trusted services that call this API (biosimulators.*,
+#    run.biosimulations.*, etc.)
+# Deployment-specific frontend origins (e.g. https://biosim.biosimulations.org,
+# https://biosim-dev.biosimulations.org) belong in CORS_EXTRA_ORIGINS instead
+# of this list — keeps overlay/deploy URLs explicit and reviewable per-env.
 APP_ORIGINS = [
     'http://127.0.0.1:8000',
     'http://127.0.0.1:4200',
@@ -59,6 +66,12 @@ APP_ORIGINS = [
     'https://bio.libretexts.org',
     'https://biochecknet.biosimulations.org'
 ]
+
+# Deployment-specific origins from env (comma-separated). Empty by default;
+# overlay ConfigMaps supply this per cluster/host.
+_extra = os.environ.get('CORS_EXTRA_ORIGINS', '').strip()
+if _extra:
+    APP_ORIGINS = APP_ORIGINS + [o.strip() for o in _extra.split(',') if o.strip()]
 APP_SERVERS: list[dict[str, str]] = [
     # {
     #     "url": "https://biochecknet.biosimulations.org",

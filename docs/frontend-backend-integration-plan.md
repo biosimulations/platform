@@ -1,7 +1,15 @@
 # Plan: Local Dev Environment + Joint Deploy + Tests
 
-Status: **ready** — all open issues resolved 2026-05-15. Implementation proceeds as three separate PRs off `frontend-backend-int` (Pre-work + Phase 1, then Phase 2, then Phase 3).
-Branch: `frontend-backend-int`.
+Status: **implemented** — landed across four PRs merged 2026-05-15 → 2026-05-17.
+
+- **PR #39** (`frontend-backend-int`) — Pre-work: `FileServiceLocal` promotion, `FileServiceMinio`, `STORAGE_BACKEND` selector, runtime config for backend URLs, `platform-frontend` rename + version seed, `bump-frontend.sh`, npm migration.
+- **PR #40** (`phase1-local-dev`) — Phase 1 local stack (`compose.yaml`, `.env.example`, dev scripts).
+- **PR #41** (`phase2-joint-deploy`) — Phase 2 joint deploy: `frontend/Dockerfile`, `kustomize/base/frontend/` sub-package, subdomain-split overlays, `API_URL_INTERNAL` for SSR, parameterized `build_and_push.sh`, consolidated frontend CI, `biosim-rke-frontend-dev` overlay, lefthook, frontend lint/typecheck cleanup.
+- **PR #42** (`phase3-tests`) — Phase 3: integration tests against the local-mode backend, joint-stack smoke workflow, dropped path filters on `backend-ci` and `frontend-ci`.
+
+Kept in-repo as the architectural decision record. The body below describes the original plan; the implemented state is now the source of truth (see root `CLAUDE.md`, `backend/CLAUDE.md`, `frontend/CLAUDE.md`).
+
+Branch (historical): `frontend-backend-int`.
 
 ## Context
 

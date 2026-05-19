@@ -6,6 +6,12 @@ metadata:
     app: api
 spec:
   replicas: 3
+  strategy:
+    # api mounts a ReadWriteOnce PVC for /app/scratch (OMEX cache). With the
+    # default RollingUpdate, the new pod can't attach the volume until the
+    # old pod releases it, and the rollout deadlocks (Multi-Attach error).
+    # Recreate terminates the old pod first; the cache is rebuilt on start.
+    type: Recreate
   selector:
     matchLabels:
       app: api

@@ -213,6 +213,12 @@ These point at the public biosimulations.org services. Defaults are production; 
 | `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
 | `MONGODB_DATABASE` | `biosimulations` | MongoDB database name |
 
+### CORS
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CORS_EXTRA_ORIGINS` | _empty_ | Comma-separated list of additional CORS origins appended to the built-in allowlist in `api/main.py`. **Required** for every deployment so the deployed frontend host (e.g. `https://biosim.biosimulations.org`) is allowed. The built-in list only covers local-dev loopbacks and cross-org trusted services — deploy-specific URLs are not hardcoded by design. |
+
 ## Testing
 
 - **Framework:** pytest with pytest-asyncio
