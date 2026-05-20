@@ -24,7 +24,7 @@ if [[ ! -f .env && -f .env.example ]]; then
   cp .env.example .env
 fi
 
-docker compose "${PROFILE_ARGS[@]}" up -d
+docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d
 
 echo
 echo "Infra is up. Next:"
