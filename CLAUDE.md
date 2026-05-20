@@ -62,7 +62,7 @@ docker compose up -d            # mongo + temporal (add --profile minio for S3 t
 # then run backend and frontend natively (see backend/CLAUDE.md, frontend/CLAUDE.md)
 ```
 
-`compose.yaml` runs infra only; app code runs native (poetry/npm) for fast HMR. `.env.example` documents the env vars both services consume.
+`compose.yaml` runs infra only; app code runs native (poetry/npm) for fast HMR. Each service has its own `.env.example` (`backend/.env.example`, `frontend/.env.example`) — `dev-up.sh` seeds the per-service `.env` files on first run.
 
 ## CI
 

@@ -90,20 +90,16 @@ frontend/
 
 Defined in `nuxt.config.ts` → `runtimeConfig.public`. Read in components via `useRuntimeConfig().public`.
 
-| Variable                 | Side             | Purpose |
-|--------------------------|------------------|---------|
-| `BASE_URL`               | browser + server | Public origin the app is served from (used by `@nuxtjs/seo`) |
-| `API_URL`                | browser + server | Platform backend API base URL — points at the FastAPI service in `../backend/` |
-| `API_URL_INTERNAL`       | server only      | In-cluster URL Nitro uses for SSR-time fetches to the backend (e.g., `http://api:8000`). Skips the public ingress when the frontend is deployed alongside `api`. Falls back to `API_URL` if unset. Read via `useRuntimeConfig().apiUrl` from server-side code (`import.meta.server`); not exposed to the browser. |
-| `BIOSIMULATIONS_API_URL` | browser + server | Public biosimulations.org project DB API base URL (different service from the platform backend) — used by `pages/biosim-db.vue` |
+Use Nuxt's `NUXT_PUBLIC_<KEY>` (public) and `NUXT_<KEY>` (server-only) env-var naming — those are the names Nuxt looks for at process startup to override the build-time `runtimeConfig` values. Bare names (`API_URL`, etc.) are only picked up at *build time* and are too early for a runtime-configured container image.
 
-Set via env (or a `.env` file — `dotenv` is a dependency). Example:
-```
-BASE_URL=https://biosim.biosimulations.org
-API_URL=https://api.biosim.biosimulations.org
-API_URL_INTERNAL=http://api:8000           # in-cluster only; SSR shortcut
-BIOSIMULATIONS_API_URL=https://api.biosimulations.org
-```
+| Variable                          | Side             | Purpose |
+|-----------------------------------|------------------|---------|
+| `NUXT_PUBLIC_BASE_URL`            | browser + server | Public origin the app is served from (used by `@nuxtjs/seo`) |
+| `NUXT_PUBLIC_API_URL`             | browser + server | Platform backend API base URL — points at the FastAPI service in `../backend/` |
+| `NUXT_API_URL`                    | server only      | In-cluster URL Nitro uses for SSR-time fetches to the backend (e.g., `http://api:8000`). Skips the public ingress when the frontend is deployed alongside `api`. Read via `useRuntimeConfig().apiUrl` from server-side code (`import.meta.server`); not exposed to the browser. |
+| `NUXT_PUBLIC_BIOSIMULATIONS_API_URL` | browser + server | Public biosimulations.org project DB API base URL (different service from the platform backend) — used by `pages/biosim-db.vue` |
+
+Local dev: copy `frontend/.env.example` → `frontend/.env` (or let `scripts/dev-up.sh` seed it). Loaded by Nuxt's built-in dotenv at dev-server startup. Deployed: the corresponding ConfigMap (`kustomize/config/<overlay>/frontend.env`) supplies the same names.
 
 ## Backend API Integration
 

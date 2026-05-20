@@ -39,7 +39,7 @@ scripts/dev-down.sh               # stop containers, keep volumes
 scripts/dev-down.sh --wipe        # stop and delete volumes
 ```
 
-**Config:** `dev-up.sh` copies `.env.example` → `.env` on first run. By default the backend uses `STORAGE_BACKEND=local` (filesystem cache under `./local_cache`); enable minio with `scripts/dev-up.sh --minio` and switch `STORAGE_BACKEND=minio` in `.env`. The backend calls the real public biosimulations.org APIs by default — overrideable via `BIOSIMULATIONS_API_BASE_URL` and friends.
+**Config:** each service has its own `.env`. `dev-up.sh` seeds them on first run by copying `backend/.env.example` → `backend/.env` and `frontend/.env.example` → `frontend/.env`. Backend reads via `python-dotenv` (walks up from CWD); frontend reads via Nuxt's built-in dotenv at dev-server startup. By default the backend uses `STORAGE_BACKEND=local` (filesystem cache under `./local_cache`); enable minio with `scripts/dev-up.sh --minio` and switch `STORAGE_BACKEND=minio` in `backend/.env`. The backend calls the real public biosimulations.org APIs by default — overrideable via `BIOSIMULATIONS_API_BASE_URL` and friends. The frontend's `.env` uses Nuxt's `NUXT_PUBLIC_*` runtime-override names so local dev exercises the same code path as the deployed ConfigMaps.
 
 **Per-service docs:** [`backend/README.md`](./backend/README.md) + [`backend/CLAUDE.md`](./backend/CLAUDE.md); [`frontend/README.md`](./frontend/README.md) + [`frontend/CLAUDE.md`](./frontend/CLAUDE.md).
 

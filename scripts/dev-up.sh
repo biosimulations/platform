@@ -19,12 +19,21 @@ if [[ "${1:-}" == "--minio" ]]; then
   PROFILE_ARGS=(--profile minio)
 fi
 
-if [[ ! -f .env && -f .env.example ]]; then
-  echo "note: no .env found at repo root; copying .env.example -> .env"
-  cp .env.example .env
-fi
+# Per-service .env files (gitignored). Backend reads via python-dotenv;
+# frontend reads via Nuxt's built-in dotenv at dev-server startup.
+seed_env() {
+  local dir="$1"
+  if [[ ! -f "${dir}/.env" && -f "${dir}/.env.example" ]]; then
+    echo "note: no ${dir}/.env found; copying ${dir}/.env.example -> ${dir}/.env"
+    cp "${dir}/.env.example" "${dir}/.env"
+  fi
+}
+seed_env backend
+seed_env frontend
 
-docker compose "${PROFILE_ARGS[@]}" up -d
+# `${arr[@]+"${arr[@]}"}` form is safe on macOS's default bash 3.2 — plain
+# `"${arr[@]}"` of an empty array errors as "unbound variable" under `set -u`.
+docker compose ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} up -d
 
 echo
 echo "Infra is up. Next:"
