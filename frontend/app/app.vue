@@ -119,34 +119,39 @@ const navigation_items = ref<NavigationMenuItem[][]>([
         {
           label: 'Describe visualizations',
           icon: 'i-lucide-bar-chart-3',
-          to: 'utilities/describe-visualizations',
+          to: '/utilities/describe-visualizations',
           class: 'cursor-pointer'
         },
         {
           label: 'BioSimulations REST API',
           icon: 'i-lucide-server',
           to: 'https://api.biosimulations.org',
+          target: '_blank',
           class: 'cursor-pointer'
         },
         {
           label: 'BioSimulators REST API',
           icon: 'i-lucide-database',
           to: 'https://api.biosimulators.org',
+          target: '_blank',
           class: 'cursor-pointer'
         },
         {
           label: 'Verification REST API (new)',
           icon: 'i-lucide-shield-check',
           to: 'https://biochecknet.biosimulations.org/docs',
+          target: '_blank',
           class: 'cursor-pointer'
         }
       ]
     },
     {
-      label: 'Learn',
+      label: 'Learn'
       // icon: 'i-lucide-book-open',
-      to: '',
-      class: 'cursor-pointer'
+      // TODO: add `to: '/learn'` (or a children: [...] submenu) once the
+      // Learn page exists. Previously had `to: ''` + `class: cursor-pointer`,
+      // which made Vue Router warn on every render and lied about being
+      // clickable.
     }
   ],
   [
@@ -187,13 +192,12 @@ onMounted(() => {
       class="w-max-[1200px] mx-auto"
     >
       <template #title>
-        <NuxtLink to="/">
-          <img
-            class="w-auto h-8 shrink-0"
-            src="/images/full_logo_color.svg"
-            alt="BioSimulatiosn Logo - Bio and Simulations are bisected by a circular icon of two arrows interwoven like a DNA molecule"
-          >
-        </NuxtLink>
+        <!-- UHeader's #title slot already wraps in a link to '/'; nesting <a> caused SSR hydration mismatch. -->
+        <img
+          class="w-auto h-8 shrink-0"
+          src="/images/full_logo_color.svg"
+          alt="BioSimulations Logo - Bio and Simulations are bisected by a circular icon of two arrows interwoven like a DNA molecule"
+        >
       </template>
 
       <!--      <UNavigationMenu class="hidden md:flex" orientation="horizontal" :items="navigation_items"></UNavigationMenu> -->
