@@ -31,7 +31,7 @@ const navigation_items = ref<NavigationMenuItem[][]>([
     {
       label: 'BioSim DB',
       icon: 'i-lucide-database',
-      to: '/biosim-db'
+      to: '/biosim-db',
     },
     {
       label: 'Simulations',
@@ -43,21 +43,21 @@ const navigation_items = ref<NavigationMenuItem[][]>([
           // description: 'Pick a simulator and provide data to run a simulation.',
           icon: 'i-fluent-sparkle-20-filled',
           to: '/simulations/run',
-          class: 'cursor-pointer'
+          class: 'cursor-pointer',
         },
         {
           label: 'Browse Simulations',
           // description: 'Browse over 100,000 published simulations.',
           icon: 'i-lucide-search',
           to: '/simulations',
-          class: 'cursor-pointer'
+          class: 'cursor-pointer',
         },
         {
           label: 'Validate a simulation',
           icon: 'i-lucide-activity',
           to: '/utilities/validate-simulation',
-          class: 'cursor-pointer'
-        }
+          class: 'cursor-pointer',
+        },
       ]
     },
     {
@@ -67,25 +67,25 @@ const navigation_items = ref<NavigationMenuItem[][]>([
         {
           label: 'Get Started',
           icon: 'i-lucide-monitor-cog',
-          to: '/simulators/get-started'
+          to: '/simulators/get-started',
         },
         {
           label: 'Browse Simulators',
           icon: 'i-lucide-search',
-          to: '/simulators'
+          to: '/simulators',
         },
         {
           label: 'Suggest a simulator',
           icon: 'i-lucide-lightbulb',
           to: '/simulators/suggest',
-          class: 'cursor-pointer'
+          class: 'cursor-pointer',
         },
         {
           label: 'Validate a simulator',
           icon: 'i-lucide-cpu',
           to: '/simulators/validate',
-          class: 'cursor-pointer'
-        }
+          class: 'cursor-pointer',
+        },
       ]
     },
     {
@@ -96,63 +96,58 @@ const navigation_items = ref<NavigationMenuItem[][]>([
           label: 'New Simulation Experiment',
           icon: 'i-lucide-folder-plus',
           to: '/utilities/new-simulation-experiment',
-          class: 'cursor-pointer'
+          class: 'cursor-pointer',
         },
         {
           label: 'Validate a model',
           icon: 'i-lucide-file-check',
           to: '/utilities/validate-model',
-          class: 'cursor-pointer'
+          class: 'cursor-pointer',
         },
         {
           label: 'Validate metadata',
           icon: 'i-lucide-tags',
           to: '/utilities/validate-metadata',
-          class: 'cursor-pointer'
+          class: 'cursor-pointer',
         },
         {
           label: 'Validate a project',
           icon: 'i-lucide-folder-check',
           to: '/utilities/validate-project',
-          class: 'cursor-pointer'
+          class: 'cursor-pointer',
         },
         {
           label: 'Describe visualizations',
           icon: 'i-lucide-bar-chart-3',
-          to: '/utilities/describe-visualizations',
-          class: 'cursor-pointer'
+          to: 'utilities/describe-visualizations',
+          class: 'cursor-pointer',
         },
         {
           label: 'BioSimulations REST API',
           icon: 'i-lucide-server',
           to: 'https://api.biosimulations.org',
-          target: '_blank',
-          class: 'cursor-pointer'
+          class: 'cursor-pointer',
         },
         {
           label: 'BioSimulators REST API',
           icon: 'i-lucide-database',
           to: 'https://api.biosimulators.org',
-          target: '_blank',
-          class: 'cursor-pointer'
+          class: 'cursor-pointer',
         },
         {
           label: 'Verification REST API (new)',
           icon: 'i-lucide-shield-check',
           to: 'https://biochecknet.biosimulations.org/docs',
-          target: '_blank',
-          class: 'cursor-pointer'
-        }
+          class: 'cursor-pointer',
+        },
       ]
     },
     {
-      label: 'Learn'
+      label: 'Learn',
       // icon: 'i-lucide-book-open',
-      // TODO: add `to: '/learn'` (or a children: [...] submenu) once the
-      // Learn page exists. Previously had `to: ''` + `class: cursor-pointer`,
-      // which made Vue Router warn on every render and lied about being
-      // clickable.
-    }
+      to: '',
+      class: 'cursor-pointer',
+    },
   ],
   [
     {
@@ -175,47 +170,33 @@ const lenisOptions = {
 }
 
 onMounted(() => {
-  useLenis((_lenis) => {
+  useLenis((lenis) => {
     // called every scroll
-    // console.log(_lenis)
+    // console.log(lenis)
   })
 })
+
 </script>
 
 <template>
-  <VueLenis
-    root
-    :options="lenisOptions"
-  />
+  <VueLenis root :options="lenisOptions" />
   <UApp>
-    <UHeader
-      class="w-max-[1200px] mx-auto"
-    >
+
+    <UHeader class="w-max-[1200px] mx-auto" menu="drawer">
       <template #title>
-        <!-- UHeader's #title slot already wraps in a link to '/'; nesting <a> caused SSR hydration mismatch. -->
-        <img
-          class="w-auto h-8 shrink-0"
-          src="/images/full_logo_color.svg"
-          alt="BioSimulations Logo - Bio and Simulations are bisected by a circular icon of two arrows interwoven like a DNA molecule"
-        >
+        <NuxtLink to="/">
+          <img class="w-auto h-8 shrink-0" src="/images/full_logo_color.svg" alt="BioSimulations Logo - Bio and Simulations are bisected by a circular icon of two arrows interwoven like a DNA molecule">
+        </NuxtLink>
       </template>
 
-      <!--      <UNavigationMenu class="hidden md:flex" orientation="horizontal" :items="navigation_items"></UNavigationMenu> -->
+<!--      <UNavigationMenu class="hidden md:flex" orientation="horizontal" :items="navigation_items"></UNavigationMenu>-->
 
       <template #right>
-        <UNavigationMenu
-          class="hidden lg:flex"
-          orientation="horizontal"
-          :items="navigation_items"
-        />
+        <UNavigationMenu class="hidden lg:flex" orientation="horizontal" :items="navigation_items"></UNavigationMenu>
       </template>
 
       <template #body>
-        <UNavigationMenu
-          class="hidden md:flex"
-          orientation="horizontal"
-          :items="navigation_items"
-        />
+        <UNavigationMenu class="hidden md:flex" orientation="horizontal" :items="navigation_items"></UNavigationMenu>
       </template>
     </UHeader>
 

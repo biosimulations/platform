@@ -1,16 +1,22 @@
 <script setup lang="ts">
-import { h, resolveComponent, useTemplateRef } from 'vue'
+import { h, resolveComponent, ref, useTemplateRef } from 'vue'
 import { upperFirst } from 'scule'
 import type { TableColumn } from '@nuxt/ui'
-import type { Project } from '~/models/simulators'
-import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
+import { useClipboard } from '@vueuse/core'
+import type {Project, SimulationRun} from "~/models/simulators";
+import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
+import Loading from "~/components/Loading.vue";
 
 const UButton = resolveComponent('UButton')
+const UCheckbox = resolveComponent('UCheckbox')
+const UBadge = resolveComponent('UBadge')
 const UDropdownMenu = resolveComponent('UDropdownMenu')
 
+const toast = useToast()
+const { copy } = useClipboard()
 const runtimeConfig = useRuntimeConfig()
 
-const columns: TableColumn<Project>[] = [
+const columns: TableColumn[] = [
   {
     accessorKey: 'id',
     header: ({ column }) => {
@@ -25,7 +31,7 @@ const columns: TableColumn<Project>[] = [
         onClick: () => column.toggleSorting(column.getIsSorted() === 'asc')
       })
     },
-    cell: ({ row }) => `#${row.getValue('id')}`
+    cell: ({row}) => `#${row.getValue('id')}`
   },
   {
     accessorKey: 'simulationRun',
@@ -41,7 +47,7 @@ const columns: TableColumn<Project>[] = [
         onClick: () => column.toggleSorting(column.getIsSorted() === 'asc')
       })
     },
-    cell: ({ row }) => `#${row.getValue('name')}`
+    cell: ({row}) => `#${row.getValue('name')}`
   },
   {
     accessorKey: 'created',
@@ -82,7 +88,7 @@ const columns: TableColumn<Project>[] = [
         onClick: () => column.toggleSorting(column.getIsSorted() === 'asc')
       })
     },
-    cell: ({ row }) => {
+    cell: ({row}) => {
       return new Date(row.getValue('updated')).toLocaleString('en-US', {
         day: 'numeric',
         month: 'short',
@@ -92,8 +98,8 @@ const columns: TableColumn<Project>[] = [
         hour12: true
       })
     }
-  }
-  /* {
+  },
+  /*{
     id: 'actions',
     enableHiding: false,
     meta: {
@@ -183,8 +189,8 @@ const columns: TableColumn<Project>[] = [
         'aria-label': 'Actions dropdown'
       }))
     }
-  } */
-]
+  }*/
+  ]
 
 const table = useTemplateRef('table')
 
@@ -206,48 +212,37 @@ async function fetch_projects() {
 
     return
   } catch (error) {
-    error_encountered.value = error instanceof Error ? error.message : String(error)
+    error_encountered.value = error.message
     throw error
   }
 }
 </script>
 
 <template>
-  <section
-    class="w-full min-h-[calc(100vh-var(--ui-header-height))] p-6 max-w-(--ui-container) mx-auto flex flex-col gap-4"
-    :class="{ 'items-center justify-center': !fetched_data || error_encountered, 'items-start justify-start': fetched_data && !error_encountered }"
-  >
-    <AppLoading
-      v-if="!fetched_data && !error_encountered"
-      message="Fetching simulation projects..."
-    />
+  <section class="w-full min-h-[calc(100vh-var(--ui-header-height))] p-6 max-w-(--ui-container) mx-auto flex flex-col gap-4" :class="{'items-center justify-center': !fetched_data || error_encountered, 'items-start justify-start': fetched_data && !error_encountered}">
+    <Loading v-if="!fetched_data && !error_encountered" message="Fetching simulation projects..."/>
 
-    <div
-      v-if="fetched_data && !error_encountered"
-      class="w-full"
-    >
-      <h3 class="w-full text-xl font-bold">
-        Simulation Projects
-      </h3>
+    <div class="w-full" v-if="fetched_data && !error_encountered">
+      <h3 class="w-full text-xl font-bold">Simulation Projects</h3>
 
       <div class="w-full flex justify-end py-3.5 border-b border-accented">
         <UDropdownMenu
           :items="
-            table?.tableApi
-              ?.getAllColumns()
-              .filter((column) => column.getCanHide())
-              .map((column) => ({
-                label: upperFirst(column.id),
-                type: 'checkbox' as const,
-                checked: column.getIsVisible(),
-                onUpdateChecked(checked: boolean) {
-                  table?.tableApi?.getColumn(column.id)?.toggleVisibility(!!checked)
-                },
-                onSelect(e: Event) {
-                  e.preventDefault()
-                }
-              }))
-          "
+          table?.tableApi
+            ?.getAllColumns()
+            .filter((column) => column.getCanHide())
+            .map((column) => ({
+              label: upperFirst(column.id),
+              type: 'checkbox' as const,
+              checked: column.getIsVisible(),
+              onUpdateChecked(checked: boolean) {
+                table?.tableApi?.getColumn(column.id)?.toggleVisibility(!!checked)
+              },
+              onSelect(e: Event) {
+                e.preventDefault()
+              }
+            }))
+        "
           :content="{ align: 'end' }"
         >
           <UButton
@@ -259,49 +254,26 @@ async function fetch_projects() {
         </UDropdownMenu>
       </div>
       <UTable
-        ref="table"
         class="w-full"
+        ref="table"
         :data="fetched_data"
         :columns="columns"
-        sticky
-      />
+        sticky>
+      </UTable>
     </div>
 
-    <div
-      v-if="error_encountered"
-      class="w-full md:w-max md:max-w-[700px] lg:max-w-[900px] flex flex-col items-center justify-center gap-2"
-    >
-      <DotLottieVue
-        class="w-[150px] aspect-square"
-        autoplay
-        src="/animations/error.lottie"
-      />
-      <h1 class="text-2xl font-bold">
-        An error occurred while fetching simulation projects
-      </h1>
-      <pre class="bg-neutral-100 rounded p-2">{{ error_encountered }}</pre>
+    <div class="w-full md:w-max md:max-w-[700px] lg:max-w-[900px] flex flex-col items-center justify-center gap-2" v-if="error_encountered">
+      <DotLottieVue class="w-[150px] aspect-square" autoplay src="/animations/error.lottie" />
+      <h1 class="text-2xl font-bold">An error occurred while fetching simulation projects</h1>
+      <pre class="bg-neutral-100 rounded p-2">{{error_encountered}}</pre>
 
       <div class="w-full flex-1 flex items-center justify-center gap-3 mt-4">
-        <UButton
-          color="primary"
-          class="cursor-pointer"
-          to="/"
-          icon="i-lucide-home"
-          label="Go Home"
-        />
-        <UButton
-          color="neutral"
-          class="cursor-pointer"
-          variant="outline"
-          icon="i-lucide-rotate-ccw"
-          label="Retry"
-          @click="fetch_projects()"
-        />
+        <UButton color="primary" class="cursor-pointer" to="/" icon="i-lucide-home" label="Go Home"></UButton>
+        <UButton color="neutral" class="cursor-pointer" variant="outline" icon="i-lucide-rotate-ccw" label="Retry" @click="fetch_projects()"></UButton>
       </div>
     </div>
   </section>
 </template>
-
 <style>
 tr:hover {
   background-color: #fbfbfb !important;

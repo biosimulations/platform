@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { normalize_text } from '~/functions/functions'
-import type { BreadcrumbItem } from '#ui/components/Breadcrumb.vue'
+import {normalize_text} from "~/functions/functions";
+import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
+import Loading from "~/components/Loading.vue";
 
 const route = useRoute()
 const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
 const breadcrumbs = ref<BreadcrumbItem[]>([])
 
 onMounted(() => {
-  routes.forEach((route) => {
+  routes.forEach((route, index) => {
     const breadcrumb = {
       label: normalize_text(route),
       to: `/${route}`
@@ -20,10 +21,10 @@ onMounted(() => {
 
 <template>
   <section class="w-full min-h-[calc(100vh-var(--ui-header-height))] px-6 max-w-[1200px] mx-auto flex flex-col gap-4 items-center justify-center text-center md:text-left">
-    <UBreadcrumb :items="breadcrumbs" />
+    <UBreadcrumb :items="breadcrumbs"></UBreadcrumb>
 
-    <!-- <div v-if="processing_status == null" class="flex items-center gap-2">
+    <!--<div v-if="processing_status == null" class="flex items-center gap-2">
       <Loading />
-    </div> -->
+    </div>-->
   </section>
 </template>
