@@ -6,8 +6,21 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 from biosim_server.biosim_runs import BiosimulatorVersion
-from biosim_server.dependencies import get_temporal_client, get_biosim_service, get_omex_database_service
-from biosim_server.simulations.models import RunSimulationRequest, ConglomerateStatus, SimulationJobStatus
+from biosim_server.dependencies import (
+    get_temporal_client,
+    get_biosim_service,
+    get_omex_database_service,
+    get_simulation_run_database_service,
+)
+from biosim_server.simulations.models import (
+    RunSimulationRequest,
+    ConglomerateStatus,
+    SimulationJobStatus,
+    SimulationRunRecord,
+    ListSimulationRunsRequest,
+    ListSimulationRunsResponse,
+    SimulationRun,
+)
 from biosim_server.simulations.workflow import SimulationRunWorkflow, SimulationRunWorkflowInput
 
 logger = logging.getLogger(__name__)
@@ -75,6 +88,28 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
     )
     logger.info(f"Started SimulationRunWorkflow with id {workflow_id}")
 
+    # Persist a queryable run record per simulator job (status CREATED). The
+    # SimulationRunWorkflow updates these to SUCCEEDED/FAILED as the run finishes.
+    # Persistence failures must not block the run, so they are logged, not raised.
+    runs_db = get_simulation_run_database_service()
+    if runs_db is not None:
+        for job_id, sim in zip(job_ids, simulator_versions):
+            try:
+                await runs_db.insert_simulation_run(SimulationRunRecord(
+                    run_id=job_id,
+                    processing_id=workflow_id,
+                    name=request.name,
+                    simulator=sim.id,
+                    simulator_version=sim.version,
+                    simulator_digest=sim.image_digest,
+                    email=request.email_address,
+                    status="CREATED",
+                ))
+            except Exception as e:
+                logger.error(f"Failed to persist simulation run record {job_id}: {e}", exc_info=e)
+    else:
+        logger.warning("Simulation run database service not available; run not persisted for listing")
+
     # Return initial status with all jobs as "processing"
     jobs = [
         SimulationJobStatus(
@@ -86,6 +121,27 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
         for job_id, sim in zip(job_ids, simulator_versions)
     ]
     return ConglomerateStatus(processing_id=workflow_id, jobs=jobs)
+
+
+@router.post(
+    "/runs",
+    response_model=ListSimulationRunsResponse,
+    operation_id="list-simulation-runs",
+    summary="List simulation runs (owner-scoped, paginated, sortable, filterable)",
+)
+async def list_simulation_runs(request: ListSimulationRunsRequest) -> ListSimulationRunsResponse:
+    if request.type == "user" and not request.user:
+        raise HTTPException(status_code=400, detail="user (email) is required when type is 'user'")
+
+    runs_db = get_simulation_run_database_service()
+    if runs_db is None:
+        raise HTTPException(status_code=503, detail="Simulation run database service not available")
+
+    records, total = await runs_db.query_simulation_runs(request)
+    return ListSimulationRunsResponse(
+        runs=[SimulationRun.from_record(record) for record in records],
+        pagination=request.pagination.model_copy(update={"total": total}),
+    )
 
 
 @router.get(

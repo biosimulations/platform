@@ -27,6 +27,7 @@ from biosim_server.biosim_runs import (
     HDF5File,
 )
 from biosim_server.common.storage import FileServiceLocal
+from biosim_server.simulations import SimulationRunDatabaseServiceMongo
 from tests.fixtures.biosim_service_mock import BiosimServiceMock
 
 
@@ -63,6 +64,7 @@ async def test_simulations_run(
     omex_test_file: Path,
     omex_database_service_mongo: OmexDatabaseServiceMongo,
     database_service_mongo: DatabaseServiceMongo,
+    simulation_run_database_service_mongo: SimulationRunDatabaseServiceMongo,
     file_service_local: FileServiceLocal,
     biosim_service_mock: BiosimServiceMock,
     temporal_verify_worker: Worker,
@@ -126,3 +128,30 @@ async def test_simulations_run(
         assert job["biosimulations_run_id"] is not None
         assert job["biosimulations_run_id"].startswith("mock_")
         assert job["error"] is None
+
+        # The run should now be persisted and queryable via POST /simulations/runs,
+        # with the workflow having updated its status from CREATED to SUCCEEDED.
+        list_resp = await test_client.post(
+            "/simulations/runs",
+            json={"type": "all", "filters": [], "pagination": {"page": 1, "perPage": 20}},
+        )
+        assert list_resp.status_code == 200, list_resp.text
+        listing = list_resp.json()
+        assert listing["pagination"]["_total"] == 1
+        assert len(listing["runs"]) == 1
+        run = listing["runs"][0]
+        assert run["id"] == job["job_id"]
+        assert run["name"] == "integration-local test run"
+        assert run["simulator"] == "tellurium"
+        assert run["simulatorVersion"] == "2.2.10"
+        assert run["email"] == "test@example.com"
+        assert run["status"] == "SUCCEEDED"
+
+        # Owner-scoped query: a non-matching email returns nothing.
+        other = await test_client.post(
+            "/simulations/runs",
+            json={"type": "user", "user": "someone-else@example.com",
+                  "filters": [], "pagination": {"page": 1, "perPage": 20}},
+        )
+        assert other.status_code == 200, other.text
+        assert other.json()["pagination"]["_total"] == 0

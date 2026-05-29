@@ -1,3 +1,15 @@
+> **Status (2026-05-29): backend implemented.** `POST /simulations/runs` is live in
+> `backend/biosim_server/simulations/` — owner-scope (`type: all|user` + `user` email),
+> pagination, sorting, and filtering, returning `{ runs: SimulationRun[], pagination: { page, perPage, _total } }`.
+> Run records are persisted (collection `BiosimSimulationRuns`) on `POST /simulations/run`
+> and updated to `SUCCEEDED`/`FAILED` by `SimulationRunWorkflow`.
+>
+> **Deferred** (no source yet — returned as zero/empty): `cpus`, `memory`, `maxTime`,
+> `envVars`, `purpose`, `runtime`, `projectSize`, `resultsSize`. Real auth is not wired —
+> owner-scoping trusts the supplied email. **Frontend follow-up:** wire
+> `frontend/app/pages/simulations/index.vue` (currently mocked) to this endpoint;
+> read `runs` / `pagination._total` from the response.
+
 ## To-Do:
 
 ### Summary:

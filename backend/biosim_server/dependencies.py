@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from motor.motor_asyncio import AsyncIOMotorClient
 from temporalio.client import Client as TemporalClient
 
@@ -6,6 +8,11 @@ from biosim_server.biosim_runs.biosim_service import BiosimService, BiosimServic
 from biosim_server.biosim_runs.database import DatabaseService, DatabaseServiceMongo
 from biosim_server.common.storage import FileService, FileServiceGCS, FileServiceLocal, FileServiceMinio
 from biosim_server.config import get_local_cache_dir, get_settings
+
+if TYPE_CHECKING:
+    # Imported lazily at runtime (see init_standalone) to avoid an import cycle:
+    # simulations/__init__.py -> router -> dependencies.
+    from biosim_server.simulations.database import SimulationRunDatabaseService
 
 #------ file service (standalone or pytest) ------
 
@@ -42,6 +49,18 @@ def set_omex_database_service(omex_database_service: OmexDatabaseService | None)
 def get_omex_database_service() -> OmexDatabaseService | None:
     global global_omex_database_service
     return global_omex_database_service
+
+#------- simulation run database service (standalone or pytest) ------
+
+global_simulation_run_database_service: "SimulationRunDatabaseService | None" = None
+
+def set_simulation_run_database_service(service: "SimulationRunDatabaseService | None") -> None:
+    global global_simulation_run_database_service
+    global_simulation_run_database_service = service
+
+def get_simulation_run_database_service() -> "SimulationRunDatabaseService | None":
+    global global_simulation_run_database_service
+    return global_simulation_run_database_service
 
 #------- biosim service (standalone or pytest) ------
 
@@ -85,9 +104,13 @@ async def init_standalone() -> None:
     set_biosim_service(BiosimServiceRest())
     set_temporal_client(await TemporalClient.connect(settings.temporal_service_url))
 
+    # Local import avoids the simulations -> dependencies import cycle at module load.
+    from biosim_server.simulations.database import SimulationRunDatabaseServiceMongo
+
     motor_client = AsyncIOMotorClient(get_settings().mongodb_uri)
     set_database_service(DatabaseServiceMongo(db_client=motor_client))
     set_omex_database_service(OmexDatabaseServiceMongo(db_client=motor_client))
+    set_simulation_run_database_service(SimulationRunDatabaseServiceMongo(db_client=motor_client))
 
 async def shutdown_standalone() -> None:
     db_service = get_database_service()
@@ -106,3 +129,5 @@ async def shutdown_standalone() -> None:
     set_biosim_service(None)
     set_temporal_client(None)
     set_database_service(None)
+    # Shares the motor client closed via db_service above; just clear the handle.
+    set_simulation_run_database_service(None)
