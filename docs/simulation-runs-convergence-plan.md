@@ -134,6 +134,19 @@ child workflow; delete `simulations/activities.py`'s duplicate
 5. Drop the deleted activities from `worker_main.py` and `temporal_fixtures.py`;
    register the new biosim_runs submit/poll pair.
 
+**Implemented (2026-05-29) — simpler than steps 1–2 above.** Splitting the activity
+to surface `run_id` *early* turned out unnecessary and was skipped: a Temporal parent
+cannot **query** a running child (queries are client-side, not workflow-to-workflow),
+so "early run_id" would require a child→parent signal. Instead `SimulationRunWorkflow`
+composes `OmexSimWorkflow` children with the existing **monolithic activity unchanged**,
+and reads each child's `run_id`/status from its **output at completion**. This keeps the
+verification production path 100% untouched (lowest risk) and still retires the duplicate
+`submit_simulation_activity` / `poll_simulation_activity` — leaving the monolithic
+`submit_biosim_simulation_run_activity` as the single shared per-run implementation. The
+only behavior change: `biosimulations_run_id` appears in the live `/simulations/{id}`
+status query once a run **completes** rather than right after submit (untested, minor;
+recoverable later via a child→parent signal if a use case needs it).
+
 **API contract:** unchanged.
 
 **Ship/test gate:**
@@ -215,3 +228,38 @@ fields → the row renders as "still running." A unique index on the computation
 side makes the join target well-defined; any hard "referenced run must exist"
 guarantee is an application check (optionally inside a transaction), never a
 schema constraint.
+
+---
+
+## TODO: assess `biosim-client` impact (external API consumer)
+
+`biosim-client` (`../biosim-client`, https://github.com/biosimulations/biosim-client)
+is a Python client library for **this platform's** API — the original
+`biosim.biosimulations.org`, now served at `api.biosim.biosimulations.org`. It is an
+**external consumer** of the endpoints and response models this convergence work
+touches, so changes here can break it:
+
+- **PR1 (merged)** added fields to `BiosimSimulationRun`, which is embedded in the
+  `/verify/*` responses — additive, so likely backward-compatible, but unverified
+  against the client's deserialization.
+- **PR3 (planned)** normalizes `SimulationRunRecord` and may reshape `/simulations/runs`
+  response assembly — higher risk of a breaking change.
+- **PR2 (this)** kept the API contract unchanged — no client impact expected.
+
+**Plan:**
+1. **Inventory** which endpoints/models `biosim-client` consumes (clone/read
+   `../biosim-client`; grep its generated models / request code against our
+   `api/main.py` + `simulations`/`biosim_verify` response models).
+2. **Diff** that surface against the changes in PR1 (landed) and PR3 (planned);
+   flag any removed/renamed/retyped fields. Additive optional fields are usually
+   safe; field removals/renames and required-field changes are not.
+3. **Versioning/contract:** decide whether to pin a client version, add a contract
+   test (e.g. validate the client's models against our OpenAPI schema in CI), or
+   coordinate a client release alongside breaking API changes.
+4. **Consider monorepo absorption:** evaluate bringing `biosim-client` into this
+   repo (e.g. `clients/python/`) so API + client version and test together, with
+   the client's models generated from our OpenAPI schema. Weigh against its
+   independent release cadence and external (non-platform) consumers.
+
+Owner/when: TBD — do the inventory (step 1) before PR3 lands, since PR3 is the most
+likely to break the client.

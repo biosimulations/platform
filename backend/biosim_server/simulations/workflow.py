@@ -1,22 +1,22 @@
 import asyncio
 import logging
 from datetime import timedelta
+from typing import Any, Coroutine
 
 from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.workflow import ChildWorkflowHandle
 
 from biosim_server.biosim_omex import OmexFile
-from biosim_server.biosim_runs import BiosimulatorVersion, BiosimSimulationRunStatus
-from biosim_server.simulations.activities import (
-    SubmitSimulationInput,
-    SubmitSimulationOutput,
-    submit_simulation_activity,
-    PollSimulationInput,
-    poll_simulation_activity,
-    UpdateRunStatusInput,
-    update_run_status_activity,
+from biosim_server.biosim_runs import (
+    BiosimulatorVersion,
+    OmexSimWorkflow,
+    OmexSimWorkflowInput,
+    OmexSimWorkflowOutput,
+    OmexSimWorkflowStatus,
 )
+from biosim_server.simulations.activities import UpdateRunStatusInput, update_run_status_activity
 from biosim_server.simulations.models import SimulationJobStatus, ConglomerateStatus, job_status_to_display
 
 
@@ -56,90 +56,51 @@ class SimulationRunWorkflow:
         workflow.logger.setLevel(level=logging.INFO)
         workflow.logger.info("SimulationRunWorkflow started.")
 
-        # Phase 1: Submit all simulations in parallel, capture run IDs immediately
-        submit_tasks = []
+        # Run each simulator via a child OmexSimWorkflow — the same per-run unit the
+        # verification path uses. Each child submits to biosimulations.org, polls to
+        # completion, and persists a BiosimulatorWorkflowRun (shared result cache).
+        child_workflows: list[
+            Coroutine[Any, Any, ChildWorkflowHandle[OmexSimWorkflowInput, OmexSimWorkflowOutput]]] = []
         for sim in workflow_input.simulators:
-            submit_tasks.append(
-                workflow.execute_activity(
-                    submit_simulation_activity,
-                    args=[SubmitSimulationInput(
+            child_workflows.append(
+                workflow.start_child_workflow(
+                    OmexSimWorkflow.run,  # type: ignore
+                    args=[OmexSimWorkflowInput(
                         omex_file=workflow_input.omex_file,
                         simulator_version=sim,
                         cache_buster=workflow_input.cache_buster,
                     )],
-                    start_to_close_timeout=timedelta(minutes=5),
-                    retry_policy=RetryPolicy(maximum_attempts=1),
+                    result_type=OmexSimWorkflowOutput,
+                    task_queue="verification_tasks",
+                    execution_timeout=timedelta(minutes=30),
                 )
             )
 
-        submit_results: list[SubmitSimulationOutput | BaseException] = await asyncio.gather(
-            *submit_tasks, return_exceptions=True)
+        child_handles: list[ChildWorkflowHandle[OmexSimWorkflowInput, OmexSimWorkflowOutput]] = \
+            await asyncio.gather(*child_workflows)
 
-        # Update job statuses with run IDs from submit phase
-        for job_id, sim, result in zip(workflow_input.job_ids, workflow_input.simulators, submit_results):
-            if isinstance(result, BaseException):
-                self.job_statuses[job_id].status = "failure"
-                self.job_statuses[job_id].error = str(result)
-            elif result.biosimulations_run_id is not None:
-                self.job_statuses[job_id].biosimulations_run_id = result.biosimulations_run_id
+        # Await each child and map its outcome onto the per-job status. A child that
+        # raises (e.g. submit failed) must not abort the others, hence return_exceptions.
+        child_outputs = await asyncio.gather(*child_handles, return_exceptions=True)
 
-        workflow.logger.info("Submit phase complete, starting poll phase.")
-
-        # Phase 2: Poll for completion in parallel (only for successfully submitted jobs)
-        poll_tasks = []
-        poll_job_ids = []
-        for job_id, sim, result in zip(workflow_input.job_ids, workflow_input.simulators, submit_results):
-            if isinstance(result, BaseException):
+        for job_id, output in zip(workflow_input.job_ids, child_outputs):
+            job = self.job_statuses[job_id]
+            if isinstance(output, BaseException):
+                job.status = "failure"
+                job.error = str(output)
                 continue
-            if result.biosimulations_run_id is None:
-                self.job_statuses[job_id].status = "failure"
-                self.job_statuses[job_id].error = "No biosimulations run ID returned"
-                continue
+            run_record = output.biosimulator_workflow_run
+            if run_record is not None and run_record.biosim_run is not None:
+                job.biosimulations_run_id = run_record.biosim_run.id
+            if output.workflow_status == OmexSimWorkflowStatus.COMPLETED:
+                job.status = "success"
+            else:
+                job.status = "failure"
+                job.error = output.error_message or "Simulation did not complete successfully"
 
-            if result.cached:
-                # Already completed successfully from cache
-                self.job_statuses[job_id].status = "success"
-                continue
-
-            poll_job_ids.append(job_id)
-            poll_tasks.append(
-                workflow.execute_activity(
-                    poll_simulation_activity,
-                    args=[PollSimulationInput(
-                        workflow_id=workflow.info().workflow_id,
-                        omex_file=workflow_input.omex_file,
-                        simulator_version=sim,
-                        cache_buster=workflow_input.cache_buster,
-                        biosimulations_run_id=result.biosimulations_run_id,
-                    )],
-                    start_to_close_timeout=timedelta(minutes=20),
-                    heartbeat_timeout=timedelta(minutes=2),
-                    retry_policy=RetryPolicy(maximum_attempts=1),
-                )
-            )
-
-        if poll_tasks:
-            poll_results = await asyncio.gather(*poll_tasks, return_exceptions=True)
-            for job_id, poll_result in zip(poll_job_ids, poll_results):
-                if isinstance(poll_result, BaseException):
-                    self.job_statuses[job_id].status = "failure"
-                    self.job_statuses[job_id].error = str(poll_result)
-                elif (poll_result.biosim_run is not None
-                      and poll_result.biosim_run.status == BiosimSimulationRunStatus.SUCCEEDED):
-                    self.job_statuses[job_id].status = "success"
-                else:
-                    self.job_statuses[job_id].status = "failure"
-                    if poll_result.biosim_run is not None:
-                        status = poll_result.biosim_run.status
-                        msg = poll_result.biosim_run.error_message
-                        self.job_statuses[job_id].error = msg or f"Simulation ended with status: {status}"
-                    else:
-                        self.job_statuses[job_id].error = "Unknown error: no simulation run returned"
-
-        # Persist each job's terminal status to the queryable runs collection.
-        # Records were created (status CREATED) by the API at submission time;
-        # this maps run_id -> SimulationRunRecord.run_id. Failures here must not
-        # fail the run, so exceptions are swallowed.
+        # Persist each job's terminal status to the queryable runs collection. Records
+        # were created (status CREATED) by the API at submission time; this maps
+        # run_id -> SimulationRunRecord.run_id. Failures here must not fail the run.
         update_tasks = []
         for job_id, job in self.job_statuses.items():
             update_tasks.append(
