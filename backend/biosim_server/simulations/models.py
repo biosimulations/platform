@@ -16,6 +16,14 @@ class RunSimulationRequest(BaseModel):
     is_commercial: bool = False
     email_address: str
     newsletter_consent: bool = False
+    cache_buster: str | None = Field(
+        default=None,
+        description=(
+            "Optional salt for the (omex, simulator, cache_buster) result cache. "
+            "Omit (or null) to reuse cached results for identical submissions; pass "
+            "a unique value to force fresh biosimulations.org runs."
+        ),
+    )
 
 
 class SimulationJobStatus(BaseModel):
@@ -70,6 +78,7 @@ class SimulationRunRecord(BaseModel):
     simulator: str
     simulator_version: str
     simulator_digest: str = ""
+    cache_buster: str = "0"  # salt used for this run's result-cache key
     cpus: int = 0
     memory: int = 0
     max_time: int = 0

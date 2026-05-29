@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from biosim_server.api.main import app
 from biosim_server.biosim_omex.models import OmexFile
 from biosim_server.biosim_runs import BiosimulatorVersion
+from biosim_server.simulations.workflow import SimulationRunWorkflowInput
 
 
 MOCK_OMEX_FILE = OmexFile(
@@ -126,6 +127,66 @@ def test_run_simulations_multiple_simulators(
     assert data["jobs"][1]["simulator_id"] == "tellurium"
     # Each job has a unique ID
     assert data["jobs"][0]["job_id"] != data["jobs"][1]["job_id"]
+
+
+def _workflow_input_from(temporal_client: AsyncMock) -> SimulationRunWorkflowInput:
+    """Pull the SimulationRunWorkflowInput passed to start_workflow(args=[...])."""
+    workflow_input: SimulationRunWorkflowInput = temporal_client.start_workflow.call_args.kwargs["args"][0]
+    return workflow_input
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_cache_buster_passthrough(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+) -> None:
+    """An explicit cache_buster is forwarded to the workflow input."""
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    mock_get_temporal.return_value = temporal_client
+
+    request = _make_request()
+    request["cache_buster"] = "salt-123"
+    response = TestClient(app).post("/simulations/run", json=request)
+
+    assert response.status_code == 200
+    assert _workflow_input_from(temporal_client).cache_buster == "salt-123"
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_cache_buster_defaults_to_zero(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+) -> None:
+    """When cache_buster is omitted, the workflow input defaults to "0" (dedup)."""
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    mock_get_temporal.return_value = temporal_client
+
+    response = TestClient(app).post("/simulations/run", json=_make_request())
+
+    assert response.status_code == 200
+    assert _workflow_input_from(temporal_client).cache_buster == "0"
 
 
 @patch("biosim_server.simulations.router.get_omex_database_service")

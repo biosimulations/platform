@@ -68,11 +68,15 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
     job_ids = [uuid.uuid4().hex for _ in simulator_versions]
     workflow_id = f"sim-run-{uuid.uuid4()}"
 
+    # Default "0" reuses cached results across identical submissions; a caller-supplied
+    # salt forces fresh biosimulations.org runs (parity with /verify/omex's cache_buster).
+    cache_buster = request.cache_buster or "0"
+
     workflow_input = SimulationRunWorkflowInput(
         omex_file=omex_file,
         simulators=simulator_versions,
         job_ids=job_ids,
-        cache_buster="0",
+        cache_buster=cache_buster,
     )
 
     # Start Temporal workflow
@@ -102,6 +106,7 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
                     simulator=sim.id,
                     simulator_version=sim.version,
                     simulator_digest=sim.image_digest,
+                    cache_buster=cache_buster,
                     email=request.email_address,
                     status="CREATED",
                 ))
