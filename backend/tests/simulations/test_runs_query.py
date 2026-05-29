@@ -31,6 +31,7 @@ def _record(
     simulator: str = "copasi",
     email: str = "user@example.com",
     status: str = "CREATED",
+    cache_buster: str = "0",
     submitted: datetime | None = None,
 ) -> SimulationRunRecord:
     when = submitted or datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -41,6 +42,7 @@ def _record(
         simulator=simulator,
         simulator_version="1.0.0",
         simulator_digest="sha256:abc",
+        cache_buster=cache_buster,
         email=email,
         status=status,  # type: ignore[arg-type]
         submitted=when,
@@ -108,12 +110,16 @@ async def test_db_insert_and_query_all(
     simulation_run_database_service_mongo: SimulationRunDatabaseServiceMongo,
 ) -> None:
     svc = simulation_run_database_service_mongo
-    await svc.insert_simulation_run(_record("a"))
+    await svc.insert_simulation_run(_record("a", cache_buster="salt-123"))
     await svc.insert_simulation_run(_record("b"))
 
     records, total = await svc.query_simulation_runs(ListSimulationRunsRequest(type="all"))
     assert total == 2
     assert {r.run_id for r in records} == {"a", "b"}
+    # cache_buster round-trips through Mongo
+    by_id = {r.run_id: r for r in records}
+    assert by_id["a"].cache_buster == "salt-123"
+    assert by_id["b"].cache_buster == "0"
 
 
 @pytest.mark.asyncio
