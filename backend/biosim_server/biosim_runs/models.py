@@ -84,17 +84,21 @@ class BiosimSimulationRun(BaseModel):
     simulator_version: BiosimulatorVersion
     status: BiosimSimulationRunStatus
     error_message: str | None = None
-    # cpus: Optional[int] = None
-    # memory: Optional[int] = None         # (in GB)
-    # maxTime: Optional[int] = None        # (in minutes)
-    # envVars: Optional[list[str]] = None  # list of environment variables (e.g., ["OMP_NUM_THREADS=4"])
-    # purpose: Optional[str] = None        # what does this correspond to?
-    # submitted: Optional[str] = None      # datetime string (e.g. 2025-01-10T19:51:11.424Z)
-    # updated: Optional[str] = None        # datetime string (e.g. 2025-01-10T19:51:11.424Z)
-    # projectSize: Optional[int] = None    # (in bytes)
-    # resultsSize: Optional[int] = None    # (in bytes)
-    # runtime: Optional[int] = None        # (in milliseconds)
-    # email: Optional[str] = None
+    # Run metadata returned by biosimulations.org. Optional because older cached
+    # documents predate these fields and some values are only populated once a run
+    # completes. Field names are snake_case here; the API uses camelCase (parsed in
+    # BiosimServiceRest). See tests/fixtures/local_data/biosim_run_response.json.
+    cpus: Optional[int] = None             # number of CPUs
+    memory: Optional[int] = None           # (in GB)
+    max_time: Optional[int] = None         # (in minutes)
+    env_vars: Optional[list[str]] = None   # environment variables (e.g., ["OMP_NUM_THREADS=4"])
+    purpose: Optional[str] = None          # e.g. "academic", "other"
+    submitted: Optional[str] = None        # datetime string (e.g. 2025-01-10T19:51:11.934Z)
+    updated: Optional[str] = None          # datetime string (e.g. 2025-01-10T19:51:41.807Z)
+    project_size: Optional[int] = None     # (in bytes)
+    results_size: Optional[int] = None     # (in bytes)
+    runtime: Optional[int] = None          # (in milliseconds)
+    email: Optional[str] = None
 
     @field_validator('id')
     def validate_id(cls, v: str) -> str:

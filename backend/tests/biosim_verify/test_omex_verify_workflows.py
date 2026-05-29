@@ -72,6 +72,13 @@ def assert_omex_verify_results(observed_results: VerifyWorkflowOutput,
             expected_hdf5_file.id = result_hdf5_file.id
             expected_biosim_sim_run.id = result_biosim_sim_run.id
             expected_biosim_sim_run.simulator_version = result_biosim_sim_run.simulator_version
+            # run metadata (cpus/runtime/sizes/timestamps/...) is incidental to
+            # verification and varies between runs, so sync it like id/simulator_version
+            for _meta_field in ("cpus", "memory", "max_time", "env_vars", "purpose",
+                                "submitted", "updated", "project_size", "results_size",
+                                "runtime", "email"):
+                setattr(expected_biosim_sim_run, _meta_field,
+                        getattr(result_biosim_sim_run, _meta_field))
 
     # compare the comparison statistics separately, seems not to be 100% deterministic
     assert expected_results.workflow_results is not None
