@@ -14,8 +14,10 @@ from biosim_server.simulations.activities import (
     submit_simulation_activity,
     PollSimulationInput,
     poll_simulation_activity,
+    UpdateRunStatusInput,
+    update_run_status_activity,
 )
-from biosim_server.simulations.models import SimulationJobStatus, ConglomerateStatus
+from biosim_server.simulations.models import SimulationJobStatus, ConglomerateStatus, job_status_to_display
 
 
 class SimulationRunWorkflowInput(BaseModel):
@@ -133,5 +135,26 @@ class SimulationRunWorkflow:
                         self.job_statuses[job_id].error = msg or f"Simulation ended with status: {status}"
                     else:
                         self.job_statuses[job_id].error = "Unknown error: no simulation run returned"
+
+        # Persist each job's terminal status to the queryable runs collection.
+        # Records were created (status CREATED) by the API at submission time;
+        # this maps run_id -> SimulationRunRecord.run_id. Failures here must not
+        # fail the run, so exceptions are swallowed.
+        update_tasks = []
+        for job_id, job in self.job_statuses.items():
+            update_tasks.append(
+                workflow.execute_activity(
+                    update_run_status_activity,
+                    args=[UpdateRunStatusInput(
+                        run_id=job_id,
+                        status=job_status_to_display(job.status),
+                        biosimulations_run_id=job.biosimulations_run_id,
+                    )],
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=3),
+                )
+            )
+        if update_tasks:
+            await asyncio.gather(*update_tasks, return_exceptions=True)
 
         return self.get_status()

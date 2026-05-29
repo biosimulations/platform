@@ -7,8 +7,9 @@ from testcontainers.mongodb import MongoDbContainer  # type: ignore
 
 from biosim_server.biosim_runs import DatabaseServiceMongo
 from biosim_server.dependencies import set_database_service, get_database_service, set_omex_database_service, \
-    get_omex_database_service
+    get_omex_database_service, set_simulation_run_database_service, get_simulation_run_database_service
 from biosim_server.biosim_omex import OmexDatabaseServiceMongo
+from biosim_server.simulations import SimulationRunDatabaseServiceMongo
 
 MONGODB_DATABASE_NAME = "mydatabase"
 MONGODB_COLLECTION_NAME = "mycollection"
@@ -43,6 +44,10 @@ async def database_service_mongo(mongo_test_client: AsyncIOMotorClient) -> Async
 
     yield db_service
 
+    # Clean up so cached BiosimulatorWorkflowRun records don't leak across tests
+    # (the container is session-scoped). Without this, a real-network test that
+    # inserts a SUCCEEDED run gives later tests a spurious cache hit.
+    await db_service.delete_all_biosimulator_workflow_runs()
     set_database_service(old_db_service)
     # await db_service.close()  the underlying client will already be closed
 
@@ -56,4 +61,18 @@ async def omex_database_service_mongo(mongo_test_client: AsyncIOMotorClient) -> 
 
     await omex_db_service.delete_all_omex_files()
     set_omex_database_service(old_omex_db_service)
+    # await db_service.close()  the underlying client will already be closed
+
+@pytest_asyncio.fixture(scope="function")
+async def simulation_run_database_service_mongo(
+    mongo_test_client: AsyncIOMotorClient,
+) -> AsyncGenerator[SimulationRunDatabaseServiceMongo, None]:
+    runs_db_service = SimulationRunDatabaseServiceMongo(db_client=mongo_test_client)
+    old_runs_db_service = get_simulation_run_database_service()
+    set_simulation_run_database_service(runs_db_service)
+
+    yield runs_db_service
+
+    await runs_db_service.delete_all_simulation_runs()
+    set_simulation_run_database_service(old_runs_db_service)
     # await db_service.close()  the underlying client will already be closed

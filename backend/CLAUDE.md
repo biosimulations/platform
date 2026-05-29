@@ -139,6 +139,7 @@ backend/
 |----------|--------|---------|
 | `/compatibility/check` | POST | Check OMEX archive compatibility with simulators |
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
+| `/simulations/runs` | POST | List simulation runs (owner-scoped, paginated, sortable, filterable) |
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
 | `/verify/omex` | POST | Verify OMEX file across simulators |
 | `/verify/{workflow_id}` | GET | Get verification results |
@@ -151,6 +152,7 @@ backend/
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
 - **BiosimCompare** - Comparison results
+- **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns
 

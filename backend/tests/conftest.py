@@ -12,7 +12,8 @@ from tests.fixtures.database_fixtures import (  # noqa: F401
     mongo_test_database,
     mongo_test_collection,
     database_service_mongo,
-    omex_database_service_mongo
+    omex_database_service_mongo,
+    simulation_run_database_service_mongo
 )
 from tests.fixtures.gcs_fixtures import (  # noqa: F401
     file_service_gcs,
