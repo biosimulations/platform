@@ -225,8 +225,7 @@ async function fetch_runs() {
   const valid_filters = valid_filter_keys.map(filter_key => table_filters.value.filters[filter_key])
 
   try {
-    /*
-    fetched_data.value = await $fetch(`${runtimeConfig.public.api_url}/search`, {
+    fetched_data.value = await $fetch(`${runtimeConfig.public.api_url}/simulations/runs`, {
       method: 'POST',
       data: {
         type: fetch_user.value ? 'user' : 'all',
@@ -237,9 +236,9 @@ async function fetch_runs() {
       }
     })
 
-    console.log(fetched_data.value)*/
+    console.log(fetched_data.value)
 
-    setTimeout(() => {
+    /*setTimeout(() => {
       fetched_data.value = [
         {
           "id": "sim-72f4e48c-9419-4e6a-b4c5-2a80973e77c1",
@@ -359,7 +358,7 @@ async function fetch_runs() {
       ]
       loading.value = false
       return
-    }, 500)
+    }, 500)*/
   } catch (error: any) {
     error_encountered.value = error.message
     throw error
