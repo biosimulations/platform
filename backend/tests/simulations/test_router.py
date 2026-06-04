@@ -189,6 +189,98 @@ def test_run_simulations_cache_buster_defaults_to_zero(
     assert _workflow_input_from(temporal_client).cache_buster == "0"
 
 
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_inserts_before_starting_workflow(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """All SimulationRunRecord inserts must complete BEFORE the workflow starts -- the
+    child OmexSimWorkflow's early update_run_status_activity (Mongo update_one with no
+    upsert) would otherwise silently no-op against missing rows on cache hits."""
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    mock_get_runs_db.return_value = runs_db
+
+    order: list[str] = []
+
+    async def _record_insert(record: object) -> object:
+        order.append("insert")
+        return record
+
+    async def _record_start(*args: object, **kwargs: object) -> AsyncMock:
+        order.append("start")
+        return AsyncMock()
+
+    runs_db.insert_simulation_run.side_effect = _record_insert
+    temporal_client.start_workflow.side_effect = _record_start
+
+    request = _make_request(simulators=[
+        {"id": "copasi", "version": "4.34.251"},
+        {"id": "tellurium", "version": "2.2.10"},
+    ])
+    response = TestClient(app).post("/simulations/run", json=request)
+
+    assert response.status_code == 200
+    # Every insert must precede the workflow start.
+    assert order == ["insert", "insert", "start"], f"unexpected ordering: {order}"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_marks_records_failed_when_start_workflow_raises(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """If start_workflow raises after inserts succeed, the rows must be marked FAILED
+    so they don't linger as CREATED forever -- no workflow will ever move them out."""
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    temporal_client.start_workflow.side_effect = RuntimeError("Temporal unavailable")
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    mock_get_runs_db.return_value = runs_db
+
+    request = _make_request(simulators=[
+        {"id": "copasi", "version": "4.34.251"},
+        {"id": "tellurium", "version": "2.2.10"},
+    ])
+    response = TestClient(app).post("/simulations/run", json=request)
+
+    assert response.status_code == 503
+    # Both rows were inserted CREATED and then rolled back to FAILED.
+    assert runs_db.insert_simulation_run.call_count == 2
+    assert runs_db.update_simulation_run.call_count == 2
+    for call in runs_db.update_simulation_run.call_args_list:
+        assert call.kwargs.get("status") == "FAILED"
+
+
 @patch("biosim_server.simulations.router.get_omex_database_service")
 def test_run_simulations_omex_not_found(mock_get_omex_db: MagicMock) -> None:
     """Test 404 when OMEX file not found."""

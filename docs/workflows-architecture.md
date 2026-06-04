@@ -195,7 +195,7 @@ What changed and what didn't:
   poll, so the workflow learns the run_id only at the end). The listing isn't
   affected — it gets the id at completion either way.
 
-### Shape C — proposed PR2.5 (activity split + early DB write)
+### Shape C — PR2.5 (activity split + early DB write) — **implemented**
 
 The observation that motivates PR2.5: **activities are the canonical place to
 write to a database in Temporal.** Once you split the monolithic activity, the
@@ -397,6 +397,53 @@ The frontend's filterable/sortable columns are all submission-owned, so the
 listing UX needs no DB-side joins — a clean two-query app-side join is enough.
 
 ---
+
+## Deploy considerations
+
+PR2.5 restructures the per-run activity sequence inside `OmexSimWorkflow`: one
+monolithic `submit_biosim_simulation_run_activity` became two activities
+(`submit_biosim_run_activity` + `poll_biosim_run_activity`), with an optional
+third (`update_run_status_activity`) in between when the run path passes a
+`submission_run_id`. The number and names of `ScheduleActivityTask` commands
+the workflow issues at each step have changed.
+
+Temporal replays workflow code against recorded history when a worker restarts
+or shifts a workflow to a new sticky-task-queue host. If a worker running the
+**new** code replays a workflow whose history was recorded under the **old**
+monolithic activity, the command sequence at index 0 won't match
+(`submit_biosim_simulation_run_activity` in history vs `submit_biosim_run_activity`
+in the new code) and the worker raises
+`NonDeterministicWorkflowError`. The mismatch isn't repairable by an
+`@activity.defn(name=…)` alias alone — the *number* of scheduled activities
+also differs.
+
+**Required deploy procedure for PR2.5 and later "Shape C" releases:**
+
+1. **Drain in-flight workflows before rolling out workers with the new code.**
+   Wait for active `OmexSimWorkflow` / `OmexVerifyWorkflow` / `SimulationRunWorkflow`
+   instances to complete, or terminate them with `tctl workflow terminate`. The
+   biosim platform's typical workflow takes 5–20 minutes; a brief drain window
+   suffices.
+2. Deploy the new `platform-worker` image once the namespace is quiet.
+3. The `platform-api` image is safe to deploy at any time — its only Temporal
+   contract is `start_workflow` / `query_workflow`, both of which remain shape-
+   compatible.
+
+**The longer-term safe-rollout pattern** (deferred — adds significant
+maintenance cost for a one-time transition) is to wrap each restructure in
+`workflow.patched("…")`, keep the old code path live until all pre-deploy
+histories are drained, then remove the patch. Worth doing if future workflow
+restructures are anticipated; not worth doing for PR2.5 alone.
+
+**Replay safety nets that the PR2.5 code already provides:**
+- `SimulationRunWorkflow.run` reads `output.biosimulations_run_id` *and* falls
+  back to `output.biosimulator_workflow_run.biosim_run.id` for child outputs
+  serialized before the PR2.5 field was added — so an in-flight parent whose
+  children completed under the old code still records the external run id on
+  replay.
+- `update_run_status_activity` is a no-op when its DB service is None and is
+  idempotent on replay (`update_one` matches by `run_id` and `None` fields are
+  skipped), so re-execution from history doesn't corrupt the submission ledger.
 
 ## Open items
 

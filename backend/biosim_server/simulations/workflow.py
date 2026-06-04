@@ -61,7 +61,7 @@ class SimulationRunWorkflow:
         # completion, and persists a BiosimulatorWorkflowRun (shared result cache).
         child_workflows: list[
             Coroutine[Any, Any, ChildWorkflowHandle[OmexSimWorkflowInput, OmexSimWorkflowOutput]]] = []
-        for sim in workflow_input.simulators:
+        for job_id, sim in zip(workflow_input.job_ids, workflow_input.simulators):
             child_workflows.append(
                 workflow.start_child_workflow(
                     OmexSimWorkflow.run,  # type: ignore
@@ -69,6 +69,10 @@ class SimulationRunWorkflow:
                         omex_file=workflow_input.omex_file,
                         simulator_version=sim,
                         cache_buster=workflow_input.cache_buster,
+                        # Passing job_id makes the child fire update_run_status_activity
+                        # right after submit, recording biosimulations_run_id on the
+                        # SimulationRunRecord early (before the poll phase completes).
+                        submission_run_id=job_id,
                     )],
                     result_type=OmexSimWorkflowOutput,
                     task_queue="verification_tasks",
@@ -89,9 +93,17 @@ class SimulationRunWorkflow:
                 job.status = "failure"
                 job.error = str(output)
                 continue
-            run_record = output.biosimulator_workflow_run
-            if run_record is not None and run_record.biosim_run is not None:
-                job.biosimulations_run_id = run_record.biosim_run.id
+            # OmexSimWorkflowOutput.biosimulations_run_id is populated after submit
+            # (PR2.5), so it's available even when the child ends in FAILED state.
+            # Fall back to the nested biosim_run.id for pre-PR2.5 child payloads
+            # that may be replayed during a deploy window (the new top-level field
+            # is missing -> defaults to None -> we still pick up the id from the
+            # historical BiosimulatorWorkflowRun).
+            if output.biosimulations_run_id is not None:
+                job.biosimulations_run_id = output.biosimulations_run_id
+            elif (output.biosimulator_workflow_run is not None
+                  and output.biosimulator_workflow_run.biosim_run is not None):
+                job.biosimulations_run_id = output.biosimulator_workflow_run.biosim_run.id
             if output.workflow_status == OmexSimWorkflowStatus.COMPLETED:
                 job.status = "success"
             else:

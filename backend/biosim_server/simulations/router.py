@@ -79,22 +79,15 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
         cache_buster=cache_buster,
     )
 
-    # Start Temporal workflow
     temporal_client = get_temporal_client()
     if temporal_client is None:
         raise HTTPException(status_code=503, detail="Temporal service not available")
 
-    await temporal_client.start_workflow(
-        SimulationRunWorkflow.run,
-        args=[workflow_input],
-        task_queue="verification_tasks",
-        id=workflow_id,
-    )
-    logger.info(f"Started SimulationRunWorkflow with id {workflow_id}")
-
-    # Persist a queryable run record per simulator job (status CREATED). The
-    # SimulationRunWorkflow updates these to SUCCEEDED/FAILED as the run finishes.
-    # Persistence failures must not block the run, so they are logged, not raised.
+    # Persist a queryable run record per simulator job (status CREATED) BEFORE starting
+    # the workflow. A child OmexSimWorkflow that cache-hits and dispatches its early
+    # update_run_status_activity in ~milliseconds would otherwise race the API's inserts
+    # -- update_one with no upsert silently no-ops against a missing row, dropping the
+    # biosimulations_run_id on the floor. Insert failures are still non-fatal.
     runs_db = get_simulation_run_database_service()
     if runs_db is not None:
         for job_id, sim in zip(job_ids, simulator_versions):
@@ -114,6 +107,26 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
                 logger.error(f"Failed to persist simulation run record {job_id}: {e}", exc_info=e)
     else:
         logger.warning("Simulation run database service not available; run not persisted for listing")
+
+    # Start Temporal workflow. If this raises, mark the just-inserted rows FAILED so
+    # they don't linger as CREATED forever (no workflow will ever move them out).
+    try:
+        await temporal_client.start_workflow(
+            SimulationRunWorkflow.run,
+            args=[workflow_input],
+            task_queue="verification_tasks",
+            id=workflow_id,
+        )
+    except Exception as e:
+        logger.error(f"Failed to start SimulationRunWorkflow {workflow_id}: {e}", exc_info=e)
+        if runs_db is not None:
+            for job_id in job_ids:
+                try:
+                    await runs_db.update_simulation_run(job_id, status="FAILED")
+                except Exception as cleanup_e:
+                    logger.warning(f"Cleanup of run record {job_id} after start_workflow failure failed: {cleanup_e}")
+        raise HTTPException(status_code=503, detail=f"Failed to start simulation workflow: {e}")
+    logger.info(f"Started SimulationRunWorkflow with id {workflow_id}")
 
     # Return initial status with all jobs as "processing"
     jobs = [
@@ -171,8 +184,23 @@ async def get_simulation_status(processing_id: str) -> ConglomerateStatus:
             result_type=ConglomerateStatus,
             rpc_timeout=timedelta(seconds=60),
         )
-        return status
     except Exception as e:
         msg = f"Error retrieving simulation status for id: {processing_id}: {e}"
         logger.error(msg, exc_info=e)
         raise HTTPException(status_code=404, detail=msg)
+
+    # Hybrid read: the parent workflow's job_statuses only get biosimulations_run_id
+    # when each child completes. The child OmexSimWorkflow writes it to the
+    # SimulationRunRecord right after submit, so fill in any missing ids from the DB.
+    # Failures here are non-fatal -- we just return the workflow-only view.
+    runs_db = get_simulation_run_database_service()
+    if runs_db is not None:
+        try:
+            records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
+            id_by_run = {r.run_id: r.biosimulations_run_id for r in records}
+            for job in status.jobs:
+                if job.biosimulations_run_id is None:
+                    job.biosimulations_run_id = id_by_run.get(job.job_id)
+        except Exception as e:
+            logger.warning(f"Failed to enrich status from SimulationRunRecord: {e}")
+    return status
