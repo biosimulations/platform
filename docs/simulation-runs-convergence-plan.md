@@ -147,6 +147,15 @@ only behavior change: `biosimulations_run_id` appears in the live `/simulations/
 status query once a run **completes** rather than right after submit (untested, minor;
 recoverable later via a child→parent signal if a use case needs it).
 
+**Follow-up "PR2.5" (implemented in a separate PR).** The monolithic activity was
+eventually split — not for a signal, but to give `OmexSimWorkflow` a moment between
+submit and poll where it can fire an `update_run_status_activity` to record the run id
+on `SimulationRunRecord` directly. `OmexSimWorkflowInput` gained optional
+`submission_run_id`; when set (only the run path sets it), the child writes
+`biosimulations_run_id` early. `GET /simulations/{processing_id}` now does a hybrid
+read (workflow query for live status, DB for the early run id). See `workflows-architecture.md`
+"Shape C" for the diagram.
+
 **API contract:** unchanged.
 
 **Ship/test gate:**

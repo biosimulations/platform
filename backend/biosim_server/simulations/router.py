@@ -171,8 +171,24 @@ async def get_simulation_status(processing_id: str) -> ConglomerateStatus:
             result_type=ConglomerateStatus,
             rpc_timeout=timedelta(seconds=60),
         )
-        return status
     except Exception as e:
         msg = f"Error retrieving simulation status for id: {processing_id}: {e}"
         logger.error(msg, exc_info=e)
         raise HTTPException(status_code=404, detail=msg)
+
+    # Hybrid read: the parent workflow's job_statuses only get biosimulations_run_id
+    # when each child completes. The child OmexSimWorkflow writes it to the
+    # SimulationRunRecord right after submit, so fill in any missing ids from the DB.
+    # Failures here are non-fatal -- we just return the workflow-only view.
+    runs_db = get_simulation_run_database_service()
+    if runs_db is not None:
+        try:
+            records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
+            id_by_run = {r.run_id: r.biosimulations_run_id for r in records
+                         if r.biosimulations_run_id is not None}
+            for job in status.jobs:
+                if job.biosimulations_run_id is None and job.job_id in id_by_run:
+                    job.biosimulations_run_id = id_by_run[job.job_id]
+        except Exception as e:
+            logger.warning(f"Failed to enrich status from SimulationRunRecord: {e}")
+    return status

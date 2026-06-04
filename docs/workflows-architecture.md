@@ -195,7 +195,7 @@ What changed and what didn't:
   poll, so the workflow learns the run_id only at the end). The listing isn't
   affected — it gets the id at completion either way.
 
-### Shape C — proposed PR2.5 (activity split + early DB write)
+### Shape C — PR2.5 (activity split + early DB write) — **implemented**
 
 The observation that motivates PR2.5: **activities are the canonical place to
 write to a database in Temporal.** Once you split the monolithic activity, the

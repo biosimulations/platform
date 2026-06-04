@@ -149,6 +149,11 @@ class SimulationRunDatabaseService(ABC):
         pass
 
     @abstractmethod
+    async def get_simulation_runs_by_processing_id(self, processing_id: str) -> list[SimulationRunRecord]:
+        """Return all SimulationRunRecords for a parent processing_id (workflow id)."""
+        pass
+
+    @abstractmethod
     async def delete_all_simulation_runs(self) -> None:
         pass
 
@@ -222,6 +227,17 @@ class SimulationRunDatabaseServiceMongo(SimulationRunDatabaseService):
             del doc_dict["_id"]
             records.append(SimulationRunRecord.model_validate(doc_dict))
         return records, total
+
+    @override
+    async def get_simulation_runs_by_processing_id(self, processing_id: str) -> list[SimulationRunRecord]:
+        documents = await self._runs_col.find({"processing_id": processing_id}).to_list(length=100)
+        records: list[SimulationRunRecord] = []
+        for doc in documents:
+            doc_dict = dict(doc)
+            doc_dict["database_id"] = str(doc["_id"])
+            del doc_dict["_id"]
+            records.append(SimulationRunRecord.model_validate(doc_dict))
+        return records
 
     @override
     async def delete_all_simulation_runs(self) -> None:
