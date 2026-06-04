@@ -71,16 +71,17 @@ class OmexSimWorkflow:
 
         # Phase 1: cache-check + submit. Returns the biosimulations run id immediately;
         # on a cache hit it also returns the full saved BiosimulatorWorkflowRun.
-        submit_out: SubmitBiosimRunActivityOutput = await _submit(
-            workflow_id=self.sim_output.workflow_id,
-            omex_file=sim_input.omex_file,
-            simulator_version=sim_input.simulator_version,
-            cache_buster=sim_input.cache_buster,
+        submit_out: SubmitBiosimRunActivityOutput = await workflow.execute_activity(
+            submit_biosim_run_activity,
+            args=[SubmitBiosimRunActivityInput(
+                workflow_id=self.sim_output.workflow_id,
+                omex_file=sim_input.omex_file,
+                simulator_version=sim_input.simulator_version,
+                cache_buster=sim_input.cache_buster,
+            )],
+            start_to_close_timeout=timedelta(minutes=5),
+            retry_policy=RetryPolicy(maximum_attempts=1),
         )
-        if submit_out.biosimulations_run_id is None:
-            self.sim_output.workflow_status = OmexSimWorkflowStatus.FAILED
-            self.sim_output.error_message = "Submit activity did not return a biosimulations_run_id."
-            return self.sim_output
         self.sim_output.biosimulations_run_id = submit_out.biosimulations_run_id
 
         # Optional early DB write: if the caller passed a SimulationRunRecord link
@@ -107,16 +108,22 @@ class OmexSimWorkflow:
                 # Non-fatal: failing to record the early run_id must not abort the run.
                 workflow.logger.warning(f"Early SimulationRunRecord update failed: {e}")
 
-        # Phase 2: on cache hit, the full record came back from submit; otherwise poll.
-        if submit_out.cached and submit_out.cached_workflow_run is not None:
+        # Phase 2: on cache hit the saved record came back from submit; otherwise poll.
+        if submit_out.cached_workflow_run is not None:
             saved_biosimulator_workflow_run: BiosimulatorWorkflowRun = submit_out.cached_workflow_run
         else:
-            saved_biosimulator_workflow_run = await _poll(
-                workflow_id=self.sim_output.workflow_id,
-                omex_file=sim_input.omex_file,
-                simulator_version=sim_input.simulator_version,
-                cache_buster=sim_input.cache_buster,
-                biosimulations_run_id=submit_out.biosimulations_run_id,
+            saved_biosimulator_workflow_run = await workflow.execute_activity(
+                poll_biosim_run_activity,
+                args=[PollBiosimRunActivityInput(
+                    workflow_id=self.sim_output.workflow_id,
+                    omex_file=sim_input.omex_file,
+                    simulator_version=sim_input.simulator_version,
+                    cache_buster=sim_input.cache_buster,
+                    biosimulations_run_id=submit_out.biosimulations_run_id,
+                )],
+                start_to_close_timeout=timedelta(minutes=20),
+                heartbeat_timeout=timedelta(minutes=2),
+                retry_policy=RetryPolicy(maximum_attempts=1),
             )
 
         if saved_biosimulator_workflow_run.biosim_run is None:
@@ -132,37 +139,3 @@ class OmexSimWorkflow:
         self.sim_output.workflow_status = OmexSimWorkflowStatus.COMPLETED
         self.sim_output.biosimulator_workflow_run = saved_biosimulator_workflow_run
         return self.sim_output
-
-
-async def _submit(workflow_id: str, omex_file: OmexFile, simulator_version: BiosimulatorVersion,
-                  cache_buster: str) -> SubmitBiosimRunActivityOutput:
-    try:
-        return await workflow.execute_activity(
-            submit_biosim_run_activity,
-            args=[SubmitBiosimRunActivityInput(workflow_id=workflow_id, omex_file=omex_file,
-                                               simulator_version=simulator_version,
-                                               cache_buster=cache_buster)],
-            start_to_close_timeout=timedelta(minutes=5),
-            retry_policy=RetryPolicy(maximum_attempts=1),
-        )
-    except ActivityError as e:
-        workflow.logger.exception(f"Failed to submit biosim simulation run: {str(e)}", exc_info=e)
-        raise e
-
-
-async def _poll(workflow_id: str, omex_file: OmexFile, simulator_version: BiosimulatorVersion,
-                cache_buster: str, biosimulations_run_id: str) -> BiosimulatorWorkflowRun:
-    try:
-        return await workflow.execute_activity(
-            poll_biosim_run_activity,
-            args=[PollBiosimRunActivityInput(workflow_id=workflow_id, omex_file=omex_file,
-                                             simulator_version=simulator_version,
-                                             cache_buster=cache_buster,
-                                             biosimulations_run_id=biosimulations_run_id)],
-            start_to_close_timeout=timedelta(minutes=20),
-            heartbeat_timeout=timedelta(minutes=2),
-            retry_policy=RetryPolicy(maximum_attempts=1),
-        )
-    except ActivityError as e:
-        workflow.logger.exception(f"Failed to poll biosim simulation run: {str(e)}", exc_info=e)
-        raise e

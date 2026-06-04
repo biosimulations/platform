@@ -121,9 +121,8 @@ class SubmitBiosimRunActivityInput(BaseModel):
 
 
 class SubmitBiosimRunActivityOutput(BaseModel):
-    biosimulations_run_id: str | None = None
-    cached: bool = False
-    cached_workflow_run: BiosimulatorWorkflowRun | None = None  # set only on cache hit
+    biosimulations_run_id: str                                  # always set on a successful return
+    cached_workflow_run: BiosimulatorWorkflowRun | None = None  # set only on cache hit (skip poll)
 
 
 @activity.defn
@@ -140,13 +139,13 @@ async def submit_biosim_run_activity(input: SubmitBiosimRunActivityInput) -> Sub
             image_digest=input.simulator_version.image_digest,
             cache_buster=input.cache_buster,
         )
-        if (len(cached_runs) > 0 and cached_runs[0].biosim_run is not None
-                and cached_runs[0].biosim_run.status == BiosimSimulationRunStatus.SUCCEEDED):
-            activity.logger.info(f"Cache hit: returning BiosimulatorWorkflowRun _id={cached_runs[0].database_id}")
+        cached = cached_runs[0] if cached_runs else None
+        if (cached is not None and cached.biosim_run is not None
+                and cached.biosim_run.status == BiosimSimulationRunStatus.SUCCEEDED):
+            activity.logger.info(f"Cache hit: returning BiosimulatorWorkflowRun _id={cached.database_id}")
             return SubmitBiosimRunActivityOutput(
-                biosimulations_run_id=cached_runs[0].biosim_run.id,
-                cached=True,
-                cached_workflow_run=cached_runs[0],
+                biosimulations_run_id=cached.biosim_run.id,
+                cached_workflow_run=cached,
             )
 
         biosim_service: BiosimService | None = get_biosim_service()
@@ -171,7 +170,6 @@ async def submit_biosim_run_activity(input: SubmitBiosimRunActivityInput) -> Sub
 
         return SubmitBiosimRunActivityOutput(
             biosimulations_run_id=simulation_run.id,
-            cached=False,
             cached_workflow_run=None,
         )
     except Exception as e:

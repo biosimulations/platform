@@ -184,11 +184,10 @@ async def get_simulation_status(processing_id: str) -> ConglomerateStatus:
     if runs_db is not None:
         try:
             records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
-            id_by_run = {r.run_id: r.biosimulations_run_id for r in records
-                         if r.biosimulations_run_id is not None}
+            id_by_run = {r.run_id: r.biosimulations_run_id for r in records}
             for job in status.jobs:
-                if job.biosimulations_run_id is None and job.job_id in id_by_run:
-                    job.biosimulations_run_id = id_by_run[job.job_id]
+                if job.biosimulations_run_id is None:
+                    job.biosimulations_run_id = id_by_run.get(job.job_id)
         except Exception as e:
             logger.warning(f"Failed to enrich status from SimulationRunRecord: {e}")
     return status
