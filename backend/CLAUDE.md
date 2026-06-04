@@ -240,6 +240,19 @@ pytest -m "not integration"
 
 Backend release steps (run from repo root unless noted):
 
+> **Workflow-restructuring releases require a worker drain.** A release that
+> changes the activity sequence inside a Temporal workflow (e.g. PR #52, which
+> split the monolithic `submit_biosim_simulation_run_activity` into separate
+> submit + poll activities inside `OmexSimWorkflow`) will hit
+> `NonDeterministicWorkflowError` if a new worker replays an in-flight
+> workflow whose history was recorded against the old code. Drain in-flight
+> workflows (wait for them to complete, or `tctl workflow terminate`) BEFORE
+> rolling out the new `platform-worker` image. The `platform-api` image is
+> safe to deploy at any time — its only Temporal contract is `start_workflow`
+> / `query_workflow`. See `docs/workflows-architecture.md` → "Deploy
+> considerations" for the full rationale and the longer-term `workflow.patched`
+> pattern.
+
 1. **Bump version** in `backend/biosim_server/version.py` and `backend/pyproject.toml`
 2. **Update kustomize overlays** — set `newTag` in each overlay's `kustomization.yaml`:
    - `kustomize/overlays/biosim-gke/kustomization.yaml` (amd64)

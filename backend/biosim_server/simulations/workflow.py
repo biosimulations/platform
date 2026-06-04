@@ -95,8 +95,15 @@ class SimulationRunWorkflow:
                 continue
             # OmexSimWorkflowOutput.biosimulations_run_id is populated after submit
             # (PR2.5), so it's available even when the child ends in FAILED state.
+            # Fall back to the nested biosim_run.id for pre-PR2.5 child payloads
+            # that may be replayed during a deploy window (the new top-level field
+            # is missing -> defaults to None -> we still pick up the id from the
+            # historical BiosimulatorWorkflowRun).
             if output.biosimulations_run_id is not None:
                 job.biosimulations_run_id = output.biosimulations_run_id
+            elif (output.biosimulator_workflow_run is not None
+                  and output.biosimulator_workflow_run.biosim_run is not None):
+                job.biosimulations_run_id = output.biosimulator_workflow_run.biosim_run.id
             if output.workflow_status == OmexSimWorkflowStatus.COMPLETED:
                 job.status = "success"
             else:
