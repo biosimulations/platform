@@ -355,7 +355,7 @@ def test_get_simulation_status_success(mock_get_temporal: MagicMock) -> None:
 
 @patch("biosim_server.simulations.router.get_temporal_client")
 def test_get_simulation_status_not_found(mock_get_temporal: MagicMock) -> None:
-    """Test 404 when workflow not found."""
+    """Test 404 when workflow not found AND no DB records exist."""
     temporal_client = MagicMock()
     workflow_handle = AsyncMock()
     workflow_handle.query.side_effect = Exception("Workflow not found")
@@ -366,6 +366,139 @@ def test_get_simulation_status_not_found(mock_get_temporal: MagicMock) -> None:
     response = client.get("/simulations/nonexistent")
 
     assert response.status_code == 404
+
+
+def _make_run_record(
+    run_id: str,
+    *,
+    processing_id: str,
+    status: str = "SUCCEEDED",
+    simulator: str = "copasi",
+    biosimulations_run_id: str | None = "biosim-abc",
+) -> object:
+    """Build a SimulationRunRecord for the fallback / hybrid-merge tests."""
+    from datetime import datetime, timezone
+
+    from biosim_server.simulations.models import SimulationRunRecord
+
+    when = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    return SimulationRunRecord(
+        run_id=run_id,
+        processing_id=processing_id,
+        name="Run",
+        simulator=simulator,
+        simulator_version="4.34.251",
+        simulator_digest="sha256:abc",
+        cache_buster="0",
+        email="user@example.com",
+        status=status,  # type: ignore[arg-type]
+        biosimulations_run_id=biosimulations_run_id,
+        submitted=when,
+        updated=when,
+    )
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_get_simulation_status_falls_back_to_db_when_workflow_query_fails(
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """If the workflow query fails (e.g. Temporal evicted the history), the endpoint
+    builds the response from persisted SimulationRunRecord rows instead of 404."""
+    temporal_client = MagicMock()
+    workflow_handle = AsyncMock()
+    workflow_handle.query.side_effect = Exception("workflow history evicted")
+    temporal_client.get_workflow_handle.return_value = workflow_handle
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record("job-1", processing_id="sim-run-evicted", status="SUCCEEDED",
+                         simulator="copasi", biosimulations_run_id="biosim-1"),
+        _make_run_record("job-2", processing_id="sim-run-evicted", status="FAILED",
+                         simulator="tellurium", biosimulations_run_id="biosim-2"),
+    ]
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).get("/simulations/sim-run-evicted")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["processing_id"] == "sim-run-evicted"
+    assert len(data["jobs"]) == 2
+    # SUCCEEDED -> "success", FAILED -> "failure" via _DISPLAY_TO_JOB_STATUS.
+    by_id = {job["job_id"]: job for job in data["jobs"]}
+    assert by_id["job-1"]["status"] == "success"
+    assert by_id["job-1"]["biosimulations_run_id"] == "biosim-1"
+    assert by_id["job-2"]["status"] == "failure"
+    assert by_id["job-2"]["biosimulations_run_id"] == "biosim-2"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_get_simulation_status_404_when_workflow_and_db_both_empty(
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """If both the workflow query and the DB lookup come up empty, the endpoint 404s."""
+    temporal_client = MagicMock()
+    workflow_handle = AsyncMock()
+    workflow_handle.query.side_effect = Exception("workflow not found")
+    temporal_client.get_workflow_handle.return_value = workflow_handle
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = []
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).get("/simulations/sim-run-unknown")
+
+    assert response.status_code == 404
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_get_simulation_status_hybrid_enriches_biosim_run_id_from_db(
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """When the workflow query returns biosimulations_run_id=None for a job (mid-run
+    before the parent has copied it from children), the DB record's id fills in --
+    this is the PR2.5 early-write path made visible through GET /simulations/{id}."""
+    from biosim_server.simulations.models import ConglomerateStatus, SimulationJobStatus
+
+    workflow_status = ConglomerateStatus(
+        processing_id="sim-run-x",
+        jobs=[SimulationJobStatus(
+            job_id="job-1",
+            simulator_id="copasi",
+            version="4.34.251",
+            status="processing",
+            biosimulations_run_id=None,
+        )],
+    )
+    temporal_client = MagicMock()
+    workflow_handle = AsyncMock()
+    workflow_handle.query.return_value = workflow_status
+    temporal_client.get_workflow_handle.return_value = workflow_handle
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record("job-1", processing_id="sim-run-x", status="CREATED",
+                         biosimulations_run_id="biosim-early"),
+    ]
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).get("/simulations/sim-run-x")
+
+    assert response.status_code == 200
+    job = response.json()["jobs"][0]
+    # Live status from the workflow query...
+    assert job["status"] == "processing"
+    # ...biosim_run_id enriched from the DB.
+    assert job["biosimulations_run_id"] == "biosim-early"
 
 
 def test_run_simulations_missing_fields() -> None:

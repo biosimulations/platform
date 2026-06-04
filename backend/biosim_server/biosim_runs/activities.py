@@ -158,12 +158,20 @@ async def submit_biosim_run_activity(input: SubmitBiosimRunActivityInput) -> Sub
         (_gcs_path, local_omex_path) = await file_service.download_file(gcs_path=input.omex_file.omex_gcs_path)
         activity.logger.info(
             f"Downloaded OMEX file from gcs_path {input.omex_file.omex_gcs_path} to local path {local_omex_path}")
-        simulation_run = await biosim_service.run_biosim_sim(
-            local_omex_path=local_omex_path,
-            omex_name=input.omex_file.uploaded_filename,
-            simulator_version=input.simulator_version,
-        )
-        os.remove(local_omex_path)
+        try:
+            simulation_run = await biosim_service.run_biosim_sim(
+                local_omex_path=local_omex_path,
+                omex_name=input.omex_file.uploaded_filename,
+                simulator_version=input.simulator_version,
+            )
+        finally:
+            # Always clean up the downloaded temp file -- even if run_biosim_sim raised
+            # (HTTP 5xx, network error, auth failure). Without this the worker pod
+            # accumulates orphaned files under sustained submit failures and ENOSPCs.
+            try:
+                os.remove(local_omex_path)
+            except OSError as e:
+                activity.logger.warning(f"Failed to remove local OMEX file {local_omex_path}: {e}")
         activity.logger.info(
             f"Submitted {input.simulator_version.id}:{input.simulator_version.version}, "
             f"biosimulations_run_id={simulation_run.id}")
@@ -233,9 +241,20 @@ async def poll_biosim_run_activity(input: PollBiosimRunActivityInput) -> Biosimu
             biosim_run=simulation_run,
             hdf5_file=hdf5_file)
 
-        saved = await database_service.insert_biosimulator_workflow_run(sim_workflow_run=biosim_workflow_run)
-        activity.logger.info(f"Saved BiosimulatorWorkflowRun _id={saved.database_id}")
-        return saved
+        # Only persist on SUCCEEDED. Caching non-SUCCEEDED rows pollutes BiosimSims
+        # (FAILED-status records accumulate per retry) and complicates cache lookup --
+        # get_biosimulator_workflow_runs returns up to 100 unsorted documents and the
+        # cache-hit check (`cached_runs[0].biosim_run.status == SUCCEEDED`) can miss a
+        # later SUCCEEDED row if a FAILED row was returned first. Returning the in-
+        # memory record (without database_id) still lets OmexSimWorkflow surface the
+        # FAILED state to its caller; the workflow doesn't consult database_id.
+        if simulation_run.status == BiosimSimulationRunStatus.SUCCEEDED:
+            saved = await database_service.insert_biosimulator_workflow_run(sim_workflow_run=biosim_workflow_run)
+            activity.logger.info(f"Saved BiosimulatorWorkflowRun _id={saved.database_id}")
+            return saved
+        activity.logger.info(
+            f"Skipping BiosimulatorWorkflowRun persist for non-SUCCEEDED status={simulation_run.status}")
+        return biosim_workflow_run
     except Exception as e:
         activity.logger.exception(f"Failed to poll biosim simulation run: {str(e)}", exc_info=e)
         raise e

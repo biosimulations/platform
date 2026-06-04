@@ -157,6 +157,10 @@ class SimulationRunDatabaseService(ABC):
     async def delete_all_simulation_runs(self) -> None:
         pass
 
+    async def ensure_indexes(self) -> None:
+        """Create or refresh indexes for the underlying store. Default: no-op."""
+        return
+
     @abstractmethod
     async def close(self) -> None:
         pass
@@ -245,6 +249,14 @@ class SimulationRunDatabaseServiceMongo(SimulationRunDatabaseService):
         result = await self._runs_col.delete_many({})
         if not result.acknowledged:
             raise Exception("Delete failed")
+
+    @override
+    async def ensure_indexes(self) -> None:
+        # processing_id: hot read on every GET /simulations/{id} hybrid-read.
+        # run_id: hot lookup on every early/terminal update_simulation_run call;
+        # also the natural primary key for a SimulationRunRecord.
+        await self._runs_col.create_index("processing_id")
+        await self._runs_col.create_index("run_id", unique=True)
 
     @override
     async def close(self) -> None:

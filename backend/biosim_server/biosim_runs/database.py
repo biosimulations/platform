@@ -3,6 +3,7 @@ from abc import abstractmethod, ABC
 
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
+from pymongo import ASCENDING
 from pymongo.results import InsertOneResult
 from typing_extensions import override
 
@@ -41,6 +42,10 @@ class DatabaseService(ABC):
     @abstractmethod
     async def delete_all_biosimulator_workflow_runs(self) -> None:
         pass
+
+    async def ensure_indexes(self) -> None:
+        """Create or refresh indexes for the underlying store. Default: no-op."""
+        return
 
     @abstractmethod
     async def close(self) -> None:
@@ -118,6 +123,18 @@ class DatabaseServiceMongo(DatabaseService):
         if not result.acknowledged:
             raise Exception("Delete failed")
 
+
+    @override
+    async def ensure_indexes(self) -> None:
+        # Cache lookup on every submit: (file_hash_md5, image_digest, cache_buster).
+        # biosim_run.id: used by get_biosimulator_workflow_runs_by_biosim_runid for
+        # the verify-by-existing-runs path and for any caller that resolves a run by id.
+        await self._sim_output_col.create_index([
+            ("file_hash_md5", ASCENDING),
+            ("image_digest", ASCENDING),
+            ("cache_buster", ASCENDING),
+        ])
+        await self._sim_output_col.create_index("biosim_run.id")
 
     @override
     async def close(self) -> None:
