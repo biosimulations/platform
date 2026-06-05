@@ -52,12 +52,6 @@ const navigation_items = ref<NavigationMenuItem[][]>([
           to: '/simulations',
           class: 'cursor-pointer',
         },
-        {
-          label: 'Validate a simulation',
-          icon: 'i-lucide-activity',
-          to: '/utilities/validate-simulation',
-          class: 'cursor-pointer',
-        },
       ]
     },
     {
@@ -102,6 +96,12 @@ const navigation_items = ref<NavigationMenuItem[][]>([
           label: 'Validate a model',
           icon: 'i-lucide-file-check',
           to: '/utilities/validate-model',
+          class: 'cursor-pointer',
+        },
+        {
+          label: 'Validate a simulation',
+          icon: 'i-lucide-activity',
+          to: '/utilities/validate-simulation',
           class: 'cursor-pointer',
         },
         {
