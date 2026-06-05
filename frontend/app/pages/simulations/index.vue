@@ -3,7 +3,7 @@ import { h, resolveComponent, ref, useTemplateRef } from 'vue'
 import { upperFirst } from 'scule'
 import type {TableColumn, TableRow} from '@nuxt/ui'
 import { useClipboard } from '@vueuse/core'
-import type {SimulationRun} from "~/models/simulators";
+import type {SimulationRun, SimulationRuns} from "~/models/simulators";
 import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import Loading from "~/components/Loading.vue";
 import {TableFilterConfig, TableFilter, type TableSort, type TablePagination} from "~/models/filtering";
@@ -155,13 +155,11 @@ const columns: TableColumn[] = [
 
 const table = useTemplateRef('table')
 const loading = ref(true)
-const fetched_data = ref<SimulationRun[]>([])
 const error_encountered = ref<string | undefined>(undefined)
 const fetch_user = ref(false)
 const user_email = ref<string | undefined>(undefined)
 const user_input = useTemplateRef('user_email_input')
 const user_input_valid = ref(false)
-
 const table_filters = ref({
   _hidden_exist: false,
   filters: {
@@ -175,7 +173,7 @@ const table_filters = ref({
     } as TableFilter),
     'status': ref({
       id: 'status',
-      operator: undefined,
+      operator: 'is_any',
       value: undefined,
 
       _filterType: 'enum',
@@ -199,16 +197,16 @@ const table_filters = ref({
     } as TableFilter),
   }
 } as TableFilterConfig)
-
 const table_sort = ref({
   id: undefined,
   direction: undefined
 } as TableSort)
-
 const table_pagination = ref({
   page: 1,
-  perPage: 25
+  perPage: 25,
+  _total: 0
 } as TablePagination)
+const fetched_data = ref<SimulationRuns>({runs: [], pagination: table_pagination.value} as SimulationRuns)
 
 onMounted(async () => {
   await fetch_runs()
@@ -219,24 +217,28 @@ async function fetch_runs() {
 
   loading.value = true
   error_encountered.value = undefined
-  fetched_data.value = []
+  fetched_data.value = {runs: [], pagination: table_pagination.value} as SimulationRuns
 
   const valid_filter_keys = Object.keys(table_filters.value?.filters).filter(filter => table_filters.value.filters[filter]?.value && table_filters.value.filters[filter]?.operator)
   const valid_filters = valid_filter_keys.map(filter_key => table_filters.value.filters[filter_key])
+  const trimmed_pagination = Object.keys(table_pagination.value).filter(key => !key.startsWith('_')).reduce((acc, key) => {
+    acc[key] = table_pagination.value[key]
+    return acc
+  }, {})
 
   try {
     fetched_data.value = await $fetch(`${runtimeConfig.public.api_url}/simulations/runs`, {
       method: 'POST',
-      data: {
+      body: {
         type: fetch_user.value ? 'user' : 'all',
         user: fetch_user.value ? user_email.value : undefined,
         sort: table_sort.value,
         filters: valid_filters,
-        pagination: table_pagination.value
+        pagination: trimmed_pagination
       }
     })
 
-    console.log(fetched_data.value)
+    table_pagination.value = fetched_data.value.pagination
 
   } catch (error: any) {
     error_encountered.value = error.message
@@ -250,7 +252,12 @@ function clear_filter(column_id: string) {
   if (!table_filters.value.filters[column_id]) return
 
   table_filters.value.filters[column_id]!.value = undefined
-  table_filters.value.filters[column_id]!.operator = undefined
+
+  if (table_filters.value.filters[column_id]._filterType !== 'enum') {
+    table_filters.value.filters[column_id]!.operator = undefined
+  } else {
+    table_filters.value.filters[column_id]!.operator = 'is_any'
+  }
 
   fetch_runs()
 }
@@ -290,14 +297,15 @@ function clear_hidden_filters() {
   fetch_runs()
 }
 
-function process_click(_e: Event, row: TableRow<SimulationRun>) {
-  console.log(row)
-}
-
 function change_sort(column_id: string) {
   table_sort.value.direction = table_sort.value.id == column_id ? (table_sort.value.direction === 'asc' ? 'desc' : 'asc') : 'asc'
   table_sort.value.id = column_id
 
+  fetch_runs()
+}
+
+function change_pagination(new_page: number) {
+  table_pagination.value.page = new_page
   fetch_runs()
 }
 
@@ -361,15 +369,14 @@ const checkValidity = () => {
                 onSelect(e: Event) {
                   e.preventDefault()
                 }
-              }))
-            ">
-          <UButton
-            label="Columns"
-            color="neutral"
-            variant="outline"
-            trailing-icon="i-lucide-chevron-down"
-          />
-        </UDropdownMenu>
+              }))">
+              <UButton
+                label="Columns"
+                color="neutral"
+                variant="outline"
+                trailing-icon="i-lucide-chevron-down" />
+          </UDropdownMenu>
+
           <UButton
             v-if="!loading && table_filters._hidden_exist && hidden_cols_have_filters()"
             label="Clear Hidden Filters"
@@ -386,7 +393,7 @@ const checkValidity = () => {
         v-if="!loading"
         class="w-full"
         ref="table"
-        :data="fetched_data"
+        :data="fetched_data.runs"
         :columns="columns"
         sticky>
         <template v-for="column in columns" :key="column.accessorKey" #[`${column.accessorKey}-header`]="{ column: tableColumn }">
@@ -434,9 +441,8 @@ const checkValidity = () => {
                     </div>
                   </div>
                   <div class="flex flex-col gap-2 mt-2" v-if="table_filters.filters[column.accessorKey]!._filterType === 'enum'">
-                    <!-- operator: 'starts_with' | 'ends_with' | 'contains' | 'less_than' | 'equal' | 'greater_than' | 'before' | 'after' | 'on' | 'is_only' | 'is_any' -->
-                    <USelectMenu placeholder="Select operator" v-model="table_filters.filters[column.accessorKey]!.operator" value-key="value" :items="[{ label: 'Show Only', value: 'is_only' }, { label: 'Show Any', value: 'is_any' }]"/>
-                    <USelectMenu :multiple="table_filters.filters[column.accessorKey]!.operator === 'is_any'" :disabled="!table_filters.filters[column.accessorKey]!.operator" :placeholder="table_filters.filters[column.accessorKey]!.operator === 'is_any' ? 'Select statuses' : 'Select status'" v-model="table_filters.filters[column.accessorKey]!.value" :items="table_filters.filters[column.accessorKey]!._filterOptions"/>
+                    <small class="font-semibold">Show results with these statuses:</small>
+                    <USelectMenu multiple :disabled="!table_filters.filters[column.accessorKey]!.operator" placeholder="Select statuses" v-model="table_filters.filters[column.accessorKey]!.value" :items="table_filters.filters[column.accessorKey]!._filterOptions"/>
                     <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
                       <UButton
                         v-if="table_filters.filters[column.accessorKey]!.value"
@@ -491,6 +497,24 @@ const checkValidity = () => {
           <p @click="process_click(row)">{{row}}</p>
         </template>-->
       </UTable>
+
+      <USeparator class="mb-4"></USeparator>
+
+      <div v-if="fetched_data" class="w-full flex items-center justify-between gap-4">
+        <p class="text-muted ml-3">Showing results {{ (fetched_data.pagination.page - 1) * fetched_data.pagination.perPage + 1 }} - {{ Math.min(fetched_data.pagination.page * fetched_data.pagination.perPage, fetched_data.pagination._total ?? 0) }} of {{ fetched_data.pagination._total ?? 0 }}</p>
+        <UPagination
+          v-model="fetched_data.pagination.page"
+          :total="fetched_data.pagination._total ?? 100"
+          :items-per-page="fetched_data.pagination.perPage"
+          :sibling-count="1"
+          show-edges
+          @update:page="change_pagination($event)"
+        />
+        <div class="w-max flex items-center gap-2">
+          <p>Results Per Page:</p>
+          <USelect :loading="loading" :disabled="loading" color="neutral" variant="outline" v-model="table_pagination.perPage" @change="fetch_runs()" :items="[5, 25, 50, 100]" />
+        </div>
+      </div>
     </div>
 
     <div class="w-full md:w-max md:max-w-[700px] lg:max-w-[900px] flex flex-col items-center justify-center gap-2" v-if="error_encountered">
