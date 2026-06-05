@@ -39,6 +39,7 @@ async def mongo_test_collection(mongo_test_database: AsyncIOMotorDatabase) -> As
 @pytest_asyncio.fixture(scope="function")
 async def database_service_mongo(mongo_test_client: AsyncIOMotorClient) -> AsyncGenerator[DatabaseServiceMongo,None]:
     db_service = DatabaseServiceMongo(db_client=mongo_test_client)
+    await db_service.ensure_indexes()
     old_db_service = get_database_service()
     set_database_service(db_service)
 
@@ -54,6 +55,7 @@ async def database_service_mongo(mongo_test_client: AsyncIOMotorClient) -> Async
 @pytest_asyncio.fixture(scope="function")
 async def omex_database_service_mongo(mongo_test_client: AsyncIOMotorClient) -> AsyncGenerator[OmexDatabaseServiceMongo,None]:
     omex_db_service = OmexDatabaseServiceMongo(db_client=mongo_test_client)
+    await omex_db_service.ensure_indexes()
     old_omex_db_service = get_omex_database_service()
     set_omex_database_service(omex_db_service)
 
@@ -68,6 +70,7 @@ async def simulation_run_database_service_mongo(
     mongo_test_client: AsyncIOMotorClient,
 ) -> AsyncGenerator[SimulationRunDatabaseServiceMongo, None]:
     runs_db_service = SimulationRunDatabaseServiceMongo(db_client=mongo_test_client)
+    await runs_db_service.ensure_indexes()
     old_runs_db_service = get_simulation_run_database_service()
     set_simulation_run_database_service(runs_db_service)
 

@@ -454,10 +454,80 @@ restructures are anticipated; not worth doing for PR2.5 alone.
   diff → versioning/contract → consider monorepo absorption. See the TODO
   section in [`simulation-runs-convergence-plan.md`](simulation-runs-convergence-plan.md);
   do the inventory before PR3 lands.
-- **Hybrid status read for PR2.5.** Enrich
-  `GET /simulations/{processing_id}` to read `SimulationRunRecord`s for the
-  processing_id and fill `biosimulations_run_id` per job — small router change,
-  no contract change.
 - **No real auth.** Owner-scoped queries (`type=user` + `user=<email>`) trust
   the supplied email today. Out of scope for the convergence work; flagged so
   it doesn't get lost.
+
+### Known issues from the PR #52 code review
+
+The high-severity findings (worker pod disk leak, FAILED-row cache pollution,
+missing Mongo indexes, status 404 after Temporal eviction) shipped in PR #53.
+These remain open — each has a tight fix; tackle them when convenient, or
+when one starts firing in production.
+
+#### Medium — fires under specific conditions
+
+- **#13 — Initial `get_sim_run` in `poll_biosim_run_activity` has no 404 handling.**
+  *Trigger:* biosimulations.org is eventually consistent; the Temporal task-queue
+  hop between submit and poll can land inside the consistency window.
+  *Impact:* A run biosimulations.org actually accepted hits 404 on the first
+  poll-side GET → activity raises → with `maximum_attempts=1` the whole run
+  is lost. New hazard introduced by the submit/poll split in PR #52 (the
+  monolithic activity reused the in-hand `simulation_run` and never made this
+  call).
+  *Fix:* short retry loop around the first `get_sim_run` on `ClientResponseError(404)`,
+  or a brief `workflow.sleep` before scheduling poll.
+
+- **#8 — `_submit` activity timeout reduced from 20 min to 5 min.** *Trigger:*
+  large OMEX archives over slow / contended uplinks. *Impact:* hard-fail on a
+  single slow upload with `maximum_attempts=1` and no retry — user has to
+  resubmit. Risk scales with OMEX size distribution. *Fix:* bump
+  `start_to_close_timeout` for `submit_biosim_run_activity`, or split GCS
+  download from biosimulations.org upload into two activities so each gets
+  its own budget.
+
+- **#6 — HDF5 retry last attempt re-raises 404 (off-by-one).** *Trigger:*
+  `simdata` API lag persists past the 10-retry window (~100 s) for a SUCCEEDED
+  run. *Impact:* poll activity raises → no `BiosimulatorWorkflowRun` saved →
+  next submission re-runs the simulator from scratch (no cache row). Pre-existing,
+  but the PR #52 split makes the wasted submit work more visible. *Fix:* on
+  the final attempt, log + record `hdf5_file=None` instead of re-raising; the
+  workflow still surfaces SUCCEEDED with degraded artifact metadata.
+
+#### Lower — rare or contained
+
+- **#7 — Cache hit returns `cached.workflow_id` verbatim.** Audit/traceability
+  confusion: a `BiosimulatorWorkflowRun` from a cache hit points at the prior
+  submission's workflow id, not the current one. Not user-visible. *Fix:* add
+  an explicit `is_cache_hit: bool` field on `BiosimulatorWorkflowRun` (or a
+  separate `cache_lookups` collection) so the original `workflow_id` is
+  preserved and reuse is observable.
+
+- **#15 — `update_simulation_run` always bumps `updated`.** Temporal replay of
+  `OmexSimWorkflow` can fire the early `update_run_status_activity` again with
+  the same `biosimulations_run_id` — every replay bumps `updated` even though
+  no field actually changes. Minor data noise; muddies any future "sort by
+  updated" UI. *Fix:* if the proposed `$set` would contain only `updated`,
+  skip the update.
+
+- **#11 — Lazy `ImportError` not caught by `except ActivityError`.** The lazy
+  `from biosim_server.simulations.activities import …` inside `OmexSimWorkflow.run`
+  isn't covered by the surrounding `except ActivityError`. A worker image that
+  excludes the `simulations` package (none today, but plausible if a verify-only
+  worker ever emerges) would abort the workflow on a path documented as
+  "non-fatal." *Fix:* widen the `except`, or pull the import to module top
+  (the cycle the lazy import guards against has since been re-evaluated — see
+  the simplify discussion in PR #52).
+
+- **#12 — `asyncio.gather(*, return_exceptions=True)` captures `CancelledError`.**
+  Operator-initiated cancellation of `SimulationRunWorkflow` (via `tctl workflow
+  cancel`) is mapped to `status="failure"` with an empty `error` and recorded
+  as FAILED in `SimulationRunRecord`. Affects manual ops only. *Fix:* re-raise
+  on `CancelledError` so cancellation propagates and the run is recorded as
+  cancelled (would also need a `CANCELLED` display status, or just no terminal
+  update).
+
+- **#9 — `get_simulation_runs_by_processing_id` caps at `length=100`.**
+  Submissions with >100 simulators silently lose enrichment past job 100.
+  Cap is well above any realistic submission today. *Fix:* `length=None` (or
+  match the workflow's job count exactly).

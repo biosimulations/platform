@@ -108,9 +108,19 @@ async def init_standalone() -> None:
     from biosim_server.simulations.database import SimulationRunDatabaseServiceMongo
 
     motor_client = AsyncIOMotorClient(get_settings().mongodb_uri)
-    set_database_service(DatabaseServiceMongo(db_client=motor_client))
-    set_omex_database_service(OmexDatabaseServiceMongo(db_client=motor_client))
-    set_simulation_run_database_service(SimulationRunDatabaseServiceMongo(db_client=motor_client))
+    db_service = DatabaseServiceMongo(db_client=motor_client)
+    omex_db_service = OmexDatabaseServiceMongo(db_client=motor_client)
+    runs_db_service = SimulationRunDatabaseServiceMongo(db_client=motor_client)
+
+    # create_index is idempotent; calling on every start keeps schema in sync as
+    # we add lookups. Each service knows which fields its queries hit.
+    await db_service.ensure_indexes()
+    await omex_db_service.ensure_indexes()
+    await runs_db_service.ensure_indexes()
+
+    set_database_service(db_service)
+    set_omex_database_service(omex_db_service)
+    set_simulation_run_database_service(runs_db_service)
 
 async def shutdown_standalone() -> None:
     db_service = get_database_service()
