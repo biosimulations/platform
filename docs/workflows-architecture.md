@@ -447,6 +447,20 @@ restructures are anticipated; not worth doing for PR2.5 alone.
 
 ## Open items
 
+- **Frontend listing wire-up not in `main`.** The `/simulations/runs` backend
+  endpoint is live (PR #48 → PR #53), but `frontend/app/pages/simulations/index.vue`
+  on `main` still renders hardcoded mock data via `setTimeout`. The remote branch
+  **`origin/feature/runs-page`** (Harrison) has a partial wire-up — `$fetch` to
+  `POST ${api_url}/simulations/runs` with the correct `{type, user, sort, filters,
+  pagination}` body and a matching `frontend/app/models/filtering.ts`. The branch
+  is 18 commits behind `main`, contains substantial unrelated drift (other pages,
+  `poetry.lock` regen), and has **one response-shape bug** — line ~228 does
+  `fetched_data.value = await $fetch(...)` (assigns the whole response object to
+  a `SimulationRun[]`-typed ref), but the backend returns `{ runs: SimulationRun[],
+  pagination: {…} }`. The table will render empty until that's changed to
+  `fetched_data.value = response.runs` with `pagination._total` tracked separately.
+  Landing path is a coordination question (rebase Harrison's branch vs surgical
+  extraction); see the memory `project_frontend_runs_branch` for current status.
 - **biosim-client impact analysis.** The Python client at
   `../biosim-client` (https://github.com/biosimulations/biosim-client) is an
   external consumer of this platform's API surface and may be affected by
