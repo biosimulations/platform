@@ -1,14 +1,26 @@
-> **Status (2026-05-29): backend implemented.** `POST /simulations/runs` is live in
-> `backend/biosim_server/simulations/` — owner-scope (`type: all|user` + `user` email),
-> pagination, sorting, and filtering, returning `{ runs: SimulationRun[], pagination: { page, perPage, _total } }`.
-> Run records are persisted (collection `BiosimSimulationRuns`) on `POST /simulations/run`
-> and updated to `SUCCEEDED`/`FAILED` by `SimulationRunWorkflow`.
+> **Status (updated 2026-06-05): backend complete; frontend wire-up in progress on a
+> separate branch.** `POST /simulations/runs` is live in `backend/biosim_server/simulations/`
+> — owner-scope (`type: all|user` + `user` email), pagination, sorting, filtering — returning
+> `{ runs: SimulationRun[], pagination: { page, perPage, _total } }`. Run records are
+> persisted (collection `BiosimSimulationRuns`) on `POST /simulations/run` and updated to
+> `SUCCEEDED`/`FAILED` by `SimulationRunWorkflow`. Backend convergence work covered PR #48
+> through PR #53 (see `simulation-runs-convergence-plan.md`).
 >
 > **Deferred** (no source yet — returned as zero/empty): `cpus`, `memory`, `maxTime`,
-> `envVars`, `purpose`, `runtime`, `projectSize`, `resultsSize`. Real auth is not wired —
-> owner-scoping trusts the supplied email. **Frontend follow-up:** wire
-> `frontend/app/pages/simulations/index.vue` (currently mocked) to this endpoint;
-> read `runs` / `pagination._total` from the response.
+> `envVars`, `purpose`, `runtime`, `projectSize`, `resultsSize`. PR1 enriched
+> `BiosimSimulationRun` parsing so these are present on every saved `BiosimulatorWorkflowRun`;
+> PR3 (planned) will join them into the listing. Real auth is not wired — owner-scoping
+> trusts the supplied email.
+>
+> **Frontend follow-up status:** `frontend/app/pages/simulations/index.vue` on `main`
+> still renders hardcoded mock data via `setTimeout`. Harrison's branch
+> **`origin/feature/runs-page`** has a partial wire-up (calls `POST /simulations/runs`
+> with the right body shape; has a matching `frontend/app/models/filtering.ts`). The branch
+> is 18 commits behind `main` and has one response-shape bug — `fetched_data.value =
+> await $fetch(...)` assigns the whole response object to a `SimulationRun[]`-typed ref,
+> but the backend returns `{ runs, pagination }`. Fix is `fetched_data.value = response.runs`
+> with pagination tracked separately. Landing path (rebase vs surgical extraction) is a
+> coordination call; see memory `project_frontend_runs_branch`.
 
 ## To-Do:
 
