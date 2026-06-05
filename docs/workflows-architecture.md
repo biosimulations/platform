@@ -294,10 +294,10 @@ sequenceDiagram
         OSW->>POLL: execute poll (run_id)
         POLL->>EXT: GET /runs/{id} (poll until terminal)
         POLL->>EXT: GET HDF5 metadata
-        alt SUCCEEDED (since PR #53)
+        alt SUCCEEDED only
             POLL->>DBS: insert BiosimulatorWorkflowRun
         else FAILED / RUN_ID_NOT_FOUND
-            Note over POLL,DBS: insert skipped — record returned to workflow only
+            Note over POLL,DBS: insert skipped (PR53) — record returned to workflow only
         end
         POLL-->>OSW: full record
         OSW-->>SRW: OmexSimWorkflowOutput (status, run record)
@@ -312,7 +312,7 @@ sequenceDiagram
             API->>SRW: query get_status
             API->>DBR: read run_ids by processing_id (enrichment)
             API-->>U: ConglomerateStatus (status from workflow, run_ids from DB)
-        else workflow not found / history evicted (since PR #53)
+        else workflow not found / history evicted
             API->>DBR: read all records by processing_id
             alt records exist
                 API-->>U: ConglomerateStatus (built from DB records)
