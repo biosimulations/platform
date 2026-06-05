@@ -143,7 +143,7 @@ The duplication was the core liability: two implementations of the same logic
 (cache lookup, HTTP submit, polling loop, HDF5-404 retry, BiosimulatorWorkflowRun
 insertion) drifting against each other.
 
-### Shape B — PR2 / [#51](https://github.com/biosimulations/platform/pull/51) (open)
+### Shape B — PR2 / [#51](https://github.com/biosimulations/platform/pull/51) (merged)
 
 `SimulationRunWorkflow` now runs each simulator via a child **`OmexSimWorkflow`** —
 the same per-run unit the verify path uses. The duplicate
@@ -236,10 +236,10 @@ flowchart LR
     URS -- "write biosim_run_id (EARLY)" --> DBR
     OSW -- "3. execute" --> POLL
     POLL -- "HTTP poll + HDF5" --> EXT
-    POLL -- "write result" --> DB_SIMS
+    POLL -- "write (SUCCEEDED only, since PR #53)" --> DB_SIMS
     SRW -- "after children complete" --> URS
-    EPS -- "query workflow (status)<br/>+ read DBR (biosim_run_id)" --> SRW
-    EPS -- "(DB read)" --> DBR
+    EPS -- "query workflow (live status)" --> SRW
+    EPS -- "DB enrich (run_id) / DB fallback when workflow query fails, since PR #53" --> DBR
 ```
 
 Key properties:
@@ -247,10 +247,16 @@ Key properties:
   UUID = `SimulationRunRecord.run_id`). The verify path passes `None` →
   step 2 above is skipped → **zero behavior change to verification**.
 - The status endpoint becomes a hybrid read: workflow query for live status,
-  DB record for run_id (and any other submission metadata).
+  DB record for run_id (and any other submission metadata). Since PR #53 it
+  also falls back to a DB-only response when the workflow query fails (history
+  evicted, workflow never existed), and only 404s when both sources are empty.
 - The monolithic activity is replaced by the split pair; `OmexSimWorkflow`,
   `OmexVerifyWorkflow`, and `SimulationRunWorkflow` all benefit from the cleaner
   decomposition.
+- Since PR #53, `poll_biosim_run_activity` only inserts `BiosimulatorWorkflowRun`
+  into `BiosimSims` on `SUCCEEDED`. FAILED / RUN_ID_NOT_FOUND runs return an
+  un-saved record so `OmexSimWorkflow` can still surface the failure, but the
+  cache table stays clean.
 
 ### Sequence — the run lifecycle after PR2.5
 
@@ -288,7 +294,11 @@ sequenceDiagram
         OSW->>POLL: execute poll (run_id)
         POLL->>EXT: GET /runs/{id} (poll until terminal)
         POLL->>EXT: GET HDF5 metadata
-        POLL->>DBS: insert BiosimulatorWorkflowRun
+        alt SUCCEEDED (since PR #53)
+            POLL->>DBS: insert BiosimulatorWorkflowRun
+        else FAILED / RUN_ID_NOT_FOUND
+            Note over POLL,DBS: insert skipped — record returned to workflow only
+        end
         POLL-->>OSW: full record
         OSW-->>SRW: OmexSimWorkflowOutput (status, run record)
     end
@@ -298,18 +308,24 @@ sequenceDiagram
 
     loop polling
         U->>API: GET /simulations/{processing_id}
-        API->>SRW: query get_status
-        API->>DBR: read run_ids by processing_id
-        API-->>U: ConglomerateStatus (status from workflow, run_ids from DB)
+        alt workflow query succeeds
+            API->>SRW: query get_status
+            API->>DBR: read run_ids by processing_id (enrichment)
+            API-->>U: ConglomerateStatus (status from workflow, run_ids from DB)
+        else workflow not found / history evicted (since PR #53)
+            API->>DBR: read all records by processing_id
+            alt records exist
+                API-->>U: ConglomerateStatus (built from DB records)
+            else no records
+                API-->>U: 404
+            end
+        end
     end
 
     U->>API: POST /simulations/runs (listing query)
     API->>DBR: filter/sort/paginate
     API-->>U: { runs[], pagination }
 ```
-
-Steps 4–6 (the early DB write) and step 12 (hybrid status read) are the PR2.5
-delta. Everything above the dashed band is in #51 today.
 
 ---
 
@@ -359,6 +375,10 @@ Two intentional choices to call out:
 1. **`BiosimSims` is a deduplicated *computation/artifact* table.** With caching
    on, many submissions of the same `(omex, simulator, cache_buster)` map to
    one `BiosimulatorWorkflowRun`. That's the result-provenance + cache role.
+   Since PR #53, only `SUCCEEDED` runs are persisted here — FAILED and
+   `RUN_ID_NOT_FOUND` results are surfaced to the workflow but never written,
+   so the cache stays clean and the lookup-first-match semantics don't fight
+   each other.
 2. **`BiosimSimulationRuns` is the *submission ledger.*** One per user action,
    even on a cache hit. It carries identity (`email`, user-chosen `name`,
    `purpose`), submission timestamps, and a *display* status
