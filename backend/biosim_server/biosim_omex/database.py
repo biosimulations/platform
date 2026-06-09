@@ -33,6 +33,10 @@ class OmexDatabaseService(ABC):
     async def list_omex_files(self) -> list[OmexFile]:
         pass
 
+    async def ensure_indexes(self) -> None:
+        """Create or refresh indexes for the underlying store. Default: no-op."""
+        return
+
     @abstractmethod
     async def close(self) -> None:
         pass
@@ -99,6 +103,14 @@ class OmexDatabaseServiceMongo(OmexDatabaseService):
             del doc_dict["_id"]
             omex_files.append(OmexFile.model_validate(doc_dict))
         return omex_files
+
+    @override
+    async def ensure_indexes(self) -> None:
+        # Every get_omex_file / OMEX upload pipeline starts with a lookup by hash.
+        # Not declared unique here -- get_cached_omex_file_from_*'s check-then-insert
+        # pattern doesn't handle DuplicateKeyError, so a unique index would break the
+        # rare concurrent-upload race. Logical uniqueness is enforced by the caller.
+        await self._omex_file_col.create_index("file_hash_md5")
 
     @override
     async def close(self) -> None:

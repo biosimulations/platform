@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     mongodb_collection_omex: str = "BiosimOmex"
     mongodb_collection_sims: str = "BiosimSims"
     mongodb_collection_compare: str = "BiosimCompare"
+    mongodb_collection_simulation_runs: str = "BiosimSimulationRuns"
 
     simdata_api_base_url: str = "https://simdata.api.biosimulations.org"
     biosimulators_api_base_url: str = "https://api.biosimulators.org"

@@ -2,7 +2,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 import aiofiles
 import aiohttp
@@ -16,6 +16,31 @@ from biosim_server.config import get_settings
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+def _sim_run_from_response(res: dict[str, Any], simulator_version: BiosimulatorVersion) -> BiosimSimulationRun:
+    """Build a BiosimSimulationRun from a biosimulations.org /runs/{id} response.
+
+    Run metadata (cpus/memory/maxTime/...) is populated when present; older or
+    in-flight runs may omit some fields, hence the .get() defaults. See
+    tests/fixtures/local_data/biosim_run_response.json for a sample payload."""
+    return BiosimSimulationRun(
+        id=res["id"],
+        name=res["name"],
+        simulator_version=simulator_version,
+        status=BiosimSimulationRunStatus(res["status"]),
+        cpus=res.get("cpus"),
+        memory=res.get("memory"),
+        max_time=res.get("maxTime"),
+        env_vars=res.get("envVars"),
+        purpose=res.get("purpose"),
+        submitted=res.get("submitted"),
+        updated=res.get("updated"),
+        project_size=res.get("projectSize"),
+        results_size=res.get("resultsSize"),
+        runtime=res.get("runtime"),
+        email=res.get("email"),
+    )
 
 
 class BiosimService(ABC):
@@ -65,9 +90,8 @@ class BiosimServiceRest(BiosimService):
         sim_id: str = res['simulator']
         sim_ver: str = res['simulatorVersion']
         sim_digest: str = res['simulatorDigest']
-        sim_status = BiosimSimulationRunStatus(res['status'])
         simulator_version = await self._get_simulator_version(sim_id=sim_id, sim_ver=sim_ver, sim_digest=sim_digest)
-        sim_run = BiosimSimulationRun(id=res["id"], name=res["name"], simulator_version=simulator_version, status=sim_status)
+        sim_run = _sim_run_from_response(res, simulator_version)
         return sim_run
 
 
@@ -98,9 +122,8 @@ class BiosimServiceRest(BiosimService):
         assert simulator_version.id == sim_id
         assert simulator_version.image_digest == sim_digest
 
-        sim_status = BiosimSimulationRunStatus(res['status'])
         simulator_version = await self._get_simulator_version(sim_id=sim_id, sim_ver=sim_ver, sim_digest=sim_digest)
-        sim_run = BiosimSimulationRun(id=res["id"], name=res["name"], simulator_version=simulator_version, status=sim_status)
+        sim_run = _sim_run_from_response(res, simulator_version)
 
         # logger.info("Submitted " + omex_name + " on biosimulations with simulation id: " + sim_run.id)
         # logger.info("View:", api_base_url + "/runs/" + sim_run.id)

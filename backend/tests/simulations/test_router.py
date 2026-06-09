@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from biosim_server.api.main import app
 from biosim_server.biosim_omex.models import OmexFile
 from biosim_server.biosim_runs import BiosimulatorVersion
+from biosim_server.simulations.workflow import SimulationRunWorkflowInput
 
 
 MOCK_OMEX_FILE = OmexFile(
@@ -128,6 +129,158 @@ def test_run_simulations_multiple_simulators(
     assert data["jobs"][0]["job_id"] != data["jobs"][1]["job_id"]
 
 
+def _workflow_input_from(temporal_client: AsyncMock) -> SimulationRunWorkflowInput:
+    """Pull the SimulationRunWorkflowInput passed to start_workflow(args=[...])."""
+    workflow_input: SimulationRunWorkflowInput = temporal_client.start_workflow.call_args.kwargs["args"][0]
+    return workflow_input
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_cache_buster_passthrough(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+) -> None:
+    """An explicit cache_buster is forwarded to the workflow input."""
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    mock_get_temporal.return_value = temporal_client
+
+    request = _make_request()
+    request["cache_buster"] = "salt-123"
+    response = TestClient(app).post("/simulations/run", json=request)
+
+    assert response.status_code == 200
+    assert _workflow_input_from(temporal_client).cache_buster == "salt-123"
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_cache_buster_defaults_to_zero(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+) -> None:
+    """When cache_buster is omitted, the workflow input defaults to "0" (dedup)."""
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    mock_get_temporal.return_value = temporal_client
+
+    response = TestClient(app).post("/simulations/run", json=_make_request())
+
+    assert response.status_code == 200
+    assert _workflow_input_from(temporal_client).cache_buster == "0"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_inserts_before_starting_workflow(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """All SimulationRunRecord inserts must complete BEFORE the workflow starts -- the
+    child OmexSimWorkflow's early update_run_status_activity (Mongo update_one with no
+    upsert) would otherwise silently no-op against missing rows on cache hits."""
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    mock_get_runs_db.return_value = runs_db
+
+    order: list[str] = []
+
+    async def _record_insert(record: object) -> object:
+        order.append("insert")
+        return record
+
+    async def _record_start(*args: object, **kwargs: object) -> AsyncMock:
+        order.append("start")
+        return AsyncMock()
+
+    runs_db.insert_simulation_run.side_effect = _record_insert
+    temporal_client.start_workflow.side_effect = _record_start
+
+    request = _make_request(simulators=[
+        {"id": "copasi", "version": "4.34.251"},
+        {"id": "tellurium", "version": "2.2.10"},
+    ])
+    response = TestClient(app).post("/simulations/run", json=request)
+
+    assert response.status_code == 200
+    # Every insert must precede the workflow start.
+    assert order == ["insert", "insert", "start"], f"unexpected ordering: {order}"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_marks_records_failed_when_start_workflow_raises(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """If start_workflow raises after inserts succeed, the rows must be marked FAILED
+    so they don't linger as CREATED forever -- no workflow will ever move them out."""
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    temporal_client.start_workflow.side_effect = RuntimeError("Temporal unavailable")
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    mock_get_runs_db.return_value = runs_db
+
+    request = _make_request(simulators=[
+        {"id": "copasi", "version": "4.34.251"},
+        {"id": "tellurium", "version": "2.2.10"},
+    ])
+    response = TestClient(app).post("/simulations/run", json=request)
+
+    assert response.status_code == 503
+    # Both rows were inserted CREATED and then rolled back to FAILED.
+    assert runs_db.insert_simulation_run.call_count == 2
+    assert runs_db.update_simulation_run.call_count == 2
+    for call in runs_db.update_simulation_run.call_args_list:
+        assert call.kwargs.get("status") == "FAILED"
+
+
 @patch("biosim_server.simulations.router.get_omex_database_service")
 def test_run_simulations_omex_not_found(mock_get_omex_db: MagicMock) -> None:
     """Test 404 when OMEX file not found."""
@@ -202,7 +355,7 @@ def test_get_simulation_status_success(mock_get_temporal: MagicMock) -> None:
 
 @patch("biosim_server.simulations.router.get_temporal_client")
 def test_get_simulation_status_not_found(mock_get_temporal: MagicMock) -> None:
-    """Test 404 when workflow not found."""
+    """Test 404 when workflow not found AND no DB records exist."""
     temporal_client = MagicMock()
     workflow_handle = AsyncMock()
     workflow_handle.query.side_effect = Exception("Workflow not found")
@@ -213,6 +366,139 @@ def test_get_simulation_status_not_found(mock_get_temporal: MagicMock) -> None:
     response = client.get("/simulations/nonexistent")
 
     assert response.status_code == 404
+
+
+def _make_run_record(
+    run_id: str,
+    *,
+    processing_id: str,
+    status: str = "SUCCEEDED",
+    simulator: str = "copasi",
+    biosimulations_run_id: str | None = "biosim-abc",
+) -> object:
+    """Build a SimulationRunRecord for the fallback / hybrid-merge tests."""
+    from datetime import datetime, timezone
+
+    from biosim_server.simulations.models import SimulationRunRecord
+
+    when = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    return SimulationRunRecord(
+        run_id=run_id,
+        processing_id=processing_id,
+        name="Run",
+        simulator=simulator,
+        simulator_version="4.34.251",
+        simulator_digest="sha256:abc",
+        cache_buster="0",
+        email="user@example.com",
+        status=status,  # type: ignore[arg-type]
+        biosimulations_run_id=biosimulations_run_id,
+        submitted=when,
+        updated=when,
+    )
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_get_simulation_status_falls_back_to_db_when_workflow_query_fails(
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """If the workflow query fails (e.g. Temporal evicted the history), the endpoint
+    builds the response from persisted SimulationRunRecord rows instead of 404."""
+    temporal_client = MagicMock()
+    workflow_handle = AsyncMock()
+    workflow_handle.query.side_effect = Exception("workflow history evicted")
+    temporal_client.get_workflow_handle.return_value = workflow_handle
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record("job-1", processing_id="sim-run-evicted", status="SUCCEEDED",
+                         simulator="copasi", biosimulations_run_id="biosim-1"),
+        _make_run_record("job-2", processing_id="sim-run-evicted", status="FAILED",
+                         simulator="tellurium", biosimulations_run_id="biosim-2"),
+    ]
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).get("/simulations/sim-run-evicted")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["processing_id"] == "sim-run-evicted"
+    assert len(data["jobs"]) == 2
+    # SUCCEEDED -> "success", FAILED -> "failure" via _DISPLAY_TO_JOB_STATUS.
+    by_id = {job["job_id"]: job for job in data["jobs"]}
+    assert by_id["job-1"]["status"] == "success"
+    assert by_id["job-1"]["biosimulations_run_id"] == "biosim-1"
+    assert by_id["job-2"]["status"] == "failure"
+    assert by_id["job-2"]["biosimulations_run_id"] == "biosim-2"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_get_simulation_status_404_when_workflow_and_db_both_empty(
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """If both the workflow query and the DB lookup come up empty, the endpoint 404s."""
+    temporal_client = MagicMock()
+    workflow_handle = AsyncMock()
+    workflow_handle.query.side_effect = Exception("workflow not found")
+    temporal_client.get_workflow_handle.return_value = workflow_handle
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = []
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).get("/simulations/sim-run-unknown")
+
+    assert response.status_code == 404
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_get_simulation_status_hybrid_enriches_biosim_run_id_from_db(
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """When the workflow query returns biosimulations_run_id=None for a job (mid-run
+    before the parent has copied it from children), the DB record's id fills in --
+    this is the PR2.5 early-write path made visible through GET /simulations/{id}."""
+    from biosim_server.simulations.models import ConglomerateStatus, SimulationJobStatus
+
+    workflow_status = ConglomerateStatus(
+        processing_id="sim-run-x",
+        jobs=[SimulationJobStatus(
+            job_id="job-1",
+            simulator_id="copasi",
+            version="4.34.251",
+            status="processing",
+            biosimulations_run_id=None,
+        )],
+    )
+    temporal_client = MagicMock()
+    workflow_handle = AsyncMock()
+    workflow_handle.query.return_value = workflow_status
+    temporal_client.get_workflow_handle.return_value = workflow_handle
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record("job-1", processing_id="sim-run-x", status="CREATED",
+                         biosimulations_run_id="biosim-early"),
+    ]
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).get("/simulations/sim-run-x")
+
+    assert response.status_code == 200
+    job = response.json()["jobs"][0]
+    # Live status from the workflow query...
+    assert job["status"] == "processing"
+    # ...biosim_run_id enriched from the DB.
+    assert job["biosimulations_run_id"] == "biosim-early"
 
 
 def test_run_simulations_missing_fields() -> None:

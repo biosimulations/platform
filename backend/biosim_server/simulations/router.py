@@ -6,8 +6,21 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 from biosim_server.biosim_runs import BiosimulatorVersion
-from biosim_server.dependencies import get_temporal_client, get_biosim_service, get_omex_database_service
-from biosim_server.simulations.models import RunSimulationRequest, ConglomerateStatus, SimulationJobStatus
+from biosim_server.dependencies import (
+    get_temporal_client,
+    get_biosim_service,
+    get_omex_database_service,
+    get_simulation_run_database_service,
+)
+from biosim_server.simulations.models import (
+    RunSimulationRequest,
+    ConglomerateStatus,
+    SimulationJobStatus,
+    SimulationRunRecord,
+    ListSimulationRunsRequest,
+    ListSimulationRunsResponse,
+    SimulationRun,
+)
 from biosim_server.simulations.workflow import SimulationRunWorkflow, SimulationRunWorkflowInput
 
 logger = logging.getLogger(__name__)
@@ -55,24 +68,64 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
     job_ids = [uuid.uuid4().hex for _ in simulator_versions]
     workflow_id = f"sim-run-{uuid.uuid4()}"
 
+    # Default "0" reuses cached results across identical submissions; a caller-supplied
+    # salt forces fresh biosimulations.org runs (parity with /verify/omex's cache_buster).
+    cache_buster = request.cache_buster or "0"
+
     workflow_input = SimulationRunWorkflowInput(
         omex_file=omex_file,
         simulators=simulator_versions,
         job_ids=job_ids,
-        cache_buster="0",
+        cache_buster=cache_buster,
     )
 
-    # Start Temporal workflow
     temporal_client = get_temporal_client()
     if temporal_client is None:
         raise HTTPException(status_code=503, detail="Temporal service not available")
 
-    await temporal_client.start_workflow(
-        SimulationRunWorkflow.run,
-        args=[workflow_input],
-        task_queue="verification_tasks",
-        id=workflow_id,
-    )
+    # Persist a queryable run record per simulator job (status CREATED) BEFORE starting
+    # the workflow. A child OmexSimWorkflow that cache-hits and dispatches its early
+    # update_run_status_activity in ~milliseconds would otherwise race the API's inserts
+    # -- update_one with no upsert silently no-ops against a missing row, dropping the
+    # biosimulations_run_id on the floor. Insert failures are still non-fatal.
+    runs_db = get_simulation_run_database_service()
+    if runs_db is not None:
+        for job_id, sim in zip(job_ids, simulator_versions):
+            try:
+                await runs_db.insert_simulation_run(SimulationRunRecord(
+                    run_id=job_id,
+                    processing_id=workflow_id,
+                    name=request.name,
+                    simulator=sim.id,
+                    simulator_version=sim.version,
+                    simulator_digest=sim.image_digest,
+                    cache_buster=cache_buster,
+                    email=request.email_address,
+                    status="CREATED",
+                ))
+            except Exception as e:
+                logger.error(f"Failed to persist simulation run record {job_id}: {e}", exc_info=e)
+    else:
+        logger.warning("Simulation run database service not available; run not persisted for listing")
+
+    # Start Temporal workflow. If this raises, mark the just-inserted rows FAILED so
+    # they don't linger as CREATED forever (no workflow will ever move them out).
+    try:
+        await temporal_client.start_workflow(
+            SimulationRunWorkflow.run,
+            args=[workflow_input],
+            task_queue="verification_tasks",
+            id=workflow_id,
+        )
+    except Exception as e:
+        logger.error(f"Failed to start SimulationRunWorkflow {workflow_id}: {e}", exc_info=e)
+        if runs_db is not None:
+            for job_id in job_ids:
+                try:
+                    await runs_db.update_simulation_run(job_id, status="FAILED")
+                except Exception as cleanup_e:
+                    logger.warning(f"Cleanup of run record {job_id} after start_workflow failure failed: {cleanup_e}")
+        raise HTTPException(status_code=503, detail=f"Failed to start simulation workflow: {e}")
     logger.info(f"Started SimulationRunWorkflow with id {workflow_id}")
 
     # Return initial status with all jobs as "processing"
@@ -88,6 +141,27 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
     return ConglomerateStatus(processing_id=workflow_id, jobs=jobs)
 
 
+@router.post(
+    "/runs",
+    response_model=ListSimulationRunsResponse,
+    operation_id="list-simulation-runs",
+    summary="List simulation runs (owner-scoped, paginated, sortable, filterable)",
+)
+async def list_simulation_runs(request: ListSimulationRunsRequest) -> ListSimulationRunsResponse:
+    if request.type == "user" and not request.user:
+        raise HTTPException(status_code=400, detail="user (email) is required when type is 'user'")
+
+    runs_db = get_simulation_run_database_service()
+    if runs_db is None:
+        raise HTTPException(status_code=503, detail="Simulation run database service not available")
+
+    records, total = await runs_db.query_simulation_runs(request)
+    return ListSimulationRunsResponse(
+        runs=[SimulationRun.from_record(record) for record in records],
+        pagination=request.pagination.model_copy(update={"total": total}),
+    )
+
+
 @router.get(
     "/{processing_id}",
     response_model=ConglomerateStatus,
@@ -100,18 +174,65 @@ async def get_simulation_status(processing_id: str) -> ConglomerateStatus:
     if temporal_client is None:
         raise HTTPException(status_code=503, detail="Temporal service not available")
 
+    # Try the workflow query first. Don't 404 on failure -- the workflow's Temporal
+    # history may have been evicted while the SimulationRunRecord rows still exist
+    # in Mongo (the listing endpoint still surfaces them). Fall back to DB below.
+    status: ConglomerateStatus | None = None
     try:
         workflow_handle = temporal_client.get_workflow_handle(
             workflow_id=processing_id,
             result_type=ConglomerateStatus,
         )
-        status: ConglomerateStatus = await workflow_handle.query(
+        status = await workflow_handle.query(
             "get_status",
             result_type=ConglomerateStatus,
             rpc_timeout=timedelta(seconds=60),
         )
-        return status
     except Exception as e:
-        msg = f"Error retrieving simulation status for id: {processing_id}: {e}"
-        logger.error(msg, exc_info=e)
-        raise HTTPException(status_code=404, detail=msg)
+        logger.info(f"Workflow query failed for {processing_id} (will try DB fallback): {e}")
+
+    # Fetch SimulationRunRecord rows for this processing_id once -- they enrich the
+    # workflow-query view with the early biosimulations_run_id, AND serve as the
+    # sole source when the workflow query failed above.
+    records: list[SimulationRunRecord] = []
+    runs_db = get_simulation_run_database_service()
+    if runs_db is not None:
+        try:
+            records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
+        except Exception as e:
+            logger.warning(f"Failed to read SimulationRunRecords for {processing_id}: {e}")
+
+    if status is not None:
+        # Hybrid: workflow-query for live state, DB for the early run id per job.
+        id_by_run = {r.run_id: r.biosimulations_run_id for r in records}
+        for job in status.jobs:
+            if job.biosimulations_run_id is None:
+                job.biosimulations_run_id = id_by_run.get(job.job_id)
+        return status
+
+    if not records:
+        raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+    return _conglomerate_status_from_records(processing_id, records)
+
+
+# Maps the SimulationRunRecord display status back onto the SimulationJobStatus
+# internal status. Inverse of job_status_to_display in simulations.models.
+_DISPLAY_TO_JOB_STATUS: dict[str, str] = {"CREATED": "processing", "SUCCEEDED": "success", "FAILED": "failure"}
+
+
+def _conglomerate_status_from_records(
+    processing_id: str, records: list[SimulationRunRecord]
+) -> ConglomerateStatus:
+    """Build a ConglomerateStatus from persisted records when the Temporal workflow
+    query is unavailable (history evicted, workflow never existed, Temporal down)."""
+    jobs = [
+        SimulationJobStatus(
+            job_id=record.run_id,
+            simulator_id=record.simulator,
+            version=record.simulator_version,
+            status=_DISPLAY_TO_JOB_STATUS.get(record.status, "processing"),
+            biosimulations_run_id=record.biosimulations_run_id,
+        )
+        for record in records
+    ]
+    return ConglomerateStatus(processing_id=processing_id, jobs=jobs)

@@ -107,9 +107,9 @@ Backend endpoints consumed (see `../backend/CLAUDE.md` for the full list):
 
 | Page | Calls |
 |------|-------|
-| `pages/simulations/run.vue` | `POST /compatibility/check`, `POST /simulations/run` |
-| `pages/simulations/check-status/[processing_id].vue` | `GET /simulations/{processing_id}` |
-| `pages/simulations/index.vue` | `GET /runs` (currently commented out) |
+| `pages/simulations/run.vue` | `POST /compatibility/check`, `POST /simulations/run` (optional `cache_buster`) |
+| `pages/simulations/check-status/[processing_id].vue` | `GET /simulations/{processing_id}` (workflow-query + DB-fallback hybrid, since PR #53) |
+| `pages/simulations/index.vue` | `POST /simulations/runs` — **not wired on `main`** (renders hardcoded mock data via `setTimeout`); partial wire-up exists on remote branch `origin/feature/runs-page` with a known response-shape bug. See `docs/simulation-runs-api-plan.md` for the status. |
 | `pages/biosim-db.vue` | `GET /projects` (against `runtimeConfig.public.biosimulations_api_url` — the public biosimulations.org project DB API, not the platform backend) |
 
 ## Key Patterns

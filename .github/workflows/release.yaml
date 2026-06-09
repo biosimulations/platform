@@ -1,0 +1,215 @@
+name: release
+
+# Builds and pushes service images to GHCR, and (on tag pushes) cuts a GitHub
+# Release. Deploy to clusters stays a manual `kubectl apply` step — see
+# backend/CLAUDE.md "Deploy".
+#
+# Triggers:
+#   - Push a version tag:
+#       backend-vX.Y.Z   -> platform-api + platform-worker  @ backend-X.Y.Z
+#       frontend-vX.Y.Z  -> platform-frontend               @ frontend-X.Y.Z
+#       vX.Y.Z           -> all three (coordinated release)
+#     (the git tag carries the leading `v`; the image tag strips it)
+#   - Manual workflow_dispatch with service + version inputs (no Release cut).
+#
+# Images are amd64-only here. For a multi-arch (amd64+arm64) build, use the
+# local fallback: kustomize/scripts/build_and_push.sh.
+
+on:
+  push:
+    tags:
+      - 'backend-v*'
+      - 'frontend-v*'
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Which images to build
+        type: choice
+        options: [backend, frontend, all]
+        required: true
+      version:
+        description: Version X.Y.Z (no leading v)
+        type: string
+        required: true
+
+permissions:
+  contents: write   # create GitHub Release
+  packages: write   # push images to GHCR
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: biosimulations
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build_backend: ${{ steps.resolve.outputs.build_backend }}
+      build_frontend: ${{ steps.resolve.outputs.build_frontend }}
+      version: ${{ steps.resolve.outputs.version }}
+      make_release: ${{ steps.resolve.outputs.make_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve service + version from trigger
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            service='${{ inputs.service }}'
+            version='${{ inputs.version }}'
+            make_release=false
+          else
+            tag='${{ github.ref_name }}'
+            case "$tag" in
+              backend-v*)  service=backend;  version="${tag#backend-v}"  ;;
+              frontend-v*) service=frontend; version="${tag#frontend-v}" ;;
+              v*)          service=all;      version="${tag#v}"          ;;
+              *) echo "::error::Unrecognized tag '$tag'"; exit 1 ;;
+            esac
+            make_release=true
+          fi
+
+          if ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version '$version' is not X.Y.Z"; exit 1
+          fi
+
+          case "$service" in
+            backend)  build_backend=true;  build_frontend=false ;;
+            frontend) build_backend=false; build_frontend=true  ;;
+            all)      build_backend=true;  build_frontend=true  ;;
+            *) echo "::error::Unknown service '$service'"; exit 1 ;;
+          esac
+
+          {
+            echo "build_backend=$build_backend"
+            echo "build_frontend=$build_frontend"
+            echo "version=$version"
+            echo "make_release=$make_release"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved: service=$service version=$version release=$make_release"
+
+      - name: Guard — tag version matches source files
+        run: |
+          set -euo pipefail
+          version='${{ steps.resolve.outputs.version }}'
+          if [ "${{ steps.resolve.outputs.build_backend }}" = "true" ]; then
+            src=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' backend/biosim_server/version.py | head -1)
+            if [ "$src" != "$version" ]; then
+              echo "::error::backend version.py is $src but release version is $version"; exit 1
+            fi
+          fi
+          if [ "${{ steps.resolve.outputs.build_frontend }}" = "true" ]; then
+            src=$(jq -r .version frontend/package.json)
+            if [ "$src" != "$version" ]; then
+              echo "::error::frontend package.json is $src but release version is $version"; exit 1
+            fi
+          fi
+
+  backend:
+    needs: plan
+    if: needs.plan.outputs.build_backend == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api, worker]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push platform-${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile.${{ matrix.service }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-${{ matrix.service }}:backend-${{ needs.plan.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  frontend:
+    needs: plan
+    if: needs.plan.outputs.build_frontend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build Nuxt output
+        run: |
+          npm ci
+          npm run build
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push platform-frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-frontend:frontend-${{ needs.plan.outputs.version }}
+
+  release:
+    needs: [plan, backend, frontend]
+    # Run after the builds that applied. always() lets this run even when one
+    # build job was skipped (e.g. backend-only tag skips frontend); the !failure
+    # / !cancelled checks ensure any build that DID run succeeded first.
+    if: ${{ always() && needs.plan.outputs.make_release == 'true' && !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compose image list
+        id: images
+        run: |
+          set -euo pipefail
+          v='${{ needs.plan.outputs.version }}'
+          lines=""
+          if [ "${{ needs.plan.outputs.build_backend }}" = "true" ]; then
+            lines="${lines}- \`${REGISTRY}/${IMAGE_OWNER}/platform-api:backend-${v}\`"$'\n'
+            lines="${lines}- \`${REGISTRY}/${IMAGE_OWNER}/platform-worker:backend-${v}\`"$'\n'
+          fi
+          if [ "${{ needs.plan.outputs.build_frontend }}" = "true" ]; then
+            lines="${lines}- \`${REGISTRY}/${IMAGE_OWNER}/platform-frontend:frontend-${v}\`"$'\n'
+          fi
+          {
+            echo "body<<EOF"
+            echo "Published images (linux/amd64):"
+            echo ""
+            printf '%s' "$lines"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          body: ${{ steps.images.outputs.body }}

@@ -5,9 +5,9 @@ namespace: biosim-rke
 
 images:
 - name: ghcr.io/biosimulations/platform-api
-  newTag: backend-0.4.1
+  newTag: backend-0.5.0
 - name: ghcr.io/biosimulations/platform-worker
-  newTag: backend-0.4.1
+  newTag: backend-0.5.0
 - name: ghcr.io/biosimulations/platform-frontend
   newTag: frontend-0.1.0
 - name: docker.io/library/mongo

@@ -139,6 +139,7 @@ backend/
 |----------|--------|---------|
 | `/compatibility/check` | POST | Check OMEX archive compatibility with simulators |
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
+| `/simulations/runs` | POST | List simulation runs (owner-scoped, paginated, sortable, filterable) |
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
 | `/verify/omex` | POST | Verify OMEX file across simulators |
 | `/verify/{workflow_id}` | GET | Get verification results |
@@ -151,6 +152,7 @@ backend/
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
 - **BiosimCompare** - Comparison results
+- **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns
 
@@ -238,27 +240,49 @@ pytest -m "not integration"
 
 Backend release steps (run from repo root unless noted):
 
-1. **Bump version** in `backend/biosim_server/version.py` and `backend/pyproject.toml`
-2. **Update kustomize overlays** — set `newTag` in each overlay's `kustomization.yaml`:
-   - `kustomize/overlays/biosim-gke/kustomization.yaml` (amd64)
-   - `kustomize/overlays/biosim-rke/kustomization.yaml` (amd64)
-   - `kustomize/overlays/biosim-local/kustomization.yaml` (arm64)
-3. **Build and push Docker images** (builds api + worker for amd64 + arm64; pushes to `ghcr.io/biosimulations/platform-{api,worker}`):
+> **Workflow-restructuring releases require a worker drain.** A release that
+> changes the activity sequence inside a Temporal workflow (e.g. PR #52, which
+> split the monolithic `submit_biosim_simulation_run_activity` into separate
+> submit + poll activities inside `OmexSimWorkflow`) will hit
+> `NonDeterministicWorkflowError` if a new worker replays an in-flight
+> workflow whose history was recorded against the old code. Drain in-flight
+> workflows (wait for them to complete, or `tctl workflow terminate`) BEFORE
+> rolling out the new `platform-worker` image. The `platform-api` image is
+> safe to deploy at any time — its only Temporal contract is `start_workflow`
+> / `query_workflow`. See `docs/workflows-architecture.md` → "Deploy
+> considerations" for the full rationale and the longer-term `workflow.patched`
+> pattern.
+
+1. **Bump version + tag** (bumps `version.py` + `pyproject.toml`, commits, tags `backend-vX.Y.Z`):
    ```bash
-   bash kustomize/scripts/build_and_push.sh
+   bash backend/scripts/bump-backend.sh patch      # or minor|major|X.Y.Z
    ```
-4. **Commit, tag, and push**:
+2. **Update kustomize overlays** — set `newTag: backend-X.Y.Z` in each overlay's `kustomization.yaml`:
+   - `kustomize/overlays/biosim-gke/kustomization.yaml`
+   - `kustomize/overlays/biosim-rke/kustomization.yaml`
+   - `kustomize/overlays/biosim-local/kustomization.yaml` (see arm64 note below)
+
+   Commit these alongside the bump (the script commits only the version files).
+3. **Push the branch + tag** to build and publish images via CI:
    ```bash
-   git add -A && git commit -m "bump version to X.Y.Z and deploy"
-   git tag vX.Y.Z && git push origin <branch> && git push origin vX.Y.Z
+   git push origin <branch>
+   git push origin backend-vX.Y.Z
    ```
-5. **Apply to cluster** (example for biosim-gke):
+   The `release` workflow (`.github/workflows/release.yaml`) builds + pushes
+   `platform-{api,worker}:backend-X.Y.Z` to GHCR (**amd64-only**) and cuts a
+   GitHub Release. Watch it under the repo's Actions tab.
+
+   > **arm64 / `biosim-local`:** CI publishes amd64 only. If you need an arm64
+   > layer at `backend-X.Y.Z` (e.g. for the `biosim-local` overlay on Apple
+   > silicon), build it locally instead: `bash kustomize/scripts/build_and_push.sh backend X.Y.Z`
+   > (multi-arch). Or keep `biosim-local` pinned to an older multi-arch tag.
+4. **Apply to cluster** (example for biosim-gke) once images are published:
    ```bash
    export KUBECONFIG=<path-to-kubeconfig>
    cd kustomize/overlays/biosim-gke
    kubectl kustomize . | kubectl apply -f -
    ```
-6. **Verify**:
+5. **Verify**:
    ```bash
    kubectl get pods -n biosim-gke
    ```
