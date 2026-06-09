@@ -6,7 +6,7 @@ import { useClipboard } from '@vueuse/core'
 import type {SimulationRun, SimulationRuns} from "~/models/simulators";
 import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import Loading from "~/components/Loading.vue";
-import {TableFilterConfig, TableFilter, type TableSort, type TablePagination} from "~/models/filtering";
+import type {TableFilterConfig, TableFilter, type TableSort, type TablePagination} from "~/models/filtering";
 
 const UButton = resolveComponent('UButton')
 const UCheckbox = resolveComponent('UCheckbox')
@@ -225,6 +225,12 @@ async function fetch_runs() {
     acc[key] = table_pagination.value[key]
     return acc
   }, {})
+
+  console.log(table_pagination.value._total, table_pagination.value.perPage, table_pagination.value.page)
+
+  if (fetched_data.value && table_pagination.value.perPage !== fetched_data.value.pagination.perPage) {
+    table_pagination.value.page = 1
+  }
 
   try {
     fetched_data.value = await $fetch(`${runtimeConfig.public.api_url}/simulations/runs`, {

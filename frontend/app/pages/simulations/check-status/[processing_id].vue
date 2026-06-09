@@ -115,7 +115,7 @@
       </UAlert>
       <!--<USeparator class="my-4"></USeparator>-->
       <section id="job_statuses" class="w-full grid items-stretch grid-cols-1 sm:grid-cols-2 sm:min-w-[600px] md:grid-cols-3 gap-4 p-4 md:w-max md:min-w-[700px] md:max-w-full lg:min-w-[900px] rounded-lg border border-gray-200 bg-white" :class="{'mt-4': finished}">
-        <div id="job_status" class="flex flex-col justify-between gap-4 flex-1 w-full border border-gray-200 bg-neutral-50/50 px-3 py-2 rounded-lg" v-for="job of processing_status.jobs">
+        <div id="job_status" class="flex flex-col justify-between gap-4 flex-1 w-full border border-gray-200 bg-neutral-50/50 px-3 py-2 rounded-lg" :key="job.job_id" v-for="job of processing_status.jobs">
           <div class="w-full flex flex-col gap-1">
             <UTooltip :text="`Job #${job.job_id}`" :delay-duration="0">
               <small class="opacity-70 cursor-pointer text-left overflow-hidden whitespace-nowrap text-ellipsis">Job #{{job.job_id}}</small>

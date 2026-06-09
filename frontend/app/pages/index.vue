@@ -94,155 +94,188 @@
       leadingIcon: 'i-lucide-book-open' // w-4
     }
   ])
+  // TODO: Update names and urls, add numerical sequential ids
   const partners = ref([
     {
+      id: 1,
       url: 'https://google.com',
       src: '/images/collab_partners/image.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 2,
       url: 'https://google.com',
       src: '/images/collab_partners/image-2.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 3,
       url: 'https://google.com',
       src: '/images/collab_partners/image-3.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 4,
       url: 'https://google.com',
       src: '/images/collab_partners/image-4.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 5,
       url: 'https://google.com',
       src: '/images/collab_partners/image-5.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 6,
       url: 'https://google.com',
       src: '/images/collab_partners/image-6.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 7,
       url: 'https://google.com',
       src: '/images/collab_partners/image-7.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 8,
       url: 'https://google.com',
       src: '/images/collab_partners/image-8.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 9,
       url: 'https://google.com',
       src: '/images/collab_partners/image-9.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 10,
       url: 'https://google.com',
       src: '/images/collab_partners/image-10.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 11,
       url: 'https://google.com',
       src: '/images/collab_partners/image-11.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 12,
       url: 'https://google.com',
       src: '/images/collab_partners/image-12.png',
       alt: 'Partner Logo or Image'
     },
     {
+      id: 13,
       url: 'https://google.com',
       src: '/images/collab_partners/image-13.png',
       alt: 'Partner Logo or Image'
     }
   ])
+
+  // TODO: Update names and urls, add numerical sequential ids starting from 1
   const built_using = ref([
     {
+      id: 1,
       url: 'https://google.com',
       src: '/images/built_using/image.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 2,
       url: 'https://google.com',
       src: '/images/built_using/image-2.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 3,
       url: 'https://google.com',
       src: '/images/built_using/image-3.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 4,
       url: 'https://google.com',
       src: '/images/built_using/image-4.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 5,
       url: 'https://google.com',
       src: '/images/built_using/image-5.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 6,
       url: 'https://google.com',
       src: '/images/built_using/image-6.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 7,
       url: 'https://google.com',
       src: '/images/built_using/image-7.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 8,
       url: 'https://google.com',
       src: '/images/built_using/image-8.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 9,
       url: 'https://google.com',
       src: '/images/built_using/image-9.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 10,
       url: 'https://google.com',
       src: '/images/built_using/image-10.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 11,
       url: 'https://google.com',
       src: '/images/built_using/image-11.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 12,
       url: 'https://google.com',
       src: '/images/built_using/image-12.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 13,
       url: 'https://google.com',
       src: '/images/built_using/image-13.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 14,
       url: 'https://google.com',
       src: '/images/built_using/image-14.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 15,
       url: 'https://google.com',
       src: '/images/built_using/image-15.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 16,
       url: 'https://google.com',
       src: '/images/built_using/image-16.png',
       alt: 'Logo or Image of Technology/Platform Used'
     },
     {
+      id: 17,
       url: 'https://google.com',
       src: '/images/built_using/image-17.png',
       alt: 'Logo or Image of Technology/Platform Used'
@@ -460,7 +493,7 @@
     // 4. Draw & Update Active Blue Tiles
     const totalCycle = FADE_DURATION + HOLD_TIME_MS + FADE_DURATION;
 
-    activeTiles = activeTiles.filter(tile => {
+    activeTiles = activeTiles.filter((tile: any) => {
       const elapsed = time - tile.start;
 
       // Remove tile if animation cycle is complete
@@ -611,7 +644,7 @@
       <div class="w-full flex flex-col items-center gap-6">
         <p class="text-lg text-center"><strong>In Collaboration With</strong></p>
         <UMarquee class="w-full overflow-hidden" pause-on-hover :overlay="false" orientation="horizontal">
-          <NuxtLink v-for="partner of partners" :to="partner.url" target="_blank">
+          <NuxtLink v-for="partner of partners" :key="partner.id" :to="partner.url" target="_blank">
             <img class="max-h-[40px] max-w-[250px] w-full h-full" :alt="partner.alt" :src="partner.src"/>
           </NuxtLink>
         </UMarquee>
@@ -621,7 +654,7 @@
       <div class="w-full flex flex-col items-center gap-6">
         <p class="text-lg text-center"><strong>Built Using These Awesome Projects & Platforms</strong></p>
         <UMarquee class="w-full overflow-hidden" pause-on-hover reverse :overlay="false" orientation="horizontal">
-          <NuxtLink v-for="built_item of built_using" :to="built_item.url" target="_blank">
+          <NuxtLink v-for="built_item of built_using" :key="built_item.id" :to="built_item.url" target="_blank">
             <img class="max-h-[40px] max-w-[250px] w-full h-full" :alt="built_item.alt" :src="built_item.src"/>
           </NuxtLink>
         </UMarquee>
