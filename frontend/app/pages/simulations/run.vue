@@ -4,7 +4,7 @@
   import type {RadioGroupItem} from "#ui/components/RadioGroup.vue";
   import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
   import {normalize_text} from "~/functions/functions";
-  import {type ArchiveCompatibilityResponse, type ConglomerateStatus, RunSimulationPayload, type RunSimulationPayloadInterface, type Simulator, type SimulatorSelection} from "~/models/simulators";
+  import {type ArchiveCompatibilityResponse, type ConglomerateStatus, RunSimulationPayload, type Simulator, type SimulatorSelection} from "~/models/simulators";
   import type {TreeItem} from "#ui/components/Tree.vue";
   import { z } from 'zod'
   //</editor-fold>
@@ -13,13 +13,13 @@
 
   //<editor-fold desc="Breadcrumbs"
   const route = useRoute()
-  const lenis = useLenis()
+  const _lenis = useLenis()
   const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
   const breadcrumbs = ref<BreadcrumbItem[]>([])
 
   onMounted(() => {
     breadcrumbs.value = [{label: 'Home', to: '/', icon: 'i-lucide-home'}]
-    routes.forEach((route, index) => {
+    routes.forEach((route, _index) => {
       const breadcrumb = {
         label: normalize_text(route),
         to: `/${route}`

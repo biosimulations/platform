@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type {AppChip} from "~/models/common";
 
-const props = defineProps<{
+defineProps<{
   chips: AppChip[]
 }>()
 

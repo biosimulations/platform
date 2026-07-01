@@ -1,5 +1,3 @@
-import type {TablePagination} from "~/models/filtering";
-
 export interface ProjectSearchFilter {
   target: string
   allowable_values: string[]

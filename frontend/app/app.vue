@@ -170,7 +170,7 @@ const lenisOptions = {
 }
 
 onMounted(() => {
-  useLenis((lenis) => {
+  useLenis((_lenis) => {
     // called every scroll
     // console.log(lenis)
   })

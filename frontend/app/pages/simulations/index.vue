@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { h, resolveComponent, ref, useTemplateRef } from 'vue'
 import { upperFirst } from 'scule'
-import type {TableColumn, TableRow} from '@nuxt/ui'
+import type {TableColumn} from '@nuxt/ui'
 import { useClipboard } from '@vueuse/core'
-import type {SimulationRun, SimulationRuns} from "~/models/simulators";
+import type {SimulationRuns} from "~/models/simulators";
 import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import Loading from "~/components/Loading.vue";
 import type {TableFilterConfig, TableFilter, TableSort, TablePagination} from "~/models/filtering";
@@ -11,7 +11,6 @@ import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 
 const UButton = resolveComponent('UButton')
-const UCheckbox = resolveComponent('UCheckbox')
 const UBadge = resolveComponent('UBadge')
 const UDropdownMenu = resolveComponent('UDropdownMenu')
 
@@ -24,7 +23,7 @@ const breadcrumbs = ref<BreadcrumbItem[]>([])
 
 onMounted(async () => {
   breadcrumbs.value = [{label: 'Home', to: '/', icon: 'i-lucide-home'}]
-  routes.forEach((route, index) => {
+  routes.forEach((route, _index) => {
     const breadcrumb = {
       label: normalize_text(route),
       to: `/${route}`
@@ -281,11 +280,11 @@ function clear_filter(column_id: string) {
   fetch_runs()
 }
 
-function on_column_toggle(column_id: string, checked: boolean) {
+function on_column_toggle() {
   table_filters.value._hidden_exist = !table.value?.tableApi.getIsAllColumnsVisible()
 }
 
-function on_pagination_change(page: number, pageSize: number) {
+function _on_pagination_change(page: number, pageSize: number) {
   table_pagination.value.page = page
   table_pagination.value.perPage = pageSize
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
   import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 
-  const props = defineProps<{
+  defineProps<{
     title: string
   }>()
 

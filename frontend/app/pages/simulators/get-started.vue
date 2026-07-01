@@ -25,7 +25,7 @@ const route = useRoute()
 const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
 const breadcrumbs = ref<BreadcrumbItem[]>([])
 
-routes.forEach((route, index) => {
+routes.forEach((route, _index) => {
   const breadcrumb = {
     label: normalize_text(route),
     to: `/${route}`

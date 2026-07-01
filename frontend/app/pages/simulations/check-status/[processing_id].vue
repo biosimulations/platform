@@ -58,7 +58,7 @@
   }
 
   onMounted(() => {
-    routes.forEach((route, index) => {
+    routes.forEach((route, _index) => {
       const breadcrumb = {
         label: normalize_text(route),
         to: `/${route}`

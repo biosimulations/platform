@@ -406,7 +406,7 @@
   const MAX_ACTIVE_TILES = 20;
   const HOLD_TIME_MS = 1000;
   const FADE_DURATION = 800;
-  const STAGGER_MAX = 1200;
+  const _STAGGER_MAX = 1200;
   const OPACITY_SEED = 1337;
 
   // --- State ---

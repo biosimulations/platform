@@ -2,27 +2,20 @@
 import {ref, resolveComponent, useTemplateRef} from 'vue'
 import {upperFirst} from 'scule'
 import type {InputMenuItem, TableColumn, TableRow} from '@nuxt/ui'
-import {useClipboard} from '@vueuse/core'
 import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import Loading from "~/components/Loading.vue";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
-import type {AppChip} from "~/models/common";
 import type {TableFilter, TableFilterConfig, TablePagination, TableSort} from "~/models/filtering";
-import type {ProjectQueryStat, Projects, ProjectSearchFilter, ProjectSearchMenuItemValue, ProjectStub} from "~/models/projects";
+import type {ProjectQueryStat, Projects, ProjectSearchFilter, ProjectSearchMenuItemValue, ProjectStub, ValueFrequency} from "~/models/projects";
 
 const UButton = resolveComponent('UButton')
-const UCheckbox = resolveComponent('UCheckbox')
-const UBadge = resolveComponent('UBadge')
 const UDropdownMenu = resolveComponent('UDropdownMenu')
 
-const toast = useToast()
 const route = useRoute()
 const display_mode = ref<'cards' | 'table'>('cards')
 const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
-const { copy } = useClipboard()
 const runtimeConfig = useRuntimeConfig()
-const chips = ref<AppChip[]>([])
 const breadcrumbs = ref<BreadcrumbItem[]>([])
 
 const columns: TableColumn[] = [
@@ -216,7 +209,7 @@ const projects = ref<ProjectStub[]>([])
 
 onMounted(async () => {
   breadcrumbs.value = [{label: 'Home', to: '/', icon: 'i-lucide-home'}]
-  routes.forEach((route, index) => {
+  routes.forEach((route, _index) => {
     const breadcrumb = {
       label: normalize_text(route),
       to: `/${route}`
@@ -255,9 +248,9 @@ async function fetch_projects() {
 
         const image_url = (files as any[])
           .find(f =>
-            f.name.endsWith('.png') ||
-            f.name.endsWith('.jpg') ||
-            f.name.endsWith('.jpeg')
+            f.name.endsWith('.png')
+            || f.name.endsWith('.jpg')
+            || f.name.endsWith('.jpeg')
           )?.url
 
         return {
@@ -304,7 +297,7 @@ function query_stats_to_input_menu_items(query_stats: ProjectQueryStat[] = []): 
       label: normalize_text(stat.target)
     })
 
-    sorted_value_frequencies.forEach(value_frequency => {
+    sorted_value_frequencies.forEach((value_frequency: ValueFrequency) => {
       items.push({
         label: `${stat.target}: ${value_frequency.value} (${value_frequency.count})`,
         value: {
@@ -332,16 +325,16 @@ function clear_filter(column_id: string) {
   fetch_projects()
 }
 
-function on_column_toggle(column_id: string, checked: boolean) {
+function on_column_toggle() {
   table_filters.value._hidden_exist = !table.value?.tableApi.getIsAllColumnsVisible()
 }
 
-function on_pagination_change(page: number, pageSize: number) {
+/*function on_pagination_change(page: number, pageSize: number) {
   table_pagination.value.page = page
   table_pagination.value.perPage = pageSize
 
   fetch_projects()
-}
+}*/
 
 function hidden_cols_have_filters() {
   if (!table.value || !table_filters.value._hidden_exist) return false
@@ -601,15 +594,19 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
       </UTable>
 
       <div class="card_wrapper w-full gap-4" v-if="display_mode == 'cards'">
-        <USkeleton class="h-48" v-if="loading" v-for="i in table_pagination.perPage" :key="i"></USkeleton>
-        <a class="project_card cursor-pointer border no-underline border-neutral-300 rounded-lg overflow-hidden relative" :href="`https://biosimulations.org/projects/${project.id}`" v-if="!loading" v-for="project in projects" :key="project.id">
-          <img :src="project.image_url" @error="project.image_url='/images/project_placeholder.jpg'" alt="Project {{project.id}} image" loading="lazy" class="absolute w-full h-full object-cover z-0 top-0 left-0 opacity-30">
-            <div class="card_text absolute h-full bottom-0 left-0 w-full flex flex-col justify-end items-start p-3">
-              <h3 class="text-base font-bold">{{project.name}}</h3>
-              <small class="w-full whitespace-nowrap overflow-hidden text-ellipsis">{{project.summary}}</small>
-            </div>
-          </a>
-        <p class="empty_cards" v-if="!loading && !projects.length"><em>No projects found. Relax filter criteria to see broader results.</em></p>
+        <template v-if="loading">
+          <USkeleton class="h-48" v-for="i in table_pagination.perPage" :key="i"></USkeleton>
+        </template>
+        <template v-else>
+          <a class="project_card cursor-pointer border no-underline border-neutral-300 rounded-lg overflow-hidden relative" :href="`https://biosimulations.org/projects/${project.id}`" v-for="project in projects" :key="project.id">
+            <img :src="project.image_url" @error="project.image_url='/images/project_placeholder.jpg'" alt="Project {{project.id}} image" loading="lazy" class="absolute w-full h-full object-cover z-0 top-0 left-0 opacity-30">
+              <div class="card_text absolute h-full bottom-0 left-0 w-full flex flex-col justify-end items-start p-3">
+                <h3 class="text-base font-bold">{{project.name}}</h3>
+                <small class="w-full whitespace-nowrap overflow-hidden text-ellipsis">{{project.summary}}</small>
+              </div>
+            </a>
+          <p class="empty_cards" v-if="!projects.length"><em>No projects found. Relax filter criteria to see broader results.</em></p>
+        </template>
       </div>
 
       <USeparator class="mb-4"></USeparator>
