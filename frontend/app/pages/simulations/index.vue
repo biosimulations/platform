@@ -6,7 +6,9 @@ import { useClipboard } from '@vueuse/core'
 import type {SimulationRun, SimulationRuns} from "~/models/simulators";
 import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import Loading from "~/components/Loading.vue";
-import type {TableFilterConfig, TableFilter, type TableSort, type TablePagination} from "~/models/filtering";
+import type {TableFilterConfig, TableFilter, TableSort, TablePagination} from "~/models/filtering";
+import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
+import {normalize_text} from "~/functions/functions";
 
 const UButton = resolveComponent('UButton')
 const UCheckbox = resolveComponent('UCheckbox')
@@ -16,6 +18,23 @@ const UDropdownMenu = resolveComponent('UDropdownMenu')
 const toast = useToast()
 const { copy } = useClipboard()
 const runtimeConfig = useRuntimeConfig()
+const route = useRoute()
+const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
+const breadcrumbs = ref<BreadcrumbItem[]>([])
+
+onMounted(async () => {
+  breadcrumbs.value = [{label: 'Home', to: '/', icon: 'i-lucide-home'}]
+  routes.forEach((route, index) => {
+    const breadcrumb = {
+      label: normalize_text(route),
+      to: `/${route}`
+    }
+
+    breadcrumbs.value.push(breadcrumb)
+  })
+
+  await fetch_runs()
+})
 
 const columns: TableColumn[] = [
   {
@@ -208,10 +227,6 @@ const table_pagination = ref({
 } as TablePagination)
 const fetched_data = ref<SimulationRuns>({runs: [], pagination: table_pagination.value} as SimulationRuns)
 
-onMounted(async () => {
-  await fetch_runs()
-})
-
 async function fetch_runs() {
   if (fetch_user.value && !user_email.value) return
 
@@ -225,8 +240,6 @@ async function fetch_runs() {
     acc[key] = table_pagination.value[key]
     return acc
   }, {})
-
-  console.log(table_pagination.value._total, table_pagination.value.perPage, table_pagination.value.page)
 
   if (fetched_data.value && table_pagination.value.perPage !== fetched_data.value.pagination.perPage) {
     table_pagination.value.page = 1
@@ -323,44 +336,49 @@ const checkValidity = () => {
 </script>
 
 <template>
-  <section class="w-full min-h-[calc(100vh-var(--ui-header-height))] p-6 max-w-(--ui-container) mx-auto flex flex-col gap-4" :class="{'items-center justify-center': !fetched_data || error_encountered, 'items-start justify-start': fetched_data && !error_encountered}">
+  <section class="w-full min-h-[calc(100vh-var(--ui-header-height))] p-6 max-w-(--ui-container) mx-auto flex flex-col gap-4" :class="{'items-center justify-center': !fetched_data || error_encountered, 'items-start justify-start': !error_encountered}">
+    <UBreadcrumb class="mx-auto" :items="breadcrumbs"></UBreadcrumb>
+    <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
+      <div class="background diamonds w-full h-full"></div>
+      <h1 class="text-xl font-bold">Simulation Runs</h1>
+      <p>Retrieve your own simulation run results or browse what others have submitted!</p>
+    </div>
+
     <Loading v-if="!fetched_data && !error_encountered" message="Fetching simulation runs..."/>
 
     <div class="w-full" v-if="fetched_data && !error_encountered">
-      <div class="w-full flex items-center justify-between px-4 py-3.5 border-b border-accented">
-        <h3 class="w-full text-xl font-bold">Simulation Runs</h3>
-        <div class="w-max flex items-center gap-4">
-          <div class="w-max flex items-center gap-2">
-            <p class="text-sm font-semibold" :class="{'text-muted': fetch_user, 'text-color': !fetch_user}">All Runs</p>
-            <USwitch v-model="fetch_user" :disabled="loading" @change="fetch_runs()"/>
-            <p class="text-sm font-semibold" :class="{'text-muted': !fetch_user, 'text-color': fetch_user}">My Runs</p>
-            <UInput
-              v-if="fetch_user"
-              v-model="user_email"
-              ref="user_email_input"
-              type="email"
-              @input="checkValidity"
-              placeholder="Enter your email address"
-              :ui="{ trailing: 'pe-1' }"
-            >
-              <template v-if="user_email && user_email.length" #trailing>
-                <UButton
-                  color="primary"
-                  variant="solid"
-                  :disabled="!user_input_valid"
-                  size="xs"
-                  :loading="loading"
-                  icon="i-lucide-send"
-                  aria-label="Fetch runs"
-                  @click="fetch_runs"
-                />
-              </template>
-            </UInput>
-          </div>
-          <UDropdownMenu
-            :disabled="loading"
-            :content="{ align: 'end' }"
-            :items="
+      <div class="w-full flex items-center justify-between gap-4">
+        <div class="w-max flex items-center gap-2">
+          <p class="text-sm font-semibold" :class="{'text-muted': fetch_user, 'text-color': !fetch_user}">All Runs</p>
+          <USwitch v-model="fetch_user" :disabled="loading" @change="fetch_runs()"/>
+          <p class="text-sm font-semibold" :class="{'text-muted': !fetch_user, 'text-color': fetch_user}">My Runs</p>
+          <UInput
+            v-if="fetch_user"
+            v-model="user_email"
+            ref="user_email_input"
+            type="email"
+            @input="checkValidity"
+            placeholder="Enter your email address"
+            :ui="{ trailing: 'pe-1' }"
+          >
+            <template v-if="user_email && user_email.length" #trailing>
+              <UButton
+                color="primary"
+                variant="solid"
+                :disabled="!user_input_valid"
+                size="xs"
+                :loading="loading"
+                icon="i-lucide-send"
+                aria-label="Fetch runs"
+                @click="fetch_runs"
+              />
+            </template>
+          </UInput>
+        </div>
+        <UDropdownMenu
+          :disabled="loading"
+          :content="{ align: 'end' }"
+          :items="
               table?.tableApi
               ?.getAllColumns()
               .filter((column) => column.getCanHide())
@@ -376,22 +394,20 @@ const checkValidity = () => {
                   e.preventDefault()
                 }
               }))">
-              <UButton
-                label="Columns"
-                color="neutral"
-                variant="outline"
-                trailing-icon="i-lucide-chevron-down" />
-          </UDropdownMenu>
-
           <UButton
-            v-if="!loading && table_filters._hidden_exist && hidden_cols_have_filters()"
-            label="Clear Hidden Filters"
+            label="Columns"
             color="neutral"
             variant="outline"
-            leading-icon="i-lucide-funnel-x"
-            @click="clear_hidden_filters()">
-          </UButton>
-        </div>
+            trailing-icon="i-lucide-chevron-down" />
+        </UDropdownMenu>
+        <UButton
+          v-if="!loading && table_filters._hidden_exist && hidden_cols_have_filters()"
+          label="Clear Hidden Filters"
+          color="neutral"
+          variant="outline"
+          leading-icon="i-lucide-funnel-x"
+          @click="clear_hidden_filters()">
+        </UButton>
       </div>
 
       <Loading class="mx-auto w-max py-4" v-if="loading" message="Fetching simulation runs..."/>

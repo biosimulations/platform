@@ -7,3 +7,56 @@
 @theme {
   --font-display: 'Fustat', sans-serif;
 }
+
+.page_header > h1,
+.page_header > p {
+  z-index: 1;
+}
+.page_header > .background {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+}
+
+.page_header > .background.isometric {
+  background-color: #2b7fff;
+  opacity: 0.1;
+  background-image: linear-gradient(30deg, #ffffff 12%, transparent 12.5%, transparent 87%, #ffffff 87.5%, #ffffff), linear-gradient(150deg, #ffffff 12%, transparent 12.5%, transparent 87%, #ffffff 87.5%, #ffffff), linear-gradient(30deg, #ffffff 12%, transparent 12.5%, transparent 87%, #ffffff 87.5%, #ffffff), linear-gradient(150deg, #ffffff 12%, transparent 12.5%, transparent 87%, #ffffff 87.5%, #ffffff), linear-gradient(60deg, #ffffff77 25%, transparent 25.5%, transparent 75%, #ffffff77 75%, #ffffff77), linear-gradient(60deg, #ffffff77 25%, transparent 25.5%, transparent 75%, #ffffff77 75%, #ffffff77);
+  background-size: 16px 28px;
+  background-position: 0 0, 0 0, 8px 14px, 8px 14px, 0 0, 8px 14px;
+  background-attachment: fixed;
+}
+
+.page_header > .background.zig-zag {
+  opacity: 0.1;
+  background:
+    radial-gradient(farthest-side at -33.33% 50%,#0000 52%,#FFFFFF 54% 57%,#0000 59%) 0 calc(60px/2),
+    radial-gradient(farthest-side at 50% 133.33%,#0000 52%,#FFFFFF 54% 57%,#0000 59%) calc(60px/2) 0,
+    radial-gradient(farthest-side at 133.33% 50%,#0000 52%,#FFFFFF 54% 57%,#0000 59%),
+    radial-gradient(farthest-side at 50% -33.33%,#0000 52%,#FFFFFF 54% 57%,#0000 59%),
+    #2B7FFF;
+  background-size: calc(60px/4.5) 60px,60px calc(60px/4.5);
+  background-attachment: fixed;
+}
+
+.page_header > .background.diamonds {
+  opacity: 0.1;
+  background:
+    repeating-linear-gradient( 45deg,#0000 calc(-650%/13) calc(50%/13),#FFFFFF 0 calc(100%/13),
+    #0000 0 calc(150%/13),#FFFFFF 0 calc(200%/13),
+    #0000 0 calc(250%/13),#FFFFFF 0 calc(300%/13)),
+    repeating-linear-gradient( 45deg,#0000 calc(-650%/13) calc(50%/13),#FFFFFF 0 calc(100%/13),
+    #0000 0 calc(150%/13),#FFFFFF 0 calc(200%/13),
+    #0000 0 calc(250%/13),#FFFFFF 0 calc(300%/13)) 20px 20px,
+    repeating-linear-gradient(-45deg,#0000 calc(-650%/13) calc(50%/13),#FFFFFF 0 calc(100%/13),
+    #0000 0 calc(150%/13),#FFFFFF 0 calc(200%/13),
+    #0000 0 calc(250%/13),#FFFFFF 0 calc(300%/13)),
+    repeating-linear-gradient(-45deg,#0000 calc(-650%/13) calc(50%/13),#FFFFFF 0 calc(100%/13),
+    #0000 0 calc(150%/13),#FFFFFF 0 calc(200%/13),
+    #0000 0 calc(250%/13),#FFFFFF 0 calc(300%/13)) 20px 20px #2B7FFF;
+  background-size: 40px 40px;
+  background-attachment: fixed;
+}

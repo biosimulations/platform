@@ -5,7 +5,7 @@
     title: string
     description: string
     selected: boolean
-    duration: 8000,
+    duration: number,
     associated_multimedia: {
       type: string
       src: string
@@ -661,7 +661,6 @@
         <p class="text-sm opacity-50 text-center leading-7">BioSimulations is implemented using several open-source tools and cloud platforms. The models, simulations, and visualizations are available under the licenses specified for each resource. The code is openly available under the MIT license. The simulation tools provided are available under the licenses specified for each simulation tool at BioSimulators.</p>
       </div>
     </section>
-
     <section id="revolutionary_platform" class="w-full relative px-6 py-[150px] text-white flex items-center text-center md:text-left justify-center">
       <div id="revolutionary_content" class="w-full max-w-[1200px] mx-auto flex flex-col gap-2 z-4">
         <small class="uppercase tracking-widest text-[0.8rem] font-semibold">what is biosimulations?</small>
@@ -679,14 +678,13 @@
         <p>Access a wide range of frameworks (e.g., logical, Flux-Balance Analysis (FBA), continuous kinetic, discrete kinetic), simulation algorithms (e.g., FBA, SSA), model formats (e.g., SBML), and tools (e.g., COBRApy, COPASI, tellurium) and connect with a community of others supercharging their bio-data processing.</p>
         <div class="flex items-center gap-4 mt-3">
           <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-sparkles" to="/simulations/run">Run a Simulation</UButton>
-          <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulators">Browse Simulation Runs</UButton>
+          <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulations">Browse Simulation Runs</UButton>
         </div>
       </div>
 
       <div id="color_gradient" class="absolute top-0 left-0 w-full h-full z-2"></div>
       <div id="top_fade_gradient" class="absolute top-0 left-0 w-full h-full z-3"></div>
     </section>
-
     <section id="workflow" class="w-full px-6 text-center md:text-left">
       <div id="workflow_content" class="w-full max-w-[1200px] mx-auto flex flex-col gap-8">
         <div class="w-full flex flex-col gap-2">
@@ -718,7 +716,6 @@
         </div>
       </div>
     </section>
-
     <section id="get_started" class="w-full bg-blue-500">
       <UPageCTA
         class=""

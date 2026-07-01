@@ -17,13 +17,16 @@
   const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
   const breadcrumbs = ref<BreadcrumbItem[]>([])
 
-  routes.forEach((route, index) => {
-    const breadcrumb = {
-      label: normalize_text(route),
-      to: `/${route}`
-    }
+  onMounted(() => {
+    breadcrumbs.value = [{label: 'Home', to: '/', icon: 'i-lucide-home'}]
+    routes.forEach((route, index) => {
+      const breadcrumb = {
+        label: normalize_text(route),
+        to: `/${route}`
+      }
 
-    breadcrumbs.value.push(breadcrumb)
+      breadcrumbs.value.push(breadcrumb)
+    })
   })
   //</editor-fold>
 
@@ -50,7 +53,7 @@
   //</editor-fold>
 
   const archive_file = ref<File | null>(null)
-  const archive_url = ref<string | null>(null)
+  const archive_url = ref<string | undefined>(undefined)
 
   const processing_archive = ref(false)
 
@@ -206,7 +209,11 @@
   <section class="w-full relative px-6 max-w-[1200px] mx-auto my-auto flex flex-col gap-4 items-center justify-center text-center md:text-left pt-5">
     <UBreadcrumb :items="breadcrumbs"></UBreadcrumb>
 
-    <h1 class="text-2xl font-bold">Run a Simulation</h1>
+    <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
+      <div class="background zig-zag w-full h-full"></div>
+      <h1 class="text-xl font-bold">Run a Simulation</h1>
+      <p>Upload your archive, select preferred algorithms, and run your simulation.</p>
+    </div>
 
     <UForm :schema="schema" :state="submission_payload" @submit="submit()">
       <UStepper v-model="stepper_position" class="w-full md:w-[700px] mt-7" ref="stepper" :items="steps">
@@ -272,7 +279,7 @@
                 <UFormField class="w-full" label="Email Address" hint="Optional" :ui="{label: 'text-sm'}" name="email_address">
                   <UInput class="w-full" type="email" v-model="submission_payload.email_address" placeholder="you@domain.com" />
                 </UFormField>
-                <UTooltip delay-duration="0" text="Providing your email address links you to the simulation, which would otherwise be submitted completely anonymously.">
+                <UTooltip :delay-duration="0" text="Providing your email address links you to the simulation, which would otherwise be submitted completely anonymously.">
                   <small class="text-underline opacity-40 cursor-pointer hover:opacity-100"><i class="i-lucide-circle-question-mark"/> Why would I want to provide this?</small>
                 </UTooltip>
 
