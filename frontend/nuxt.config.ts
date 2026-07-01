@@ -29,7 +29,8 @@ export default defineNuxtConfig({
     public: {
       base_url: process.env.BASE_URL,
       api_url: process.env.API_URL,
-      biosimulations_api_url: process.env.BIOSIMULATIONS_API_URL
+      biosimulations_api_url: process.env.BIOSIMULATIONS_API_URL,
+      legacy_api_url: process.env.LEGACY_API_URL,
     }
   },
 

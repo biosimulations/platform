@@ -103,11 +103,4 @@ export interface SimulationRun {
 }
 // </editor-fold>
 
-// <editor-fold desc="For when viewing projects">
-export interface Project {
-  id: string
-  simulationRun: string
-  created: string
-  updated: string
-}
-// </editor-fold>
+
