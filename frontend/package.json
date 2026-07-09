@@ -16,6 +16,7 @@
     "@iconify-json/simple-icons": "^1.2.59",
     "@lottiefiles/dotlottie-vue": "^0.11.7",
     "@nuxt/fonts": "^0.12.1",
+    "@nuxt/image": "^2.0.0",
     "@nuxt/ui": "^4.2.1",
     "@nuxtjs/seo": "^3.3.0",
     "dotenv": "^17.4.2",

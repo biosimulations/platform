@@ -6,7 +6,8 @@ export default defineNuxtConfig({
     '@nuxt/fonts',
     'lenis/nuxt',
     'nuxt-aos',
-    '@nuxtjs/seo'
+    '@nuxtjs/seo',
+    '@nuxt/image'
   ],
 
   devtools: {

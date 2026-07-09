@@ -5,7 +5,6 @@
   import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
   import {normalize_text} from "~/functions/functions";
   import {type ArchiveCompatibilityResponse, type ConglomerateStatus, RunSimulationPayload, type Simulator, type SimulatorSelection} from "~/models/simulators";
-  import type {TreeItem} from "#ui/components/Tree.vue";
   import { z } from 'zod'
   //</editor-fold>
 
@@ -61,7 +60,7 @@
   const submission_payload = reactive(new RunSimulationPayload())
 
   const archive_compatibility_response = ref<ArchiveCompatibilityResponse | null>(null)
-  const eligible_simulators = ref<TreeItem[]>([])
+  const eligible_simulators = ref<Simulator[]>([])
   const simulator_version_options = ref<any[]>([])
 
   const commercial_disclosure_options = ref<RadioGroupItem[]>([
@@ -85,7 +84,7 @@
         name: z.string(),
         versions: z.array(z.string()),
         exact: z.boolean(),
-        _selected_version: z.string('Select a version for this simulator')
+        _selected_version: z.string('Select a version for this simulator').optional()
       })
     ).min(1, 'At least one simulator must be selected'),
     email_address: z.email().optional(),
@@ -99,7 +98,7 @@
     if (stepper_position.value !== undefined) {
       const current_fields: string[] = fields_per_step[stepper_position.value]!
       const step_schema = schema.pick(
-        Object.fromEntries(current_fields.map(cf => [cf, true]))
+        Object.fromEntries(current_fields.map(cf => [cf, true])) as any
       )
 
       return !step_schema.safeParse(submission_payload).success

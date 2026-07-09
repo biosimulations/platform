@@ -7,7 +7,9 @@ import Loading from "~/components/Loading.vue";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 import type {TableFilter, TableFilterConfig, TablePagination, TableSort} from "~/models/filtering";
-import type {ProjectQueryStat, Projects, ProjectSearchFilter, ProjectSearchMenuItemValue, ProjectStub, ValueFrequency} from "~/models/projects";
+import type {ProjectQueryStat, ProjectQueryStatFilter, Projects, ProjectSearchFilter, ProjectSearchMenuItemValue, ProjectStub, ValueFrequency} from "~/models/projects";
+import type {CoreRow} from "@tanstack/table-core"
+import type {AppChip} from "~/models/common";
 
 const UButton = resolveComponent('UButton')
 const UDropdownMenu = resolveComponent('UDropdownMenu')
@@ -17,32 +19,34 @@ const display_mode = ref<'cards' | 'table'>('cards')
 const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
 const runtimeConfig = useRuntimeConfig()
 const breadcrumbs = ref<BreadcrumbItem[]>([])
-
-const columns: TableColumn[] = [
+const advanced_filters_open = ref(false)
+const fuzzy_search_term = ref('')
+const chips = ref<AppChip[]>([])
+const columns: TableColumn<ProjectStub>[] = [
   {
     accessorKey: 'id',
     header: 'Id',
-    cell: ({row}) => `${row.getValue('id')}`
+    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `${row.getValue('id')}`
   },
   /*{
     accessorKey: 'simulationRun',
     header: 'Simulation Run',
-    cell: ({row}) => `#${row.getValue('simulationRun')}`
+    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `#${row.getValue('simulationRun')}`
   },*/
   {
     accessorKey: 'name',
     header: 'Name',
-    cell: ({row}) => `${row.getValue('name')}`
+    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `${row.getValue('name')}`
   },
   {
     accessorKey: 'summary',
     header: 'Abstract Summary',
-    cell: ({row}) => `${row.getValue('summary')}`
+    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `${row.getValue('summary')}`
   },
   {
     accessorKey: 'created',
     header: 'Created',
-    cell: ({ row }) => {
+    cell: ({ row }: { row: CoreRow<ProjectStub> }) => {
       return new Date(row.getValue('created')).toLocaleString('en-US', {
         day: 'numeric',
         month: 'short',
@@ -56,7 +60,7 @@ const columns: TableColumn[] = [
   {
     accessorKey: 'updated',
     header: 'Updated',
-    cell: ({row}) => {
+    cell: ({ row }: { row: CoreRow<ProjectStub> }) => {
       return new Date(row.getValue('updated')).toLocaleString('en-US', {
         day: 'numeric',
         month: 'short',
@@ -200,10 +204,10 @@ const table_pagination = ref({
   perPage: 25,
   _total: 0
 } as TablePagination)
+
 const total_results = ref<number>(0)
 const error_encountered = ref<string | undefined>(undefined)
-const filter_suggestions = ref<InputMenuItem[]>([])
-const selected_filter_items = ref<InputMenuItem[]>([])
+const filter_suggestions = ref<ProjectQueryStatFilter[]>([])
 const searched_filters = ref<ProjectSearchFilter[]>([])
 const projects = ref<ProjectStub[]>([])
 
@@ -218,7 +222,6 @@ onMounted(async () => {
     breadcrumbs.value.push(breadcrumb)
   })
 
-  // update_filter_chips()
   await fetch_projects()
 })
 
@@ -229,18 +232,18 @@ async function fetch_projects() {
   projects.value = []
   total_results.value = 0
 
+  const populated_filters = searched_filters.value.filter(filter => filter.allowable_values.length > 0)
+
   try {
     const api_return = await $fetch(`${runtimeConfig.public.legacy_api_url}/projects/summary_filtered`, {
       method: 'GET',
       query: {
-        // 'searchTerm': searched_filters.value,
-        'filters': [searched_filters.value],
+        'searchTerm': fuzzy_search_term.value,
+        'filters': [populated_filters],
         'pageSize': table_pagination.value.perPage,
         'pageIndex': table_pagination.value.page
       }
     }) as Projects
-
-    console.log(api_return)
 
     projects.value = await Promise.all(
       api_return.projectSummaries.map(async (p: any) => {
@@ -267,10 +270,11 @@ async function fetch_projects() {
     ) as ProjectStub[]
 
     total_results.value = api_return.totalMatchingProjectSummaries
-    filter_suggestions.value = query_stats_to_input_menu_items(api_return.queryStats)
+    filter_suggestions.value = query_stats_to_filter_groups(api_return.queryStats)
+    searched_filters.value = filter_suggestions.value.map((f, index) => ({ target: f.target, allowable_values: []}))
 
     return
-  } catch (error) {
+  } catch (error: any) {
     error_encountered.value = error.message
     throw error
   } finally {
@@ -278,93 +282,37 @@ async function fetch_projects() {
   }
 }
 
-function query_stats_to_input_menu_items(query_stats: ProjectQueryStat[] = []): InputMenuItem[] {
-  return query_stats.reduce((items, stat, stat_index) => {
-    const sorted_value_frequencies = [...(stat.valueFrequencies ?? [])]
-      .filter(value_frequency => value_frequency.value !== undefined && value_frequency.value !== null)
-      .sort((a, b) => b.count - a.count)
+function query_stats_to_filter_groups(query_stats: ProjectQueryStat[] = []): ProjectQueryStatFilter[] {
+  return query_stats
+    .map((stat, index) => ({
+      target: stat.target,
+      values: [...(stat.valueFrequencies ?? [])]
+        .filter(value_frequency => value_frequency.value !== undefined && value_frequency.value !== null)
+        .sort((a, b) => b.count - a.count)
+        .map(value_frequency => {
+          const label_without_count = `${value_frequency.value}`
 
-    if (!sorted_value_frequencies.length) return items
-
-    if (items.length > 0 && stat_index > 0) {
-      items.push({
-        type: 'separator'
-      })
-    }
-
-    items.push({
-      type: 'label',
-      label: normalize_text(stat.target)
-    })
-
-    sorted_value_frequencies.forEach((value_frequency: ValueFrequency) => {
-      items.push({
-        label: `${stat.target}: ${value_frequency.value} (${value_frequency.count})`,
-        value: {
-          target: stat.target,
-          allowable_value: value_frequency.value
-        } satisfies ProjectSearchMenuItemValue
-      })
-    })
-
-    return items
-  }, [] as InputMenuItem[])
+          return {
+            value: label_without_count,
+            label: `${label_without_count} (${value_frequency.count})`,
+          }
+        }),
+      _index: index,
+    }))
+    .filter(stat => stat.values.length > 0)
 }
 
-function clear_filter(column_id: string) {
-  if (!table_filters.value.filters[column_id]) return
+function clear_chip(chip: AppChip) {
+  const found_category = searched_filters.value.filter(filter => filter.allowable_values.includes(chip.slug))[0]
 
-  table_filters.value.filters[column_id]!.value = undefined
+  if (!found_category) return
 
-  if (table_filters.value.filters[column_id]._filterType !== 'enum') {
-    table_filters.value.filters[column_id]!.operator = undefined
-  } else {
-    table_filters.value.filters[column_id]!.operator = 'is_any'
-  }
-
-  fetch_projects()
+  found_category.allowable_values.splice(found_category.allowable_values.indexOf(chip.slug), 1)
+  chips.value.splice(chips.value.indexOf(chip), 1)
 }
 
 function on_column_toggle() {
   table_filters.value._hidden_exist = !table.value?.tableApi.getIsAllColumnsVisible()
-}
-
-/*function on_pagination_change(page: number, pageSize: number) {
-  table_pagination.value.page = page
-  table_pagination.value.perPage = pageSize
-
-  fetch_projects()
-}*/
-
-function hidden_cols_have_filters() {
-  if (!table.value || !table_filters.value._hidden_exist) return false
-
-  const hidden_columns = table.value.tableApi.getAllColumns().filter(column => !column.getIsVisible())
-  const hidden_column_ids = hidden_columns.map(column => column.id)
-  return hidden_column_ids.some(column_id => table_filters.value.filters[column_id]?.value !== undefined && table_filters.value.filters[column_id]?.operator !== undefined)
-}
-
-function clear_hidden_filters() {
-  if (!table_filters.value._hidden_exist) return
-
-  const hidden_columns = table.value.tableApi.getAllColumns().filter(column => !column.getIsVisible())
-  const hidden_column_ids = hidden_columns.map(column => column.id)
-  hidden_column_ids.forEach(column_id => clear_filter(column_id))
-
-  // Check if any of the hidden columns are the currently sorted one, and unset the sort
-  if (table_sort.value.id && hidden_column_ids.includes(table_sort.value.id)) {
-    table_sort.value.id = undefined
-    table_sort.value.direction = undefined
-  }
-
-  fetch_projects()
-}
-
-function change_sort(column_id: string) {
-  table_sort.value.direction = table_sort.value.id == column_id ? (table_sort.value.direction === 'asc' ? 'desc' : 'asc') : 'asc'
-  table_sort.value.id = column_id
-
-  fetch_projects()
 }
 
 function change_pagination(new_page: number) {
@@ -372,47 +320,26 @@ function change_pagination(new_page: number) {
   fetch_projects()
 }
 
-/*function update_filter_chips() {
-  if (!table_filters || !table_filters.value || !table_filters.value.filters.length) return
+function update_filter_chips() {
+  if (!searched_filters || !searched_filters.value || !searched_filters.value.length) return
 
   chips.value = []
 
-  table_filters.value.filters.forEach((filter: any) => {
-    const new_chip = {label: `${columns.filter(c => c.accessorKey == filter.id)[0].label}: ${filter.operator} ${filter.value}`, slug: filter.id, removable: true} as AppChip
-    chips.value.push(new_chip)
+  searched_filters.value.forEach((filter: ProjectSearchFilter) => {
+    filter.allowable_values.forEach((value: string) => {
+      const new_chip = {label: `${filter.target}: ${value}`, slug: value, removable: true} as AppChip
+      chips.value.push(new_chip)
+    })
   })
-
-  console.log(chips.value)
-}*/
-
-function update_searched_filters(selected_items: InputMenuItem[]) {
-  searched_filters.value = selected_items.reduce((filters, item) => {
-    const item_value = item!.value as ProjectSearchMenuItemValue | undefined
-
-    if (!item_value?.target || !item_value.allowable_value) return filters
-
-    const existing_filter = filters.find(filter => filter.target === item_value.target)
-
-    if (existing_filter) {
-      if (!existing_filter.allowable_values.includes(item_value.allowable_value)) {
-        existing_filter.allowable_values.push(item_value.allowable_value)
-      }
-    } else {
-      filters.push({
-        target: item_value.target,
-        allowable_values: [item_value.allowable_value]
-      })
-    }
-
-    return filters
-  }, [] as ProjectSearchFilter[])
 }
 
-function update_selected_filters(selected_items: InputMenuItem[]) {
-  selected_filter_items.value = selected_items
-  update_searched_filters(selected_items)
+function camel_to_title_case(str: string): string {
+  if (!str) return '';
 
-  fetch_projects()
+  return str
+    .replace(/([A-Z])/g, ' $1')
+    .replace(/^./, (match) => match.toUpperCase())
+    .trim()
 }
 
 function visit_page(e: Event, row: TableRow<ProjectStub>) {
@@ -431,22 +358,60 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
     </div>
 
     <div class="w-full flex items-center justify-between gap-4">
-      <UInputMenu class="flex-1" icon="i-heroicons-magnifying-glass" placeholder="Search projects"
-                  :ui="{trailingIcon: 'group-data-[state=open]:rotate-180 transition-transform duration-200'}"
-                  multiple v-model="selected_filter_items" @update:model-value="update_selected_filters($event)" :items="filter_suggestions" />
+      <UInput type="text" class="flex-1" icon="i-heroicons-magnifying-glass" placeholder="Search projects" v-model="fuzzy_search_term" />
 
-      <div class="div w-max flex items-center justify-end rounded bg-neutral-100">
-        <UButton size="sm" :label="`${display_mode == 'cards' ? '' : 'Table'}`" class="cursor-pointer" :color="`${display_mode == 'cards' ? 'subtle' : 'primary'}`" icon="i-lucide-list" type="button" @click="display_mode = 'table'"></UButton>
-        <UButton size="sm" :label="`${display_mode == 'table' ? '' : 'Cards'}`" class="cursor-pointer" :color="`${display_mode == 'table' ? 'subtle' : 'primary'}`" icon="i-lucide-layout-grid" type="button" @click="display_mode = 'cards'"></UButton>
-      </div>
+      <UButton
+        label="Advanced Filters"
+        color="neutral"
+        variant="outline"
+        trailing-icon="i-lucide-chevron-down"
+        leading-icon="i-lucide-cog"
+        :disabled="loading"
+        :ui="{
+         trailingIcon: advanced_filters_open ? 'rotate-180 transition-transform duration-200 i-lucide-chevron-down' : 'transition-transform duration-200 i-lucide-chevron-down'
+        }"
+        @click="advanced_filters_open = !advanced_filters_open" />
+
+      <UButton
+        label="Search"
+        :disabled="loading"
+        leading-icon="i-lucide-send"
+        @click="fetch_projects()" />
     </div>
 
-    <!--<AppChipList :chips="chips" @chip_removed="clear_filter($event)" v-if="display_mode == 'cards'"></AppChipList>-->
+    <UCollapsible v-if="advanced_filters_open" v-model:open="advanced_filters_open">
+      <template #content>
+        <div class="flex items-center flex-wrap gap-4">
+          <template v-for="filter of filter_suggestions" :key="filter.target">
+            <div class="flex flex-col gap-1">
+              <p class="text-sm font-bold">{{camel_to_title_case(filter.target)}}</p>
+              <USelectMenu
+                placeholder="Select Values"
+                label-key="label"
+                value-key="value"
+                :items="filter.values"
+                :loading="loading"
+                :multiple="true"
+                v-model="searched_filters[filter._index]!.allowable_values"
+                @update:model-value="update_filter_chips()"
+              />
+            </div>
+          </template>
+        </div>
+      </template>
+    </UCollapsible>
 
-    <Loading v-if="!projects && !error_encountered" message="Fetching simulation projects..."/>
+    <AppChipList :chips="chips" @removed="clear_chip($event)" :loading="loading" v-if="!advanced_filters_open && chips && chips.length"></AppChipList>
+
+<!--    <Loading v-if="!projects && !error_encountered" message="Fetching simulation projects..."/>-->
 
     <div class="w-full flex flex-col gap-4" v-if="projects && !error_encountered">
       <USeparator />
+
+      <div class="w-max flex items-center justify-end self-end rounded bg-neutral-100">
+        <UButton size="sm" :label="`${display_mode == 'cards' ? '' : 'Table'}`" class="cursor-pointer" :color="`${display_mode == 'cards' ? 'subtle' : 'primary'}`" icon="i-lucide-list" type="button" @click="display_mode = 'table'"></UButton>
+        <UButton size="sm" :label="`${display_mode == 'table' ? '' : 'Cards'}`" class="cursor-pointer" :color="`${display_mode == 'table' ? 'subtle' : 'primary'}`" icon="i-lucide-layout-grid" type="button" @click="display_mode = 'cards'"></UButton>
+      </div>
 
       <div class="w-full flex items-center justify-between gap-8" v-if="display_mode == 'table'">
         <h3 class="text-lg font-bold">Projects</h3>
@@ -463,7 +428,7 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
                 checked: column.getIsVisible(),
                 onUpdateChecked(checked: boolean) {
                   table?.tableApi?.getColumn(column.id)?.toggleVisibility(!!checked)
-                  on_column_toggle(column.id, checked)
+                  on_column_toggle()
                 },
                 onSelect(e: Event) {
                   e.preventDefault()
@@ -475,122 +440,17 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
             variant="outline"
             trailing-icon="i-lucide-chevron-down" />
         </UDropdownMenu>
-        <UButton
-          v-if="!loading && table_filters._hidden_exist && hidden_cols_have_filters()"
-          label="Clear Hidden Filters"
-          color="neutral"
-          variant="outline"
-          leading-icon="i-lucide-funnel-x"
-          @click="clear_hidden_filters()">
-        </UButton>
       </div>
 
-      <Loading class="mx-auto w-max py-4" v-if="loading" message="Fetching projects..."/>
+<!--      <Loading class="mx-auto w-max py-4" v-if="loading" message="Fetching projects..."/>-->
 
       <UTable v-if="!loading && display_mode == 'table'"
         class="w-full"
         ref="table"
         :data="projects"
         :columns="columns"
-        @select="visit_page()"
+        @select="visit_page"
         sticky>
-        <template v-for="column in columns" :key="column.accessorKey" #[`${column.accessorKey}-header`]="{ column: tableColumn }">
-          <div class="flex items-center gap-2">
-            <UButton
-              color="neutral"
-              variant="ghost"
-              :label="tableColumn.columnDef.header"
-              :icon="table_sort.id === column.accessorKey ? (table_sort.direction === 'asc' ? 'i-lucide-arrow-up' : 'i-lucide-arrow-down') : 'i-lucide-arrow-up-down'"
-              class="-mx-2.5"
-              @click="change_sort(column.accessorKey)"
-            />
-
-            <UPopover v-if="table_filters.filters[column.accessorKey]">
-              <UButton
-                :color="table_filters.filters[column.accessorKey]!.value ? 'primary' : 'neutral'"
-                variant="ghost"
-                icon="i-lucide-filter"
-              />
-              <template #content>
-                <div class="p-2">
-                  <small><strong>Filter "{{ tableColumn.columnDef.header }}"</strong></small>
-                  <div class="flex flex-col gap-2 mt-2" v-if="table_filters.filters[column.accessorKey]!._filterType === 'text'">
-                    <USelectMenu placeholder="Select operator" v-model="table_filters.filters[column.accessorKey]!.operator" value-key="value" :items="[{ label: 'Contains', value: 'contains' }, { label: 'Equals', value: 'equals' }, { label: 'Starts With', value: 'starts_with' }, { label: 'Ends With', value: 'ends_with' }]"/>
-                    <UInput placeholder="Enter text..." v-model="table_filters.filters[column.accessorKey]!.value" :disabled="!table_filters.filters[column.accessorKey]!.operator"/>
-                    <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
-                      <UButton
-                        v-if="table_filters.filters[column.accessorKey]!.value"
-                        class="w-max whitespace-nowrap"
-                        color="error"
-                        size="sm"
-                        leading-icon="i-lucide-x"
-                        label="Clear Filter"
-                        @click="clear_filter(column.accessorKey)"
-                      />
-                      <UButton
-                        class="w-max whitespace-nowrap"
-                        :disabled="!table_filters.filters[column.accessorKey]!.value || !table_filters.filters[column.accessorKey]!.operator"
-                        color="primary"
-                        size="sm"
-                        leading-icon="i-lucide-check"
-                        label="Apply"
-                        @click="fetch_projects()"
-                      />
-                    </div>
-                  </div>
-                  <div class="flex flex-col gap-2 mt-2" v-if="table_filters.filters[column.accessorKey]!._filterType === 'enum'">
-                    <small class="font-semibold">Show results with these statuses:</small>
-                    <USelectMenu multiple :disabled="!table_filters.filters[column.accessorKey]!.operator" placeholder="Select statuses" v-model="table_filters.filters[column.accessorKey]!.value" :items="table_filters.filters[column.accessorKey]!._filterOptions"/>
-                    <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
-                      <UButton
-                        v-if="table_filters.filters[column.accessorKey]!.value"
-                        class="w-max whitespace-nowrap"
-                        color="error"
-                        size="sm"
-                        leading-icon="i-lucide-x"
-                        label="Clear Filter"
-                        @click="clear_filter(column.accessorKey)"
-                      />
-                      <UButton
-                        class="w-max whitespace-nowrap"
-                        :disabled="!table_filters.filters[column.accessorKey]!.value || !table_filters.filters[column.accessorKey]!.operator"
-                        color="primary"
-                        size="sm"
-                        leading-icon="i-lucide-check"
-                        label="Apply"
-                        @click="fetch_projects()"
-                      />
-                    </div>
-                  </div>
-                  <div class="flex flex-col gap-2 mt-2" v-if="table_filters.filters[column.accessorKey]!._filterType === 'date'">
-                    <USelectMenu placeholder="Select operator" v-model="table_filters.filters[column.accessorKey]!.operator" value-key="value" :items="[{ label: 'Before', value: 'before' }, { label: 'On', value: 'on' }, { label: 'After', value: 'after' }]"/>
-                    <UInputDate placeholder="Select date" v-model="table_filters.filters[column.accessorKey]!.value" :disabled="!table_filters.filters[column.accessorKey]!.operator" />
-                    <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
-                      <UButton
-                        v-if="table_filters.filters[column.accessorKey]!.value"
-                        class="w-max whitespace-nowrap"
-                        color="error"
-                        size="sm"
-                        leading-icon="i-lucide-x"
-                        label="Clear Filter"
-                        @click="clear_filter(column.accessorKey)"
-                      />
-                      <UButton
-                        class="w-max whitespace-nowrap"
-                        :disabled="!table_filters.filters[column.accessorKey]!.value || !table_filters.filters[column.accessorKey]!.operator"
-                        color="primary"
-                        size="sm"
-                        leading-icon="i-lucide-check"
-                        label="Apply"
-                        @click="fetch_projects()"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </template>
-            </UPopover>
-          </div>
-        </template>
       </UTable>
 
       <div class="card_wrapper w-full gap-4" v-if="display_mode == 'cards'">
@@ -599,7 +459,16 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
         </template>
         <template v-else>
           <a class="project_card cursor-pointer border no-underline border-neutral-300 rounded-lg overflow-hidden relative" :href="`https://biosimulations.org/projects/${project.id}`" v-for="project in projects" :key="project.id">
-            <img :src="project.image_url" @error="project.image_url='/images/project_placeholder.jpg'" alt="Project {{project.id}} image" loading="lazy" class="absolute w-full h-full object-cover z-0 top-0 left-0 opacity-30">
+            <NuxtImg
+              :src="project.image_url"
+              width="400"
+              format="webp"
+              fit="cover"
+              @error="project.image_url='/images/project_placeholder.jpg'"
+              alt="Project image"
+              loading="lazy"
+              class="absolute w-full h-full object-cover z-0 top-0 left-0 opacity-30"
+            />
               <div class="card_text absolute h-full bottom-0 left-0 w-full flex flex-col justify-end items-start p-3">
                 <h3 class="text-base font-bold">{{project.name}}</h3>
                 <small class="w-full whitespace-nowrap overflow-hidden text-ellipsis">{{project.summary}}</small>
@@ -667,8 +536,8 @@ td:last-of-type {
 .project_card {
   width: 100%;
   aspect-ratio: 16 / 9;
-
-  transition: all 0.2s ease;
+  transition: transform 0.2s ease; /* Target only transform */
+  will-change: transform; /* Hint to the browser to GPU-accelerate */
 }
 
 .project_card:hover {

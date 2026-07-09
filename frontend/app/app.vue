@@ -182,7 +182,7 @@ onMounted(() => {
   <VueLenis root :options="lenisOptions" />
   <UApp>
 
-    <UHeader class="w-max-[1200px] mx-auto" menu="drawer">
+    <UHeader class="w-max-[1200px] mx-auto" mode="drawer">
       <template #title>
         <NuxtLink to="/">
           <img class="w-auto h-8 shrink-0" src="/images/full_logo_color.svg" alt="BioSimulations Logo - Bio and Simulations are bisected by a circular icon of two arrows interwoven like a DNA molecule">

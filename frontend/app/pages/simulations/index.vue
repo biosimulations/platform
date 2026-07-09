@@ -3,12 +3,13 @@ import { h, resolveComponent, ref, useTemplateRef } from 'vue'
 import { upperFirst } from 'scule'
 import type {TableColumn} from '@nuxt/ui'
 import { useClipboard } from '@vueuse/core'
-import type {SimulationRuns} from "~/models/simulators";
+import type {SimulationRuns, SimulationRun} from "~/models/simulators";
 import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import Loading from "~/components/Loading.vue";
 import type {TableFilterConfig, TableFilter, TableSort, TablePagination} from "~/models/filtering";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
+import type {CoreRow} from "@tanstack/table-core";
 
 const UButton = resolveComponent('UButton')
 const UBadge = resolveComponent('UBadge')
@@ -35,22 +36,21 @@ onMounted(async () => {
   await fetch_runs()
 })
 
-const columns: TableColumn[] = [
+const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
   {
     accessorKey: 'id',
     header: 'Id',
-    cell: ({row}) => row.getValue('id')
+    cell: ({ row }: { row: CoreRow<SimulationRun> }) => row.getValue('id')
   },
   {
     accessorKey: 'name',
     header: 'Name',
-    cell: ({row}) => row.getValue('name')
+    cell: ({ row }: { row: CoreRow<SimulationRun> }) => row.getValue('name')
   },
   {
     accessorKey: 'status',
     header: 'Status',
-    filterOptions: ['SUCCEEDED', 'FAILED', 'CREATED'],
-    cell: ({ row }) => {
+    cell: ({ row }: { row: CoreRow<SimulationRun> }) => {
       const color = ({
         SUCCEEDED: 'success' as const,
         FAILED: 'error' as const,
@@ -63,12 +63,12 @@ const columns: TableColumn[] = [
   {
     accessorKey: 'simulator',
     header: 'Simulator',
-    cell: ({row}) => row.getValue('simulator')
+    cell: ({ row }: { row: CoreRow<SimulationRun> }) => row.getValue('simulator')
   },
   {
     accessorKey: 'submitted',
     header: 'Submitted',
-    cell: ({row}) => {
+    cell: ({ row }: { row: CoreRow<SimulationRun> }) => {
       return new Date(row.getValue('submitted')).toLocaleString('en-US', {
         day: 'numeric',
         month: 'short',
@@ -171,6 +171,10 @@ const columns: TableColumn[] = [
     }
   }]
 
+const headerColumns = computed(() =>
+  columns.filter((c): c is typeof c & { accessorKey: string } => typeof c.accessorKey === 'string')
+)
+
 const table = useTemplateRef('table')
 const loading = ref(true)
 const error_encountered = ref<string | undefined>(undefined)
@@ -178,43 +182,39 @@ const fetch_user = ref(false)
 const user_email = ref<string | undefined>(undefined)
 const user_input = useTemplateRef('user_email_input')
 const user_input_valid = ref(false)
-const table_filters = ref({
+const table_filters = ref<TableFilterConfig>({
   _hidden_exist: false,
   filters: {
-    'name': ref({
+    'name': {
       id: 'name',
       operator: undefined,
       value: undefined,
-
       _filterType: 'text',
       _filterOptions: undefined,
-    } as TableFilter),
-    'status': ref({
+    },
+    'status': {
       id: 'status',
       operator: 'is_any',
       value: undefined,
-
       _filterType: 'enum',
       _filterOptions: ['SUCCEEDED', 'FAILED', 'CREATED'],
-    } as TableFilter),
-    'simulator': ref({
+    },
+    'simulator': {
       id: 'simulator',
       operator: undefined,
       value: undefined,
-
       _filterType: 'text',
       _filterOptions: undefined,
-    } as TableFilter),
-    'submitted': ref({
+    },
+    'submitted': {
       id: 'submitted',
       operator: undefined,
       value: undefined,
-
       _filterType: 'date',
-      _filterOptions: undefined
-    } as TableFilter),
+      _filterOptions: undefined,
+    },
   }
-} as TableFilterConfig)
+})
 const table_sort = ref({
   id: undefined,
   direction: undefined
@@ -235,10 +235,10 @@ async function fetch_runs() {
 
   const valid_filter_keys = Object.keys(table_filters.value?.filters).filter(filter => table_filters.value.filters[filter]?.value && table_filters.value.filters[filter]?.operator)
   const valid_filters = valid_filter_keys.map(filter_key => table_filters.value.filters[filter_key])
-  const trimmed_pagination = Object.keys(table_pagination.value).filter(key => !key.startsWith('_')).reduce((acc, key) => {
-    acc[key] = table_pagination.value[key]
+  const trimmed_pagination = Object.keys(table_pagination.value).filter(key => !key.startsWith('_')).reduce((acc: Record<string, unknown>, key) => {
+    acc[key] = (table_pagination.value as Record<string, unknown>)[key]
     return acc
-  }, {})
+  }, {} as Record<string, unknown>)
 
   if (fetched_data.value && table_pagination.value.perPage !== fetched_data.value.pagination.perPage) {
     table_pagination.value.page = 1
@@ -300,7 +300,7 @@ function hidden_cols_have_filters() {
 }
 
 function clear_hidden_filters() {
-  if (!table_filters.value._hidden_exist) return
+  if (!table_filters.value._hidden_exist || !table.value) return
 
   const hidden_columns = table.value.tableApi.getAllColumns().filter(column => !column.getIsVisible())
   const hidden_column_ids = hidden_columns.map(column => column.id)
@@ -387,7 +387,7 @@ const checkValidity = () => {
                 checked: column.getIsVisible(),
                 onUpdateChecked(checked: boolean) {
                   table?.tableApi?.getColumn(column.id)?.toggleVisibility(!!checked)
-                  on_column_toggle(column.id, checked)
+                  on_column_toggle()
                 },
                 onSelect(e: Event) {
                   e.preventDefault()
@@ -417,7 +417,7 @@ const checkValidity = () => {
         :data="fetched_data.runs"
         :columns="columns"
         sticky>
-        <template v-for="column in columns" :key="column.accessorKey" #[`${column.accessorKey}-header`]="{ column: tableColumn }">
+        <template v-for="column in headerColumns" :key="column.accessorKey" #[`${column.accessorKey}-header`]="{ column: tableColumn }">
           <div class="flex items-center gap-2">
             <UButton
               color="neutral"
@@ -487,7 +487,7 @@ const checkValidity = () => {
                   </div>
                   <div class="flex flex-col gap-2 mt-2" v-if="table_filters.filters[column.accessorKey]!._filterType === 'date'">
                     <USelectMenu placeholder="Select operator" v-model="table_filters.filters[column.accessorKey]!.operator" value-key="value" :items="[{ label: 'Before', value: 'before' }, { label: 'On', value: 'on' }, { label: 'After', value: 'after' }]"/>
-                    <UInputDate placeholder="Select date" v-model="table_filters.filters[column.accessorKey]!.value" :disabled="!table_filters.filters[column.accessorKey]!.operator" />
+                    <UInputDate v-model="table_filters.filters[column.accessorKey]!.value" :disabled="!table_filters.filters[column.accessorKey]!.operator" />
                     <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
                       <UButton
                         v-if="table_filters.filters[column.accessorKey]!.value"

@@ -5,7 +5,7 @@ export interface ProjectSearchFilter {
 
 export interface ProjectSearchMenuItemValue {
   target: string
-  allowable_value: string
+  value: string
 }
 
 export interface ValueFrequency {
@@ -16,6 +16,17 @@ export interface ValueFrequency {
 export interface ProjectQueryStat {
   target: string,
   valueFrequencies: ValueFrequency[]
+}
+
+export interface ProjectQueryStatFilterValue {
+  value: string
+  label: string
+}
+
+export interface ProjectQueryStatFilter {
+  target: string
+  values: ProjectQueryStatFilterValue[]
+  _index: number
 }
 
 export interface Projects {

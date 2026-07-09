@@ -17,39 +17,39 @@
     {
       label: 'Run a Simulation',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
-      size: 'md',
-      color: 'info',
+      size: 'md' as const,
+      color: 'info' as const,
       leadingIcon: 'i-gravity-ui-play-fill' // w-4
     },
     {
       label: 'Compare Simulators',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
-      size: 'md',
-      color: 'warning',
+      size: 'md' as const,
+      color: 'warning' as const,
       leadingIcon: 'i-lucide-cpu' // w-4
     },
     {
       label: 'Browse Simulations',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
-      size: 'md',
-      color: 'neutral',
-      variant: 'outline',
+      size: 'md' as const,
+      color: 'neutral' as const,
+      variant: 'outline' as const,
       leadingIcon: 'i-lucide-search' // w-4
     },
     {
       label: 'Submit a Simulation',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
-      size: 'md',
-      color: 'neutral',
-      variant: 'outline',
+      size: 'md' as const,
+      color: 'neutral' as const,
+      variant: 'outline' as const,
       leadingIcon: 'i-mynaui-send-solid' // w-4
     },
     {
       label: 'Visit the Docs',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
-      size: 'md',
-      color: 'neutral',
-      variant: 'outline',
+      size: 'md' as const,
+      color: 'neutral' as const,
+      variant: 'outline' as const,
       leadingIcon: 'i-lucide-book-open' // w-4
     }
   ])
@@ -57,40 +57,40 @@
     {
       label: 'Run a simulation',
       class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md',
-      color: 'neutral',
-      variant: 'subtle',
+      size: 'md' as const,
+      color: 'neutral' as const,
+      variant: 'subtle' as const,
       leadingIcon: 'i-gravity-ui-play-fill' // w-4
     },
     {
       label: 'Compare Simulators',
       class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md',
-      color: 'neutral',
+      size: 'md' as const,
+      color: 'neutral' as const,
       leadingIcon: 'i-lucide-cpu' // w-4
     },
     {
       label: 'Browse simulations',
       class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md',
-      color: 'neutral',
-      variant: 'subtle',
+      size: 'md' as const,
+      color: 'neutral' as const,
+      variant: 'subtle' as const,
       leadingIcon: 'i-lucide-search' // w-4
     },
     {
       label: 'Submit a simulation',
       class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md',
-      color: 'neutral',
-      variant: 'subtle',
+      size: 'md' as const,
+      color: 'neutral' as const,
+      variant: 'subtle' as const,
       leadingIcon: 'i-mynaui-send-solid' // w-4
     },
     {
       label: 'Visit the docs',
       class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md',
-      color: 'neutral',
-      variant: 'subtle',
+      size: 'md' as const,
+      color: 'neutral' as const,
+      variant: 'subtle' as const,
       leadingIcon: 'i-lucide-book-open' // w-4
     }
   ])
