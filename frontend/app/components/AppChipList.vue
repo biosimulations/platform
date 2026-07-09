@@ -3,7 +3,7 @@ import type {AppChip} from "~/models/common";
 
 defineProps<{
   chips: AppChip[]
-  loading: Boolean
+  loading: boolean
 }>()
 
 const emit = defineEmits<{

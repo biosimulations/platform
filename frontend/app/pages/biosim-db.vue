@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import {ref, resolveComponent, useTemplateRef} from 'vue'
 import {upperFirst} from 'scule'
-import type {InputMenuItem, TableColumn, TableRow} from '@nuxt/ui'
+import type {TableColumn, TableRow} from '@nuxt/ui'
 import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
-import Loading from "~/components/Loading.vue";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
-import type {TableFilter, TableFilterConfig, TablePagination, TableSort} from "~/models/filtering";
-import type {ProjectQueryStat, ProjectQueryStatFilter, Projects, ProjectSearchFilter, ProjectSearchMenuItemValue, ProjectStub, ValueFrequency} from "~/models/projects";
+import type {TableFilter, TableFilterConfig, TablePagination} from "~/models/filtering";
+import type {ProjectQueryStat, ProjectQueryStatFilter, Projects, ProjectSearchFilter, ProjectStub,} from "~/models/projects";
 import type {CoreRow} from "@tanstack/table-core"
 import type {AppChip} from "~/models/common";
 
@@ -195,10 +194,7 @@ const table_filters = ref({
     } as TableFilter),
   }
 } as TableFilterConfig)
-const table_sort = ref({
-  id: undefined,
-  direction: undefined
-} as TableSort)
+
 const table_pagination = ref({
   page: 0,
   perPage: 25,
@@ -271,7 +267,7 @@ async function fetch_projects() {
 
     total_results.value = api_return.totalMatchingProjectSummaries
     filter_suggestions.value = query_stats_to_filter_groups(api_return.queryStats)
-    searched_filters.value = filter_suggestions.value.map((f, index) => ({ target: f.target, allowable_values: []}))
+    searched_filters.value = filter_suggestions.value.map((f, _index) => ({ target: f.target, allowable_values: []}))
 
     return
   } catch (error: any) {
@@ -289,7 +285,7 @@ function query_stats_to_filter_groups(query_stats: ProjectQueryStat[] = []): Pro
       values: [...(stat.valueFrequencies ?? [])]
         .filter(value_frequency => value_frequency.value !== undefined && value_frequency.value !== null)
         .sort((a, b) => b.count - a.count)
-        .map(value_frequency => {
+        .map((value_frequency) => {
           const label_without_count = `${value_frequency.value}`
 
           return {
@@ -321,7 +317,7 @@ function change_pagination(new_page: number) {
 }
 
 function update_filter_chips() {
-  if (!searched_filters || !searched_filters.value || !searched_filters.value.length) return
+  if (!searched_filters.value || !searched_filters.value.length) return
 
   chips.value = []
 
@@ -338,7 +334,7 @@ function camel_to_title_case(str: string): string {
 
   return str
     .replace(/([A-Z])/g, ' $1')
-    .replace(/^./, (match) => match.toUpperCase())
+    .replace(/^./, match => match.toUpperCase())
     .trim()
 }
 
@@ -427,7 +423,7 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
                 type: 'checkbox' as const,
                 checked: column.getIsVisible(),
                 onUpdateChecked(checked: boolean) {
-                  table?.tableApi?.getColumn(column.id)?.toggleVisibility(!!checked)
+                  table?.tableApi?.getColumn(column.id)?.toggleVisibility(checked)
                   on_column_toggle()
                 },
                 onSelect(e: Event) {
@@ -497,8 +493,8 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
       </div>
     </div>
 
-    <div class="w-full md:w-max md:max-w-[700px] lg:max-w-[900px] flex flex-col items-center justify-center gap-2" v-if="error_encountered">
-      <DotLottieVue class="w-[150px] aspect-square" autoplay src="/animations/error.lottie" />
+    <div class="w-full md:w-max md:max-w-175 lg:max-w-225 flex flex-col items-center justify-center gap-2" v-if="error_encountered">
+      <DotLottieVue class="w-37.5 aspect-square" autoplay src="/animations/error.lottie" />
       <h1 class="text-2xl font-bold">An error occurred while fetching simulation projects</h1>
       <pre class="bg-neutral-100 rounded p-2">{{error_encountered}}</pre>
 

@@ -6,7 +6,7 @@ import { useClipboard } from '@vueuse/core'
 import type {SimulationRuns, SimulationRun} from "~/models/simulators";
 import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import Loading from "~/components/Loading.vue";
-import type {TableFilterConfig, TableFilter, TableSort, TablePagination} from "~/models/filtering";
+import type {TableFilterConfig, TableSort, TablePagination} from "~/models/filtering";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 import type {CoreRow} from "@tanstack/table-core";
@@ -386,7 +386,7 @@ const checkValidity = () => {
                 type: 'checkbox' as const,
                 checked: column.getIsVisible(),
                 onUpdateChecked(checked: boolean) {
-                  table?.tableApi?.getColumn(column.id)?.toggleVisibility(!!checked)
+                  table?.tableApi?.getColumn(column.id)?.toggleVisibility(checked)
                   on_column_toggle()
                 },
                 onSelect(e: Event) {
@@ -538,8 +538,8 @@ const checkValidity = () => {
       </div>
     </div>
 
-    <div class="w-full md:w-max md:max-w-[700px] lg:max-w-[900px] flex flex-col items-center justify-center gap-2" v-if="error_encountered">
-      <DotLottieVue class="w-[150px] aspect-square" autoplay src="/animations/error.lottie" />
+    <div class="w-full md:w-max md:max-w-175 lg:max-w-225 flex flex-col items-center justify-center gap-2" v-if="error_encountered">
+      <DotLottieVue class="w-37.5 aspect-square" autoplay src="/animations/error.lottie" />
       <h1 class="text-2xl font-bold">An error occurred while fetching simulation runs</h1>
       <pre class="bg-neutral-100 rounded p-2">{{error_encountered}}</pre>
 
