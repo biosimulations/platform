@@ -1,0 +1,28 @@
+{
+  "upload_type": "software",
+  "title": "BioSimulations platform",
+  "license": "mit",
+  "creators": [
+    {
+      "name": "Schaff, James C.",
+      "affiliation": "University of Connecticut School of Medicine",
+      "orcid": "0000-0003-3286-7736"
+    },
+    {
+      "name": "Patrie, Alexander",
+      "affiliation": "University of Connecticut School of Medicine",
+      "orcid": "0009-0002-6886-2291"
+    },
+    {
+      "name": "Burr, Harrison",
+      "affiliation": "University of Connecticut School of Medicine"
+    },
+    {
+      "name": "Moraru, Ion I.",
+      "affiliation": "University of Connecticut School of Medicine",
+      "orcid": "0000-0002-3746-9676"
+    }
+  ],
+  "description": "<p>The biosimulations/platform stack — the server for the Biological Simulation Verification Service (BSVS) — hosting the backend services and webapp frontend, deployed together to Kubernetes.</p>",
+  "related_identifiers": []
+}
