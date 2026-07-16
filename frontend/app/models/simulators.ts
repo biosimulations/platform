@@ -1,4 +1,6 @@
 // <editor-fold desc="For parsing OMEX/COMBINE Archive files to submit a simulation run request"
+import type {TablePagination} from "~/models/filtering";
+
 export interface Simulator {
   id: string
   name: string
@@ -75,6 +77,11 @@ export interface SimulationProcessingStatus {
 // </editor-fold>
 
 // <editor-fold desc="For when viewing a simulation result">
+export interface SimulationRuns {
+  runs: SimulationRun[]
+  pagination: TablePagination
+}
+
 export interface SimulationRun {
   id: string // uuid
   name: string
@@ -96,11 +103,4 @@ export interface SimulationRun {
 }
 // </editor-fold>
 
-// <editor-fold desc="For when viewing projects">
-export interface Project {
-  id: string
-  simulationRun: string
-  created: string
-  updated: string
-}
-// </editor-fold>
+
