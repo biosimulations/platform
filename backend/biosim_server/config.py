@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     mongodb_collection_sims: str = "BiosimSims"
     mongodb_collection_compare: str = "BiosimCompare"
     mongodb_collection_simulation_runs: str = "BiosimSimulationRuns"
+    mongodb_collection_projects: str = "Projects"
+    mongodb_collection_metadata: str = "Metadata"
+    mongodb_collection_specifications: str = "Specifications"
+    # Legacy pre-2022 materialized summary; dead/abandoned (nothing writes it).
+    # Kept only for reference — the API assembles from Projects + Metadata live.
+    mongodb_collection_project_summary: str = "projectSummary"
+    # TTL (seconds) for the platform-owned facet-stats cache.
+    project_stats_cache_ttl_seconds: int = 300
 
     simdata_api_base_url: str = "https://simdata.api.biosimulations.org"
     biosimulators_api_base_url: str = "https://api.biosimulators.org"

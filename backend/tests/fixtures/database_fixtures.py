@@ -6,10 +6,13 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncI
 from testcontainers.mongodb import MongoDbContainer  # type: ignore
 
 from biosim_server.biosim_runs import DatabaseServiceMongo
+from biosim_server.config import get_settings
 from biosim_server.dependencies import set_database_service, get_database_service, set_omex_database_service, \
-    get_omex_database_service, set_simulation_run_database_service, get_simulation_run_database_service
+    get_omex_database_service, set_simulation_run_database_service, get_simulation_run_database_service, \
+    set_project_database_service, get_project_database_service
 from biosim_server.biosim_omex import OmexDatabaseServiceMongo
 from biosim_server.simulations import SimulationRunDatabaseServiceMongo
+from biosim_server.projects import ProjectDatabaseServiceMongo
 
 MONGODB_DATABASE_NAME = "mydatabase"
 MONGODB_COLLECTION_NAME = "mycollection"
@@ -79,3 +82,32 @@ async def simulation_run_database_service_mongo(
     await runs_db_service.delete_all_simulation_runs()
     set_simulation_run_database_service(old_runs_db_service)
     # await db_service.close()  the underlying client will already be closed
+
+
+@pytest_asyncio.fixture(scope="function")
+async def project_database_service_mongo(
+    mongo_test_client: AsyncIOMotorClient,
+) -> AsyncGenerator[
+    tuple[ProjectDatabaseServiceMongo, AsyncIOMotorCollection, AsyncIOMotorCollection, AsyncIOMotorCollection],
+    None,
+]:
+    """Project service plus the (Projects, Metadata, Specifications) collections.
+
+    The service assembles from ``Projects`` joined to ``Metadata`` (display fields
+    + facets) and ``Specifications`` (model_format) on ``simulationRun``; the test
+    inserts fixture docs into those same collections, then drops them."""
+    settings = get_settings()
+    database = mongo_test_client.get_database(settings.mongodb_database)
+    projects_col = database.get_collection(settings.mongodb_collection_projects)
+    metadata_col = database.get_collection(settings.mongodb_collection_metadata)
+    specifications_col = database.get_collection(settings.mongodb_collection_specifications)
+    projects_db_service = ProjectDatabaseServiceMongo(db_client=mongo_test_client)
+    old_projects_db_service = get_project_database_service()
+    set_project_database_service(projects_db_service)
+
+    yield projects_db_service, projects_col, metadata_col, specifications_col
+
+    await projects_col.delete_many({})
+    await metadata_col.delete_many({})
+    await specifications_col.delete_many({})
+    set_project_database_service(old_projects_db_service)
