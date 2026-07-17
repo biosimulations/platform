@@ -58,9 +58,13 @@ class Settings(BaseSettings):
     biosimulators_api_base_url: str = "https://api.biosimulators.org"
     biosimulations_api_base_url: str = "https://api.biosimulations.org"
 
-    slurm_submit_host: str = ""   # "mantis-sub-1.cam.uchc.edu"
+    slurm_submit_host: str = ""   # "hamantis.cam.uchc.edu"
     slurm_submit_user: str = ""   # "crbmapi"
     slurm_submit_key: str = ""    # "/Users/jimschaff/.ssh/crbmapi"
+    # sbatch scheduling. Defaults are valid for the crbmapi user on hamantis;
+    # override per deployment. sbatch templates read these instead of hardcoding.
+    slurm_submit_partition: str = "vcell"
+    slurm_submit_qos: str = "vcell-services"
 
 
 @lru_cache

@@ -27,14 +27,15 @@ async def slurm_service(ssh_service: SSHService) -> AsyncGenerator[SlurmService]
 
 @pytest.fixture(scope="session")
 def slurm_template_hello() -> str:
+    settings = get_settings()
     template = \
-"""#!/bin/bash
+f"""#!/bin/bash
 #SBATCH --job-name=my_test_job        # Job name
 # SBATCH --chdir=workDirname_1         # Working directory
 #SBATCH --output=output.txt           # Standard output file
 #SBATCH --error=error.txt             # Standard error file
-#SBATCH --partition=vcell             # Partition or queue name
-#SBATCH --qos=vcell-services          # QOS level
+#SBATCH --partition={settings.slurm_submit_partition}             # Partition or queue name
+#SBATCH --qos={settings.slurm_submit_qos}          # QOS level
 #SBATCH --nodes=1                     # Number of nodes
 #SBATCH --ntasks-per-node=1           # Number of tasks per node
 #SBATCH --cpus-per-task=1             # Number of CPU cores per task
