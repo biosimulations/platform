@@ -45,7 +45,7 @@ export interface ProjectSummary {
 }
 
 export interface ProjectStub {
-  id: number
+  id: string
   simulationRun: string
   created: string
   updated: string
@@ -53,5 +53,11 @@ export interface ProjectStub {
   summary: string
   model_format: string
   image_url: string | undefined
+}
+
+// Response of GET /projects (platform backend): a page of results + total count.
+export interface ProjectStubPage {
+  items: ProjectStub[]
+  total: number
 }
 // </editor-fold>
