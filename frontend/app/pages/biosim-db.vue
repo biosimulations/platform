@@ -6,7 +6,7 @@ import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 import type {TableFilter, TableFilterConfig, TablePagination} from "~/models/filtering";
-import type {ProjectQueryStat, ProjectQueryStatFilter, Projects, ProjectSearchFilter, ProjectStub,} from "~/models/projects";
+import type {ProjectQueryStat, ProjectQueryStatFilter, ProjectSearchFilter, ProjectStub, ProjectStubPage,} from "~/models/projects";
 import type {CoreRow} from "@tanstack/table-core"
 import type {AppChip} from "~/models/common";
 
@@ -231,42 +231,32 @@ async function fetch_projects() {
   const populated_filters = searched_filters.value.filter(filter => filter.allowable_values.length > 0)
 
   try {
-    const api_return = await $fetch(`${runtimeConfig.public.legacy_api_url}/projects/summary_filtered`, {
+    // Results: the platform backend already returns ProjectStub-shaped rows with
+    // image_url + model_format populated — no per-project /files call needed.
+    // Pagination is 1-indexed here; the table is 0-indexed, so add one.
+    const results = await $fetch(`${runtimeConfig.public.api_url}/projects`, {
       method: 'GET',
       query: {
         'searchTerm': fuzzy_search_term.value,
-        'filters': [populated_filters],
-        'pageSize': table_pagination.value.perPage,
-        'pageIndex': table_pagination.value.page
+        'filters': JSON.stringify(populated_filters),
+        'perPage': table_pagination.value.perPage,
+        'page': table_pagination.value.page + 1
       }
-    }) as Projects
+    }) as ProjectStubPage
 
-    projects.value = await Promise.all(
-      api_return.projectSummaries.map(async (p: any) => {
-        const files = await $fetch(`${runtimeConfig.public.legacy_api_url}/files/${p.simulationRun.id}`, {})
+    projects.value = results.items
+    total_results.value = results.total
 
-        const image_url = (files as any[])
-          .find(f =>
-            f.name.endsWith('.png')
-            || f.name.endsWith('.jpg')
-            || f.name.endsWith('.jpeg')
-          )?.url
+    // Facet counts come from a separate endpoint. Pass only the search term (not
+    // the active filters) so the facet menu stays stable as filters are toggled.
+    const query_stats = await $fetch(`${runtimeConfig.public.api_url}/projects/stats`, {
+      method: 'GET',
+      query: {
+        'searchTerm': fuzzy_search_term.value
+      }
+    }) as ProjectQueryStat[]
 
-        return {
-          id: p.id,
-          name: p.simulationRun.metadata[0].title,
-          summary: p.simulationRun.metadata[0].abstract ? p.simulationRun.metadata[0].abstract.substring(0, 150) + '...' : '',
-          created: p.created,
-          updated: p.updated,
-          simulationRun: p.simulationRun.id,
-          image_url,
-          model_format: p.model_format
-        } as ProjectStub
-      })
-    ) as ProjectStub[]
-
-    total_results.value = api_return.totalMatchingProjectSummaries
-    filter_suggestions.value = query_stats_to_filter_groups(api_return.queryStats)
+    filter_suggestions.value = query_stats_to_filter_groups(query_stats)
     searched_filters.value = filter_suggestions.value.map((f, _index) => ({ target: f.target, allowable_values: []}))
 
     return
