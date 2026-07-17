@@ -157,6 +157,39 @@ async def test_stats_ignore_structured_filters(project_search_service_mongo: Col
 
 
 @pytest.mark.asyncio
+async def test_keyword_and_taxa_values_are_searchable(project_search_service_mongo: Cols) -> None:
+    """keywords + taxa labels are in the configured searchable set, so a term that
+    only appears in them still matches."""
+    svc = project_search_service_mongo[0]
+    await _seed_and_build(
+        project_search_service_mongo,
+        [_project("kw", "r1"), _project("tx", "r2")],
+        [
+            _metadata("r1", title="Model One", abstract="nothing relevant", keywords=["arrhythmia"]),
+            _metadata("r2", title="Model Two", abstract="nothing relevant", taxa=["Danio rerio"]),
+        ],
+        [],
+    )
+    by_keyword, _ = await svc.query_project_stubs(page=1, per_page=10, filters=[], search_term="arrhythmia")
+    assert [s.id for s in by_keyword] == ["kw"]
+    by_taxon, _ = await svc.query_project_stubs(page=1, per_page=10, filters=[], search_term="Danio")
+    assert [s.id for s in by_taxon] == ["tx"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_indexes_rebuilds_text_index_on_change(project_search_service_mongo: Cols) -> None:
+    """A pre-existing text index with a different field set is dropped and
+    recreated from the configured weights."""
+    svc, _p, _m, _s, search_col = project_search_service_mongo
+    # stand up an old-style index (title only)
+    await search_col.create_index([("title", "text")], weights={"title": 1}, name="project_text")
+    await svc.ensure_indexes()
+    weights = (await search_col.index_information())["project_text"]["weights"]
+    assert set(weights.keys()) == {"title", "abstract", "description", "keywords", "taxa"}
+    assert weights["title"] == 10 and weights["keywords"] == 4 and weights["taxa"] == 3
+
+
+@pytest.mark.asyncio
 async def test_rebuild_if_empty_then_noop(project_search_service_mongo: Cols) -> None:
     svc, projects_col, metadata_col, _s, _search = project_search_service_mongo
     await projects_col.insert_one(_project("p1", "r1"))

@@ -44,8 +44,9 @@ logger = logging.getLogger(__name__)
 # nested `_meta0.<field>` paths of the live-aggregation path).
 _FACET_TARGETS = ("taxa", "keywords")
 
-# Relevance weights for the $text index (title matches count most).
-_TEXT_WEIGHTS = {"title": 10, "abstract": 5, "description": 1}
+# Name of the (single) $text index; the searchable fields + weights come from
+# settings.project_search_text_weights.
+_TEXT_INDEX_NAME = "project_text"
 
 
 def _iso(value: Any) -> str:
@@ -166,11 +167,22 @@ class ProjectSearchServiceMongo(ProjectDatabaseService):
 
     @override
     async def ensure_indexes(self) -> None:
-        await self._search_col.create_index(
-            [("title", TEXT), ("abstract", TEXT), ("description", TEXT)],
-            weights=_TEXT_WEIGHTS,
-            name="project_text",
-        )
+        # A collection allows only one text index, and Mongo rejects re-creating it
+        # with different fields/weights — so drop & recreate when the configured
+        # searchable set changes. Rebuilding indexes existing docs automatically;
+        # no data reindex needed for a weights/field-toggle change.
+        weights = dict(get_settings().project_search_text_weights)
+        existing = await self._search_col.index_information()
+        current = existing.get(_TEXT_INDEX_NAME)
+        if current is not None and current.get("weights") != weights:
+            await self._search_col.drop_index(_TEXT_INDEX_NAME)
+            current = None
+        if current is None:
+            await self._search_col.create_index(
+                [(field, TEXT) for field in weights],
+                weights=weights,
+                name=_TEXT_INDEX_NAME,
+            )
         await self._search_col.create_index("taxa")
         await self._search_col.create_index("keywords")
         await self._search_col.create_index([("updated", DESCENDING), ("id", ASCENDING)])
