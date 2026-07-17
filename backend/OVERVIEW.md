@@ -342,16 +342,16 @@ tests/
 
 ```bash
 # All tests
-poetry run pytest
+uv run pytest
 
 # With coverage
-poetry run pytest --cov=biosim_server --cov-report=html
+uv run pytest --cov=biosim_server --cov-report=html
 
 # Specific test file
-poetry run pytest tests/biosim_verify/test_hdf5_compare.py -v
+uv run pytest tests/biosim_verify/test_hdf5_compare.py -v
 
 # Skip integration tests
-poetry run pytest -m "not integration"
+uv run pytest -m "not integration"
 ```
 
 ### Test Infrastructure
@@ -404,7 +404,7 @@ poetry run pytest -m "not integration"
 2. Add endpoint in `biosim_server/api/main.py`
 3. Implement business logic in appropriate module
 4. Add tests in `tests/`
-5. Run type checking: `poetry run mypy biosim_server`
+5. Run type checking: `uv run mypy biosim_server`
 
 ### Adding a New Workflow
 

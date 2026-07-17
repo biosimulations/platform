@@ -1,58 +1,65 @@
-[tool.poetry]
+[project]
 name = "biosim-server"
 version = "0.5.0"
 description = "Server for the consolidated Biosimulations API"
-authors = ["Alex Patrie <alexanderpatrie@gmail.com>, Jim Schaff <schaff@uchc.edu>"]
+authors = [
+    { name = "Alex Patrie", email = "alexanderpatrie@gmail.com" },
+    { name = "Jim Schaff", email = "schaff@uchc.edu" },
+]
 readme = "README.md"
-include = ["pyproject.toml"]
-packages = [
-    {include = "biosim_server"},
-    {include = "tests"},
+requires-python = ">=3.13,<4"
+dependencies = [
+    "python-dotenv>=1.1.0,<2",
+    "fastapi>=0.115.12,<0.116",
+    "pydantic>=2.11.0,<3",
+    "uvicorn>=0.34.0,<0.35",
+    "pyyaml>=6.0.2,<7",
+    "numpy>=2.2.4,<3",
+    "pandas>=2.2.3,<3",
+    "chardet>=5.2.0,<6",
+    "temporalio>=1.10.0,<2",
+    "aiohttp>=3.11.14,<4",
+    "motor>=3.7.0,<4",
+    # dnspython is what `mongodb+srv://` URIs (the hosted Atlas cluster) need.
+    # Requested explicitly since `motor` exposes no `srv` extra of its own.
+    "dnspython>=2.6.1,<3",
+    "pydantic-settings>=2.8.1,<3",
+    "python-multipart>=0.0.22,<0.0.23",
+    "gcloud-aio-storage>=9.4.0,<10",
+    "h5py>=3.13.0,<4",
+    "aiocache>=0.12.3,<0.13",
+    "asyncssh>=2.20.0,<3",
+    "aiobotocore>=3.7.0,<4",
+    "types-aiobotocore-s3>=3.7.0,<4",
 ]
 
+# Dependency groups (PEP 735). `dev` is synced by default; `worker` is opt-in
+# (uv sync --group worker or --all-groups). Mirrors the old poetry groups.
+[dependency-groups]
+worker = [
+    "python-libsbml>=5.20.4,<6",
+]
+dev = [
+    "pytest>=8.3.5,<9",
+    "mypy>=1.15.0,<2",
+    "types-requests>=2.32.0.20250306",
+    "types-aiofiles>=24.1.0.20250326",
+    "types-pyyaml>=6.0.12.20250326",
+    "motor-types>=1.0.0b4",
+    "pytest-asyncio>=0.26.0,<0.27",
+    "types-aiobotocore>=2.21.1,<3",
+    "testcontainers[mongodb]>=4.9.2,<5",
+    "httpx>=0.28.1,<0.29",
+    "ruff>=0.15.7,<0.16",
+]
 
-[tool.poetry.dependencies]
-python = "^3.13"
-python-dotenv = "^1.1.0"
-fastapi = "^0.115.12"
-pydantic = "^2.11.0"
-uvicorn = "^0.34.0"
-pyyaml = "^6.0.2"
-numpy = "^2.2.4"
-pandas = "^2.2.3"
-chardet = "^5.2.0"
-temporalio = "^1.10.0"
-aiohttp = "^3.11.14"
-motor = {extras = ["srv"], version = "^3.7.0"}
-pydantic-settings = "^2.8.1"
-python-multipart = "^0.0.22"
-gcloud-aio-storage = "^9.4.0"
-h5py = "^3.13.0"
-aiocache = "^0.12.3"
-asyncssh = "^2.20.0"
-aiobotocore = "^3.7.0"
-types-aiobotocore-s3 = "^3.7.0"
-
-
-[tool.poetry.group.worker.dependencies]
-python-libsbml = "^5.20.4"
-
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.3.5"
-mypy = "^1.15.0"
-types-requests = "^2.32.0.20250306"
-types-aiofiles = "^24.1.0.20250326"
-types-pyyaml = "^6.0.12.20250326"
-motor-types = "^1.0.0b4"
-pytest-asyncio = "^0.26.0"
-types-aiobotocore = "^2.21.1"
-testcontainers = {extras = ["mongodb"], version = "^4.9.2"}
-httpx = "^0.28.1"
-ruff = "^0.15.7"
+# Run in-place from source (mirrors poetry's `--no-root`); uv installs
+# dependencies but not the project itself, so no build backend is needed.
+[tool.uv]
+package = false
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 strict = true
 
 [[tool.mypy.overrides]]
@@ -63,9 +70,6 @@ ignore_errors = true
 testpaths = ["tests"]
 addopts = "--ignore=setup.py"
 python_files = "main.py"
-
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
+# Non-package project: put the backend root on sys.path so `biosim_server`
+# and `tests` import without an editable install (poetry used to install both).
+pythonpath = ["."]

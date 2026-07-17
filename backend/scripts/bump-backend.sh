@@ -53,7 +53,7 @@ fi
 # version.py is a single line with no trailing newline — preserve that.
 printf '__version__ = "%s"' "$NEW" > "$VERSION_PY"
 
-# pyproject.toml: bump the [tool.poetry] version line.
+# pyproject.toml: bump the [project] version line.
 perl -0pi -e "s/^version = \"\Q$OLD\E\"/version = \"$NEW\"/m" "$PYPROJECT"
 
 git -C "$REPO_ROOT" add "$VERSION_PY" "$PYPROJECT"

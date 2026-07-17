@@ -15,19 +15,12 @@ jobs:
         steps:
         - name: checkout repo
           uses: actions/checkout@v4
-        - name: Set up Python 3.13
-          uses: actions/setup-python@v5
+        - name: Install uv
+          uses: astral-sh/setup-uv@v5
           with:
-            python-version: 3.13
-        - name: Install and configure Poetry
-          uses: snok/install-poetry@v1
-          with:
-            version: 2.1.1
-            virtualenvs-create: true
-            virtualenvs-in-project: true
+            version: 0.9.18
+            enable-cache: true
         - name: Install dependencies
-          run: |
-            poetry install
+          run: uv sync --frozen --all-groups
         - name: Run tests
-          run: |
-            poetry run python -m pytest
+          run: uv run python -m pytest

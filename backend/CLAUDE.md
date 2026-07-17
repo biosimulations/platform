@@ -16,25 +16,25 @@ The platform backend is a distributed microservices application for biosimulatio
 
 ```bash
 # Install dependencies
-poetry install
+uv sync
 
 # Run API server locally
-poetry run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000
+uv run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000
 
 # Run worker locally
-poetry run python -m biosim_server.worker.worker_main
+uv run python -m biosim_server.worker.worker_main
 
 # Run tests
-poetry run pytest
+uv run pytest
 
 # Run tests with coverage
-poetry run pytest --cov=biosim_server
+uv run pytest --cov=biosim_server
 
 # Type checking
-poetry run mypy biosim_server
+uv run mypy biosim_server
 
 # Single test file
-poetry run pytest tests/biosim_runs/test_sim_workflow.py -v
+uv run pytest tests/biosim_runs/test_sim_workflow.py -v
 ```
 
 ## Verification
@@ -43,13 +43,13 @@ Run these checks on every changeset before considering work complete (both `bios
 
 ```bash
 # Linting
-poetry run ruff check .
+uv run ruff check .
 
 # Type checking (strict mode)
-poetry run mypy biosim_server tests
+uv run mypy biosim_server tests
 
 # Tests (exclude integration tests that hit external APIs)
-poetry run pytest -m "not integration"
+uv run pytest -m "not integration"
 ```
 
 These are the same checks the repo-root `lefthook.yml` runs on commit/push and that `frontend-ci` / `backend-ci` gate on `main`.
@@ -126,7 +126,7 @@ backend/
 ├── scripts/                   # backend tooling (KiSAO data generation, etc.)
 ├── docs/                      # backend-specific docs
 ├── pyproject.toml
-├── poetry.lock
+├── uv.lock
 ├── pytest.ini
 ├── Dockerfile.api
 ├── Dockerfile.worker
