@@ -48,6 +48,23 @@ class Settings(BaseSettings):
     mongodb_collection_projects: str = "Projects"
     mongodb_collection_metadata: str = "Metadata"
     mongodb_collection_specifications: str = "Specifications"
+    # Platform-owned materialized search collection (Phase 1 $text). Built by
+    # reading the biosimulations collections above; we own its $text index. The
+    # "Platform" prefix keeps it clearly ours, not a biosimulations collection.
+    mongodb_collection_project_search: str = "PlatformProjectSearch"
+    # $text searchable fields -> relevance weights (higher = ranks stronger).
+    # Each field must exist on the search document: title/abstract/description are
+    # text; keywords/taxa are label arrays (Mongo text-indexes them element-wise).
+    # To retune, change this and restart (ensure_indexes drops & recreates the
+    # index when it differs) — a `POST /projects/reindex` is only needed if the
+    # set of stored document fields changes, not for weight/field-toggle changes.
+    project_search_text_weights: dict[str, int] = {
+        "title": 10,
+        "abstract": 5,
+        "description": 1,
+        "keywords": 4,
+        "taxa": 3,
+    }
     # Legacy pre-2022 materialized summary; dead/abandoned (nothing writes it).
     # Kept only for reference — the API assembles from Projects + Metadata live.
     mongodb_collection_project_summary: str = "projectSummary"

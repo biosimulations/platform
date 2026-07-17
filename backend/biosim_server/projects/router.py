@@ -65,6 +65,20 @@ async def list_projects(
     return ProjectStubPage(items=stubs, total=total)
 
 
+@router.post(
+    "/reindex",
+    operation_id="reindex-projects",
+    summary="Rebuild the platform project search index from source collections",
+)
+async def reindex_projects() -> dict[str, int]:
+    projects_db = get_project_database_service()
+    rebuild = getattr(projects_db, "rebuild_index", None)
+    if projects_db is None or rebuild is None:
+        raise HTTPException(status_code=503, detail="Project search index not available")
+    count = await rebuild()
+    return {"indexed": count}
+
+
 @router.get(
     "/stats",
     response_model=list[ProjectQueryStat],

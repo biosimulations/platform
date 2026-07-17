@@ -12,7 +12,7 @@ from biosim_server.dependencies import set_database_service, get_database_servic
     set_project_database_service, get_project_database_service
 from biosim_server.biosim_omex import OmexDatabaseServiceMongo
 from biosim_server.simulations import SimulationRunDatabaseServiceMongo
-from biosim_server.projects import ProjectDatabaseServiceMongo
+from biosim_server.projects import ProjectDatabaseServiceMongo, ProjectSearchServiceMongo
 
 MONGODB_DATABASE_NAME = "mydatabase"
 MONGODB_COLLECTION_NAME = "mycollection"
@@ -110,4 +110,40 @@ async def project_database_service_mongo(
     await projects_col.delete_many({})
     await metadata_col.delete_many({})
     await specifications_col.delete_many({})
+    set_project_database_service(old_projects_db_service)
+
+
+@pytest_asyncio.fixture(scope="function")
+async def project_search_service_mongo(
+    mongo_test_client: AsyncIOMotorClient,
+) -> AsyncGenerator[
+    tuple[
+        ProjectSearchServiceMongo,
+        AsyncIOMotorCollection,
+        AsyncIOMotorCollection,
+        AsyncIOMotorCollection,
+        AsyncIOMotorCollection,
+    ],
+    None,
+]:
+    """Phase-1 search service plus the source (Projects, Metadata, Specifications)
+    collections to seed and the materialized ``project_search`` collection.
+
+    Seed the source collections, call ``rebuild_index()``, then query."""
+    settings = get_settings()
+    database = mongo_test_client.get_database(settings.mongodb_database)
+    projects_col = database.get_collection(settings.mongodb_collection_projects)
+    metadata_col = database.get_collection(settings.mongodb_collection_metadata)
+    specifications_col = database.get_collection(settings.mongodb_collection_specifications)
+    search_col = database.get_collection(settings.mongodb_collection_project_search)
+    search_service = ProjectSearchServiceMongo(db_client=mongo_test_client)
+    old_projects_db_service = get_project_database_service()
+    set_project_database_service(search_service)
+
+    yield search_service, projects_col, metadata_col, specifications_col, search_col
+
+    await projects_col.delete_many({})
+    await metadata_col.delete_many({})
+    await specifications_col.delete_many({})
+    await search_col.drop()
     set_project_database_service(old_projects_db_service)

@@ -3,6 +3,7 @@ from biosim_server.projects.database import (
     ProjectDatabaseServiceMongo,
     build_match_stage,
 )
+from biosim_server.projects.search import ProjectSearchServiceMongo
 from biosim_server.projects.models import (
     ProjectQueryStat,
     ProjectSearchFilter,
@@ -15,6 +16,7 @@ from biosim_server.projects.router import router as projects_router
 __all__ = [
     "ProjectDatabaseService",
     "ProjectDatabaseServiceMongo",
+    "ProjectSearchServiceMongo",
     "build_match_stage",
     "ProjectQueryStat",
     "ProjectSearchFilter",

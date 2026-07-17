@@ -119,13 +119,15 @@ async def init_standalone() -> None:
 
     # Local import avoids the simulations -> dependencies import cycle at module load.
     from biosim_server.simulations.database import SimulationRunDatabaseServiceMongo
-    from biosim_server.projects.database import ProjectDatabaseServiceMongo
+    from biosim_server.projects.search import ProjectSearchServiceMongo
 
     motor_client = AsyncIOMotorClient(get_settings().mongodb_uri)
     db_service = DatabaseServiceMongo(db_client=motor_client)
     omex_db_service = OmexDatabaseServiceMongo(db_client=motor_client)
     runs_db_service = SimulationRunDatabaseServiceMongo(db_client=motor_client)
-    projects_db_service = ProjectDatabaseServiceMongo(db_client=motor_client)
+    # Phase 1 search: queries a platform-owned project_search collection with our
+    # own $text index (see projects/search.py).
+    projects_db_service = ProjectSearchServiceMongo(db_client=motor_client)
 
     # create_index is idempotent; calling on every start keeps schema in sync as
     # we add lookups. Each service knows which fields its queries hit.
@@ -133,6 +135,9 @@ async def init_standalone() -> None:
     await omex_db_service.ensure_indexes()
     await runs_db_service.ensure_indexes()
     await projects_db_service.ensure_indexes()
+    # Populate the search index on first run (no-op once built); refresh on demand
+    # via POST /projects/reindex.
+    await projects_db_service.rebuild_index_if_empty()
 
     set_database_service(db_service)
     set_omex_database_service(omex_db_service)
