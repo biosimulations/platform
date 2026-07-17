@@ -16,12 +16,22 @@
 
 # Initialize variables
 CERT_ARG=""
+CONTROLLER_NAME="sealed-secrets-controller"
+CONTROLLER_NAMESPACE="sealed-secrets"
 
 # Parse optional arguments
 while [[ "$1" == --* ]]; do
   case "$1" in
     --cert)
       CERT_ARG="$2"
+      shift 2
+      ;;
+    --controller-name)
+      CONTROLLER_NAME="$2"
+      shift 2
+      ;;
+    --controller-namespace)
+      CONTROLLER_NAMESPACE="$2"
       shift 2
       ;;
     *)
@@ -43,8 +53,12 @@ NAMESPACE=$1
 MONGODB_URI=$2
 STORAGE_GCS_CREDENTIALS_FILE=$3
 
-# Create the generic secret and seal it
+# Create the generic secret and seal it.
+# When --cert is given, kubeseal seals offline against that cert (needed for GKE).
+# Otherwise it fetches the cert from the named controller in-cluster.
 kubectl create secret generic ${SECRET_NAME} --dry-run=client \
       --from-literal=mongodb-uri="${MONGODB_URI}" \
       --from-file=gcs_credentials.json="${STORAGE_GCS_CREDENTIALS_FILE}" \
-      --namespace="${NAMESPACE}" -o yaml | kubeseal --format yaml ${CERT_ARG:+--cert=$CERT_ARG}
+      --namespace="${NAMESPACE}" -o yaml \
+      | kubeseal --controller-name="${CONTROLLER_NAME}" --controller-namespace="${CONTROLLER_NAMESPACE}" \
+                 --format yaml ${CERT_ARG:+--cert=$CERT_ARG}

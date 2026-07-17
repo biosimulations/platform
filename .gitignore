@@ -211,3 +211,7 @@ config.env
 *.sbatch
 
 backend/local_cache/
+
+# Per-overlay plaintext secrets (source for sealed secrets). Only the
+# secrets.dat.template is committed; the filled-in secrets.dat never is.
+kustomize/overlays/**/secrets.dat
