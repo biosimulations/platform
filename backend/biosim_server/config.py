@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     mongodb_collection_projects: str = "Projects"
     mongodb_collection_metadata: str = "Metadata"
     mongodb_collection_specifications: str = "Specifications"
+    # Platform-owned materialized search collection (Phase 1 $text). Built by
+    # reading the biosimulations collections above; we own its $text index. The
+    # "Platform" prefix keeps it clearly ours, not a biosimulations collection.
+    mongodb_collection_project_search: str = "PlatformProjectSearch"
     # Legacy pre-2022 materialized summary; dead/abandoned (nothing writes it).
     # Kept only for reference — the API assembles from Projects + Metadata live.
     mongodb_collection_project_summary: str = "projectSummary"
