@@ -14,7 +14,9 @@ The read path is then a single-collection query: ``$text`` + ``textScore`` sort
 when searching, recency sort otherwise — no per-request ``$lookup``.
 """
 
+import html
 import logging
+import re
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
@@ -24,11 +26,12 @@ from typing_extensions import override
 from biosim_server.config import get_settings
 from biosim_server.projects.database import (
     ProjectDatabaseService,
+    _image_url,
     _join_stages,
     _label_values,
     _META,
+    _model_format,
     _MODELS,
-    _stub_from_agg,
     _TtlCache,
 )
 from biosim_server.projects.models import (
@@ -55,28 +58,57 @@ def _iso(value: Any) -> str:
     return str(value or "")
 
 
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+_SUMMARY_MAX = 300
+
+
+def _plain_text(value: Any) -> str:
+    """Strip HTML tags + entities and collapse whitespace.
+
+    Project metadata abstracts/titles sometimes contain HTML (e.g. an RDF
+    ``<body><div class="dc:title">…``); we don't want tags in the rendered summary
+    or as tokens in the $text index."""
+    if not isinstance(value, str) or not value:
+        return ""
+    text = _TAG_RE.sub(" ", value)
+    text = html.unescape(text)
+    return _WS_RE.sub(" ", text).strip()
+
+
+def _summarize(text: str, limit: int = _SUMMARY_MAX) -> str:
+    """Truncate the display summary; the full text stays searchable via abstract."""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
 def _search_document(doc: dict[str, Any], api_base: str) -> dict[str, Any]:
     """Build one flat, indexable search document from an enriched aggregation row.
 
-    Reuses ``_stub_from_agg`` for the rendered display fields (name/summary/
-    model_format/image_url) and carries the raw text + facet fields alongside for
-    the ``$text`` index and filtering."""
+    Text fields are HTML-stripped; ``summary`` is a truncated plain-text version of
+    the abstract (the full abstract stays searchable). ``model_format`` and
+    ``image_url`` reuse the enrichment helpers."""
     meta = doc.get(_META) or {}
-    stub = _stub_from_agg(doc, api_base)
+    run = str(doc.get("simulationRun", ""))
+    pid = str(doc.get("id", ""))
+    title = _plain_text(meta.get("title"))
+    abstract = _plain_text(meta.get("abstract"))
+    description = _plain_text(meta.get("description"))
     return {
-        "id": stub.id,
-        "simulationRun": stub.simulation_run,
+        "id": pid,
+        "simulationRun": run,
         # Stored as native datetimes for recency sort; formatted to ISO on read.
         "created": doc.get("created"),
         "updated": doc.get("updated"),
-        "name": stub.name,
-        "summary": stub.summary,
-        "model_format": stub.model_format,
-        "image_url": stub.image_url,
-        # Searchable text (indexed).
-        "title": str(meta.get("title") or ""),
-        "abstract": str(meta.get("abstract") or ""),
-        "description": str(meta.get("description") or ""),
+        "name": title or pid,
+        "summary": _summarize(abstract or description),
+        "model_format": _model_format(doc.get(_MODELS)),
+        "image_url": _image_url(run, meta.get("thumbnails"), api_base),
+        # Searchable text (indexed), HTML-stripped.
+        "title": title,
+        "abstract": abstract,
+        "description": description,
         # Facets (filterable + counted).
         "taxa": _label_values(meta.get("taxa")),
         "keywords": _label_values(meta.get("keywords")),

@@ -83,6 +83,45 @@ async def test_rebuild_materializes_enriched_docs(project_search_service_mongo: 
 
 
 @pytest.mark.asyncio
+async def test_summary_and_text_are_html_stripped(project_search_service_mongo: Cols) -> None:
+    svc, _p, _m, _s, search_col = project_search_service_mongo
+    html_abstract = (
+        '<body xmlns="http://www.w3.org/1999/xhtml">'
+        '<div class="dc:title">Edelstein1996 - EPSP</div> A model of &alpha;7 receptors.</body>'
+    )
+    await _seed_and_build(
+        project_search_service_mongo,
+        [_project("p1", "r1")],
+        [_metadata("r1", title="<i>Yeast</i> model", abstract=html_abstract)],
+        [],
+    )
+    doc = await search_col.find_one({"id": "p1"})
+    assert doc is not None
+    assert "<" not in doc["summary"] and "<" not in doc["title"] and "<" not in doc["abstract"]
+    assert doc["name"] == "Yeast model"          # tags stripped from title
+    assert "α7" in doc["abstract"]          # &alpha; entity unescaped -> α7
+    # still searchable by the plain-text content (whole-token match, not substring)
+    stubs, _ = await svc.query_project_stubs(page=1, per_page=10, filters=[], search_term="receptors")
+    assert [s.id for s in stubs] == ["p1"]
+
+
+@pytest.mark.asyncio
+async def test_summary_is_truncated(project_search_service_mongo: Cols) -> None:
+    svc, _p, _m, _s, search_col = project_search_service_mongo
+    long_abstract = "word " * 200  # ~1000 chars
+    await _seed_and_build(
+        project_search_service_mongo,
+        [_project("p1", "r1")],
+        [_metadata("r1", title="T", abstract=long_abstract)],
+        [],
+    )
+    doc = await search_col.find_one({"id": "p1"})
+    assert doc is not None
+    assert len(doc["summary"]) <= 301 and doc["summary"].endswith("…")  # truncated + ellipsis
+    assert len(doc["abstract"]) > 301  # full text kept for search
+
+
+@pytest.mark.asyncio
 async def test_text_search_ranks_by_relevance(project_search_service_mongo: Cols) -> None:
     """A title hit should outrank an abstract-only hit (title weighted higher)."""
     svc = project_search_service_mongo[0]
