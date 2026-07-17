@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     # Imported lazily at runtime (see init_standalone) to avoid an import cycle:
     # simulations/__init__.py -> router -> dependencies.
     from biosim_server.simulations.database import SimulationRunDatabaseService
+    from biosim_server.projects.database import ProjectDatabaseService
 
 #------ file service (standalone or pytest) ------
 
@@ -62,6 +63,18 @@ def get_simulation_run_database_service() -> "SimulationRunDatabaseService | Non
     global global_simulation_run_database_service
     return global_simulation_run_database_service
 
+#------- project database service (standalone or pytest) ------
+
+global_project_database_service: "ProjectDatabaseService | None" = None
+
+def set_project_database_service(service: "ProjectDatabaseService | None") -> None:
+    global global_project_database_service
+    global_project_database_service = service
+
+def get_project_database_service() -> "ProjectDatabaseService | None":
+    global global_project_database_service
+    return global_project_database_service
+
 #------- biosim service (standalone or pytest) ------
 
 global_biosim_service: BiosimService | None = None
@@ -106,21 +119,25 @@ async def init_standalone() -> None:
 
     # Local import avoids the simulations -> dependencies import cycle at module load.
     from biosim_server.simulations.database import SimulationRunDatabaseServiceMongo
+    from biosim_server.projects.database import ProjectDatabaseServiceMongo
 
     motor_client = AsyncIOMotorClient(get_settings().mongodb_uri)
     db_service = DatabaseServiceMongo(db_client=motor_client)
     omex_db_service = OmexDatabaseServiceMongo(db_client=motor_client)
     runs_db_service = SimulationRunDatabaseServiceMongo(db_client=motor_client)
+    projects_db_service = ProjectDatabaseServiceMongo(db_client=motor_client)
 
     # create_index is idempotent; calling on every start keeps schema in sync as
     # we add lookups. Each service knows which fields its queries hit.
     await db_service.ensure_indexes()
     await omex_db_service.ensure_indexes()
     await runs_db_service.ensure_indexes()
+    await projects_db_service.ensure_indexes()
 
     set_database_service(db_service)
     set_omex_database_service(omex_db_service)
     set_simulation_run_database_service(runs_db_service)
+    set_project_database_service(projects_db_service)
 
 async def shutdown_standalone() -> None:
     db_service = get_database_service()
@@ -139,5 +156,6 @@ async def shutdown_standalone() -> None:
     set_biosim_service(None)
     set_temporal_client(None)
     set_database_service(None)
-    # Shares the motor client closed via db_service above; just clear the handle.
+    # Shares the motor client closed via db_service above; just clear the handles.
     set_simulation_run_database_service(None)
+    set_project_database_service(None)
