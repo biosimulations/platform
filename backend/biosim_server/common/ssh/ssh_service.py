@@ -29,10 +29,12 @@ class SSHService:
                                 f"stdout={result.stdout[:100]} stderr={result.stderr[:100]}")
                 return result.returncode, result.stdout, result.stderr
             except asyncssh.ProcessError as exc:
-                logger.error(msg=f"failed to send command {command}, stderr {str(result.stderr)[:100]}", exc_info=exc)
+                # `result` is unbound here: conn.run(check=True) raises before it
+                # is assigned. The ProcessError carries the failed command's stderr.
+                logger.error(msg=f"failed to send command {command}, stderr {str(exc.stderr)[:100]}", exc_info=exc)
                 raise exc
             except (OSError, asyncssh.Error) as exc:
-                logger.error(msg=f"failed to send command {command}, stderr {str(result.stderr)[:100]}", exc_info=exc)
+                logger.error(msg=f"failed to send command {command}", exc_info=exc)
                 raise exc
 
     async def scp_upload(self, local_file: Path, remote_path: Path) -> None:
