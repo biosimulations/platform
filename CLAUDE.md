@@ -90,6 +90,28 @@ All three workflows run on every PR (path filters were removed — cross-service
 
 `lefthook.yml` runs the lint/typecheck/ruff/mypy checks locally on pre-commit and pre-push so most failures are caught before CI. Install with `lefthook install` after `brew install lefthook`.
 
+## Secrets (sealed secrets)
+
+Each deploy overlay (`kustomize/overlays/biosim-{gke,rke,local}/`) owns its
+cluster secrets via three files, modeled on `../sms-api`:
+
+- **`secrets.dat.template`** (committed) — documents the required keys
+  (`MONGODB_URI`, `GCS_CREDENTIALS_FILE`, `GH_USER_NAME/EMAIL/PAT`, optional
+  kubeseal targeting).
+- **`secrets.dat`** (gitignored — `kustomize/overlays/**/secrets.dat`) — your
+  filled-in plaintext values. Never committed.
+- **`secrets.sh`** (committed) — sources `secrets.dat` and regenerates the
+  overlay's `secret-shared.yaml` + `secret-ghcr.yaml` (the committed, encrypted
+  `SealedSecret`s) via `kustomize/scripts/sealed_secret_{shared,ghcr}.sh`.
+
+Workflow: `cp secrets.dat.template secrets.dat`, fill it in, `./secrets.sh`,
+review + commit the regenerated `secret-*.yaml`. Plaintext lives only in
+`secrets.dat` — this replaces the old flow of stashing secrets in `~/.ssh`.
+Get the hosted `MONGODB_URI` / GCS creds from the `../deployment` / `../secrets`
+repos. For local backend dev against real project data, point
+`backend/.env`'s `MONGODB_URI` at the hosted read-only URI (see
+`backend/.env.example`).
+
 ## Ingress / hosts (prod)
 
 Subdomain split: `biosim.biosimulations.org` → frontend; `api.biosim.biosimulations.org` → backend. SSR traffic inside the cluster uses `API_URL_INTERNAL=http://api:8000` to skip the public ingress.
