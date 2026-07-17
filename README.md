@@ -25,11 +25,11 @@ scripts/dev-up.sh                 # mongo + temporal
 scripts/dev-up.sh --minio         # also bring up minio (S3-compatible storage)
 
 # 2. Backend API (terminal A)
-cd backend && poetry install
-poetry run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000 --reload
+cd backend && uv sync
+uv run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 # 3. Backend worker (terminal B)
-cd backend && poetry run python -m biosim_server.worker.worker_main
+cd backend && uv run python -m biosim_server.worker.worker_main
 
 # 4. Frontend dev server (terminal C)
 cd frontend && npm install && npm run dev   # http://localhost:4200
@@ -47,7 +47,7 @@ scripts/dev-down.sh --wipe        # stop and delete volumes
 
 Two supported paths — pick by how much parity you need with the rest of the team.
 
-- **Git Bash** (ships with [Git for Windows](https://git-scm.com/download/win)). Run the same `scripts/dev-up.sh` / `scripts/dev-down.sh` from Git Bash; Docker Desktop on Windows puts `docker` on `PATH` and the scripts use only Windows-side tokens, so there's no MSYS path-translation pain. Lefthook finds Git Bash automatically; the `nvm.sh` line in `lefthook.yml` no-ops and the hook falls back to whatever Node is on `PATH` (must be 22). Install Python + Poetry + Node 22 with your usual Windows installers. **One gotcha:** if `*.sh` files get checked out with CRLF endings, bash fails with `$'\r': command not found` — run `git config --global core.autocrlf input` before cloning, or convert in-place with `dos2unix scripts/*.sh`.
+- **Git Bash** (ships with [Git for Windows](https://git-scm.com/download/win)). Run the same `scripts/dev-up.sh` / `scripts/dev-down.sh` from Git Bash; Docker Desktop on Windows puts `docker` on `PATH` and the scripts use only Windows-side tokens, so there's no MSYS path-translation pain. Lefthook finds Git Bash automatically; the `nvm.sh` line in `lefthook.yml` no-ops and the hook falls back to whatever Node is on `PATH` (must be 22). Install Python + uv + Node 22 with your usual Windows installers. **One gotcha:** if `*.sh` files get checked out with CRLF endings, bash fails with `$'\r': command not found` — run `git config --global core.autocrlf input` before cloning, or convert in-place with `dos2unix scripts/*.sh`.
 - **WSL2** (Ubuntu). Strict parity with macOS/Linux teammates and with what `backend-ci`/`frontend-ci` run on `ubuntu-latest`. Worth the ~30 min setup if you'll be touching `kustomize/scripts/build_and_push.sh`, debugging hook portability, or running anything Linux-flavored. Two footguns: keep the repo inside the WSL filesystem (e.g. `~/code/platform`, not `/mnt/c/...`) for usable file-watch and I/O perf, and use Docker Desktop with the WSL2 integration enabled so `docker` inside WSL talks to the same daemon as the host.
 
 PowerShell-native scripts aren't provided — Git Bash covers the same ground without the maintenance overhead of parallel `.ps1` versions.

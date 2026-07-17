@@ -2,8 +2,11 @@
 FROM python:3.13.2-slim-bookworm AS base
 
 # Set environment variables
-ENV POETRY_VERSION=2.1.1 \
-    POETRY_VIRTUALENVS_CREATE=false \
+ENV UV_VERSION=0.9.18 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     STORAGE_LOCAL_CACHE_DIR="/app/scratch" \
     STORAGE_BUCKET="simdata-bucket" \
@@ -12,17 +15,18 @@ ENV POETRY_VERSION=2.1.1 \
     STORAGE_GCS_CREDENTIALS_FILE="/app/secret/gcs_credentials.json"
 
 
-# Install Poetry
-RUN pip install "poetry==$POETRY_VERSION"
+# Install uv
+RUN pip install "uv==$UV_VERSION"
 
 # Set the working directory
 WORKDIR /app
 
 # Copy only the necessary files
-COPY pyproject.toml poetry.lock /app/
+COPY pyproject.toml uv.lock /app/
 
-# Install dependencies
-RUN poetry install --no-root --only main
+# Install dependencies (runtime only: no dev/worker groups, no project root) into
+# /opt/venv, kept outside /app so `COPY . /app` below can't clobber it.
+RUN uv sync --frozen --no-default-groups
 
 # Copy the rest of the application code
 COPY . /app

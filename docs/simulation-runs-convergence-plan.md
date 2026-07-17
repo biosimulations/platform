@@ -38,7 +38,7 @@ the first cut is that `SimulationRunRecord` *denormalized the computation column
 - **No prod data in `BiosimSimulationRuns`** — the runs-api work is not yet
   merged/deployed, so PR3's schema change needs **no backfill**. If that stops
   being true before PR3, add a migration.
-- Each PR passes the full `poetry run pytest -m "not integration"` gate.
+- Each PR passes the full `uv run pytest -m "not integration"` gate.
 
 ## Recommended ship order
 

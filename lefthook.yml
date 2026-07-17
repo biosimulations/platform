@@ -26,7 +26,7 @@ pre-commit:
     backend-ruff:
       root: 'backend/'
       glob: '*.py'
-      run: poetry run ruff check {staged_files}
+      run: uv run ruff check {staged_files}
 
 # Slower full-project type checks run once per push, not on every commit.
 pre-push:
@@ -41,4 +41,4 @@ pre-push:
     backend-mypy:
       root: 'backend/'
       glob: '*.py'
-      run: poetry run mypy biosim_server tests
+      run: uv run mypy biosim_server tests

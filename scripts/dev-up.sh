@@ -39,10 +39,10 @@ echo
 echo "Infra is up. Next:"
 echo
 echo "  # backend api (in another terminal)"
-echo "  cd backend && poetry run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000 --reload"
+echo "  cd backend && uv run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000 --reload"
 echo
 echo "  # backend worker (in another terminal)"
-echo "  cd backend && poetry run python -m biosim_server.worker.worker_main"
+echo "  cd backend && uv run python -m biosim_server.worker.worker_main"
 echo
 echo "  # frontend (in another terminal)"
 echo "  cd frontend && npm run dev"

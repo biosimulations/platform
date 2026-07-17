@@ -170,6 +170,6 @@ def calc_stats(arr1: NDArray[np.float64], arr2: NDArray[np.float64],
     score: NDArray1f = np.nanmax(a=np.divide(numerator, denominator), axis=1)
 
     # close = np.allclose(arr1, arr2, rtol=rel_tol, atol=atol, equal_nan=False)
-    is_close: NDArray1b = np.less(score, 1.0)  # type: ignore
+    is_close: NDArray1b = np.less(score, 1.0)
     assert len(is_close.shape) == 1 and len(score.shape) == 1 and is_close.shape == score.shape
     return is_close, score

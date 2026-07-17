@@ -6,7 +6,7 @@
 # here — leaf algorithms should NOT be added.
 #
 # To regenerate kisao_data.py after editing:
-#   poetry run python scripts/generate_kisao_data.py
+#   uv run python scripts/generate_kisao_data.py
 
 categories:
   - id: "KISAO:0000000"

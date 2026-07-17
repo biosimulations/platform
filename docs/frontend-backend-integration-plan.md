@@ -23,7 +23,7 @@ After Harrison merged the Nuxt 4 webapp into `frontend/` (2026-05-15), the monor
 
 | Decision | Choice |
 |---|---|
-| Local orchestration | Hybrid: docker-compose for infra (Mongo + Temporal + optional minio); backend and frontend run native via poetry/npm for fast HMR. |
+| Local orchestration | Hybrid: docker-compose for infra (Mongo + Temporal + optional minio); backend and frontend run native via uv/npm for fast HMR. |
 | External APIs in local dev | Call the real public biosimulations.org / simdata / biosimulators APIs. The OMEX flow ferries bytes through the backend (`biosim_service.py:84` uses multipart upload), so local filesystem storage works fine. |
 | Frontend packaging | Separate container running the Nuxt Nitro node server. New `platform-frontend` image with its own Deployment + Service. |
 | Test scope | Backend integration tests against the local-mode backend + CI smoke test of the assembled local stack. (No frontend unit/E2E tests in this plan.) |
@@ -60,7 +60,7 @@ Small, independent, low-risk changes that unblock the rest.
 
 ## Phase 1 — Local stack for frontend dev
 
-**Goal:** A developer runs `docker compose up -d` for infra, then `poetry run ...` (backend api + worker) and `npm run dev` (frontend) natively. Frontend at `http://localhost:4200` talks to backend at `http://localhost:8000`. Real biosimulations.org runs the actual simulations.
+**Goal:** A developer runs `docker compose up -d` for infra, then `uv run ...` (backend api + worker) and `npm run dev` (frontend) natively. Frontend at `http://localhost:4200` talks to backend at `http://localhost:8000`. Real biosimulations.org runs the actual simulations.
 
 - **`compose.yaml`** at repo root. Services:
   - `mongo` — `mongo:7` on `27017`, named volume
@@ -159,7 +159,7 @@ Small, independent, low-risk changes that unblock the rest.
 ### CI smoke test on every PR
 - New workflow `.github/workflows/smoke.yaml`:
   - Trigger: `on: pull_request` (all paths).
-  - Steps: `docker compose up -d mongo temporal`, install poetry, set up Node 22, build backend + frontend, start them in the background, wait for `:8000/version` and `:4200/`, hit a handful of endpoints (e.g., `GET /version`, `GET /docs`, frontend root render).
+  - Steps: `docker compose up -d mongo temporal`, install uv, set up Node 22, build backend + frontend, start them in the background, wait for `:8000/version` and `:4200/`, hit a handful of endpoints (e.g., `GET /version`, `GET /docs`, frontend root render).
   - **Do not run a real simulation** — biosimulations.org submission is minutes-long. Test only the wiring (frontend boots, backend boots, CORS works, runtime config reaches the frontend).
   - Budget: aim for under 5 minutes.
 

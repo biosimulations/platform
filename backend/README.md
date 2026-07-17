@@ -15,16 +15,16 @@ The backend is a microservices Python application built with FastAPI and Tempora
 - `biosim_runs`, `biosim_verify`, `biosim_omex`, `compatibility`, `simulations`: domain workflows and activities
 - `worker`: worker process entry point
 
-**Container management** is handled by Kubernetes (config in `../kustomize/`). **Dependency management** uses `poetry`.
+**Container management** is handled by Kubernetes (config in `../kustomize/`). **Dependency management** uses `uv`.
 
 ### Quickstart
 
 ```bash
 cd backend
-poetry install
-poetry run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000
-poetry run python -m biosim_server.worker.worker_main
-poetry run pytest -m "not integration"
+uv sync
+uv run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000
+uv run python -m biosim_server.worker.worker_main
+uv run pytest -m "not integration"
 ```
 
 ### Notes
