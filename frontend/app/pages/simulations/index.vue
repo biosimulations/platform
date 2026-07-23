@@ -538,16 +538,7 @@ const checkValidity = () => {
       </div>
     </div>
 
-    <div class="w-full md:w-max md:max-w-175 lg:max-w-225 flex flex-col items-center justify-center gap-2" v-if="error_encountered">
-      <DotLottieVue class="w-37.5 aspect-square" autoplay src="/animations/error.lottie" />
-      <h1 class="text-2xl font-bold">An error occurred while fetching simulation runs</h1>
-      <pre class="bg-neutral-100 rounded p-2">{{error_encountered}}</pre>
-
-      <div class="w-full flex-1 flex items-center justify-center gap-3 mt-4">
-        <UButton color="primary" class="cursor-pointer" to="/" icon="i-lucide-home" label="Go Home"></UButton>
-        <UButton color="neutral" class="cursor-pointer" variant="outline" icon="i-lucide-rotate-ccw" label="Retry" @click="fetch_runs()"></UButton>
-      </div>
-    </div>
+    <ErrorPage v-if="error_encountered" message="An error occurred while fetching simulation runs" :error="error_encountered" @refresh="fetch_runs()"/>
   </section>
 </template>
 <style>
