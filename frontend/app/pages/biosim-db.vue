@@ -69,98 +69,7 @@ const columns: TableColumn<ProjectStub>[] = [
         hour12: true
       })
     }
-  },
-  /*{
-    id: 'actions',
-    enableHiding: false,
-    meta: {
-      class: {
-        td: 'text-right'
-      }
-    },
-    cell: ({ row }) => {
-      const items = [
-        {
-          type: 'label',
-          label: 'Actions'
-        },
-        {
-          label: 'Copy Sharable Link',
-          icon: 'i-lucide-copy',
-          onSelect() {
-            copy(process.env.BASE_URL + row.original.id)
-
-            toast.add({
-              title: 'Link copied to clipboard!',
-              color: 'success',
-              icon: 'i-lucide-circle-check'
-            })
-          }
-        },
-        {
-          label: 'Export Run',
-          icon: 'i-lucide-download',
-          onSelect() {
-            // Add export function here
-          }
-        },
-        {
-          type: 'separator'
-        },
-        {
-          label: 'View Visualization',
-          icon: 'i-lucide-chart-bar',
-          onSelect() {
-            // Add corresponding function here
-          }
-        },
-        {
-          label: 'View Logs',
-          icon: 'i-lucide-file-text',
-          onSelect() {
-            // Add corresponding function here
-          }
-        },
-        {
-          label: 'Rerun Simulation',
-          icon: 'i-lucide-rotate-ccw',
-          onSelect() {
-            // Add corresponding function here
-          }
-        },
-        {
-          label: 'Publish Simulation',
-          icon: 'i-lucide-megaphone',
-          onSelect() {
-            // Add corresponding function here
-          }
-        },
-        {
-          type: 'separator'
-        },
-        {
-          label: 'Delete Run',
-          icon: 'i-lucide-trash',
-          onSelect() {
-            // Add corresponding function here
-          }
-        }
-      ]
-
-      return h(UDropdownMenu, {
-        'content': {
-          align: 'end'
-        },
-        items,
-        'aria-label': 'Actions dropdown'
-      }, () => h(UButton, {
-        'icon': 'i-lucide-ellipsis-vertical',
-        'color': 'neutral',
-        'variant': 'ghost',
-        'aria-label': 'Actions dropdown'
-      }))
-    }
-  }*/
+  }
 ]
 
 const table = useTemplateRef('table')
@@ -234,7 +143,7 @@ async function fetch_projects() {
     // Results: the platform backend already returns ProjectStub-shaped rows with
     // image_url + model_format populated — no per-project /files call needed.
     // Pagination is 1-indexed here; the table is 0-indexed, so add one.
-    const results = await $fetch(`${runtimeConfig.public.api_url}/projects`, {
+    $fetch<ProjectStubPage>(`${runtimeConfig.public.api_url}/projects`, {
       method: 'GET',
       query: {
         'searchTerm': fuzzy_search_term.value,
@@ -242,22 +151,22 @@ async function fetch_projects() {
         'perPage': table_pagination.value.perPage,
         'page': table_pagination.value.page + 1
       }
-    }) as ProjectStubPage
-
-    projects.value = results.items
-    total_results.value = results.total
+    }).then((result: ProjectStubPage) => {
+      projects.value = result.items
+      total_results.value = result.total
+    })
 
     // Facet counts come from a separate endpoint. Pass only the search term (not
     // the active filters) so the facet menu stays stable as filters are toggled.
-    const query_stats = await $fetch(`${runtimeConfig.public.api_url}/projects/stats`, {
+    $fetch<ProjectQueryStat[]>(`${runtimeConfig.public.api_url}/projects/stats`, {
       method: 'GET',
       query: {
         'searchTerm': fuzzy_search_term.value
       }
-    }) as ProjectQueryStat[]
-
-    filter_suggestions.value = query_stats_to_filter_groups(query_stats)
-    searched_filters.value = filter_suggestions.value.map((f, _index) => ({ target: f.target, allowable_values: []}))
+    }).then((query_stats: ProjectQueryStat[]) => {
+      filter_suggestions.value = query_stats_to_filter_groups(query_stats)
+      searched_filters.value = filter_suggestions.value.map((f, _index) => ({ target: f.target, allowable_values: []}))
+    })
 
     return
   } catch (error: any) {
@@ -295,6 +204,8 @@ function clear_chip(chip: AppChip) {
 
   found_category.allowable_values.splice(found_category.allowable_values.indexOf(chip.slug), 1)
   chips.value.splice(chips.value.indexOf(chip), 1)
+
+  fetch_projects()
 }
 
 function on_column_toggle() {
@@ -317,6 +228,8 @@ function update_filter_chips() {
       chips.value.push(new_chip)
     })
   })
+
+  fetch_projects()
 }
 
 function camel_to_title_case(str: string): string {
