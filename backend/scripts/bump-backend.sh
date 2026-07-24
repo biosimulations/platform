@@ -18,8 +18,9 @@ set -euo pipefail
 REPO_ROOT=$(git rev-parse --show-toplevel)
 VERSION_PY="$REPO_ROOT/backend/biosim_server/version.py"
 PYPROJECT="$REPO_ROOT/backend/pyproject.toml"
+UVLOCK="$REPO_ROOT/backend/uv.lock"
 
-for f in "$VERSION_PY" "$PYPROJECT"; do
+for f in "$VERSION_PY" "$PYPROJECT" "$UVLOCK"; do
   [[ -f "$f" ]] || { echo "error: $f not found" >&2; exit 1; }
 done
 
@@ -56,7 +57,12 @@ printf '__version__ = "%s"' "$NEW" > "$VERSION_PY"
 # pyproject.toml: bump the [project] version line.
 perl -0pi -e "s/^version = \"\Q$OLD\E\"/version = \"$NEW\"/m" "$PYPROJECT"
 
-git -C "$REPO_ROOT" add "$VERSION_PY" "$PYPROJECT"
+# uv.lock: keep the biosim-server package entry's version in lockstep with
+# pyproject (it's package=false, so this is the only reference and no re-resolve
+# is needed). Replaces whatever version is there, so it also fixes prior drift.
+perl -0pi -e "s/(\nname = \"biosim-server\"\nversion = \")[^\"]*(\")/\${1}$NEW\${2}/" "$UVLOCK"
+
+git -C "$REPO_ROOT" add "$VERSION_PY" "$PYPROJECT" "$UVLOCK"
 git -C "$REPO_ROOT" commit -m "Bump backend to $NEW"
 git -C "$REPO_ROOT" tag "$TAG"
 
