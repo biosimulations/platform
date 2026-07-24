@@ -71,6 +71,20 @@ Either way the query lives behind the existing `ProjectDatabaseService` interfac
 (swap-in impl, no router change). 1B adds a `mongodb_collection_project_search`
 setting + a refresh entrypoint; 1A adds a text-index name only.
 
+### Operations (1B, implemented)
+The materialized collection is a point-in-time snapshot, so it needs refreshing —
+though the source `Projects` collection has been static for 17+ months, so this
+is a safety net more than a live need.
+- **Weekly reindex CronJob** (`kustomize/base/reindex-cronjob.yaml`) runs
+  `python -m biosim_server.projects.reindex_cli` (direct Mongo, no HTTP) in the
+  api image. It also absorbs any enrichment/index-logic change shipped since the
+  last run, so deploys don't require a manual reindex.
+- **`POST /projects/reindex` is token-gated** (`project_reindex_token`; empty
+  default = disabled/503) so it can't be triggered over the public ingress.
+  Ad-hoc admin reindex: `kubectl exec … python -m biosim_server.projects.reindex_cli`.
+- Rebuild is non-atomic (delete + insert ~1392 docs, ~1-2s window); acceptable
+  given how rarely it runs. Build-to-temp + swap is a future refinement.
+
 ---
 
 ## Phase 2 — self-hosted Meilisearch
