@@ -7,8 +7,16 @@ export default defineNuxtConfig({
     'lenis/nuxt',
     'nuxt-aos',
     '@nuxtjs/seo',
-    '@nuxt/image'
+    '@nuxt/image',
+    'nuxt-easy-lightbox',
+    'nuxt-og-image'
   ],
+
+  vite: {
+    optimizeDeps: {
+      exclude: ["plotly.js-dist-min"],
+    },
+  },
 
   devtools: {
     enabled: true
