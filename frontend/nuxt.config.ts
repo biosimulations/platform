@@ -47,6 +47,13 @@ export default defineNuxtConfig({
     '/': { prerender: true }
   },
 
+  site: {
+    url: 'https://biosimulations.org',
+    name: 'BioSimulations',
+    description: 'Web application for sharing dynamical models of biological systems and visualizing their results',
+    defaultLocale: 'en'
+  },
+
   compatibilityDate: '2025-01-15',
 
   eslint: {
