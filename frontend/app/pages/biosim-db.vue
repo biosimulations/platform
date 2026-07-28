@@ -307,45 +307,47 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
     <div class="w-full flex flex-col gap-4" v-if="projects && !error_encountered">
       <USeparator />
 
-      <div class="w-max flex items-center justify-end self-end rounded bg-neutral-100">
-        <UButton size="sm" :label="`${display_mode == 'cards' ? '' : 'Table'}`" class="cursor-pointer" :color="`${display_mode == 'cards' ? 'subtle' : 'primary'}`" icon="i-lucide-list" type="button" @click="display_mode = 'table'"></UButton>
-        <UButton size="sm" :label="`${display_mode == 'table' ? '' : 'Cards'}`" class="cursor-pointer" :color="`${display_mode == 'table' ? 'subtle' : 'primary'}`" icon="i-lucide-layout-grid" type="button" @click="display_mode = 'cards'"></UButton>
+      <div class="w-full flex items-center justify-between gap-4">
+        <h2 class="text-xl font-bold">Results</h2>
+        <div class="flex items-center gap-4">
+          <UDropdownMenu
+            v-if="display_mode == 'table'"
+            :disabled="loading"
+            :content="{ align: 'end' }"
+            :items="
+                table?.tableApi
+                ?.getAllColumns()
+                .filter((column) => column.getCanHide())
+                .map((column) => ({
+                  label: upperFirst(column.id),
+                  type: 'checkbox' as const,
+                  checked: column.getIsVisible(),
+                  onUpdateChecked(checked: boolean) {
+                    table?.tableApi?.getColumn(column.id)?.toggleVisibility(checked)
+                    on_column_toggle()
+                  },
+                  onSelect(e: Event) {
+                    e.preventDefault()
+                  }
+                }))">
+            <UButton
+              label="Columns"
+              color="neutral"
+              variant="outline"
+              trailing-icon="i-lucide-chevron-down" />
+          </UDropdownMenu>
+
+          <div class="w-max flex items-center justify-end rounded bg-neutral-100">
+            <UButton size="sm" :label="`${display_mode == 'cards' ? '' : 'Table'}`" class="cursor-pointer" :color="`${display_mode == 'cards' ? 'subtle' : 'primary'}`" icon="i-lucide-list" type="button" @click="display_mode = 'table'"></UButton>
+            <UButton size="sm" :label="`${display_mode == 'table' ? '' : 'Cards'}`" class="cursor-pointer" :color="`${display_mode == 'table' ? 'subtle' : 'primary'}`" icon="i-lucide-layout-grid" type="button" @click="display_mode = 'cards'"></UButton>
+          </div>
+        </div>
       </div>
 
-      <div class="w-full flex items-center justify-between gap-8" v-if="display_mode == 'table'">
-        <h3 class="text-lg font-bold">Projects</h3>
-        <UDropdownMenu
-          :disabled="loading"
-          :content="{ align: 'end' }"
-          :items="
-              table?.tableApi
-              ?.getAllColumns()
-              .filter((column) => column.getCanHide())
-              .map((column) => ({
-                label: upperFirst(column.id),
-                type: 'checkbox' as const,
-                checked: column.getIsVisible(),
-                onUpdateChecked(checked: boolean) {
-                  table?.tableApi?.getColumn(column.id)?.toggleVisibility(checked)
-                  on_column_toggle()
-                },
-                onSelect(e: Event) {
-                  e.preventDefault()
-                }
-              }))">
-          <UButton
-            label="Columns"
-            color="neutral"
-            variant="outline"
-            trailing-icon="i-lucide-chevron-down" />
-        </UDropdownMenu>
-      </div>
-
-<!--      <Loading class="mx-auto w-max py-4" v-if="loading" message="Fetching projects..."/>-->
-
-      <UTable v-if="!loading && display_mode == 'table'"
+      <UTable v-if="display_mode == 'table'"
         class="w-full"
         ref="table"
+        :loading="loading"
         :data="projects"
         :columns="columns"
         @select="visit_page"
