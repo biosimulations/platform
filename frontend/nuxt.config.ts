@@ -45,7 +45,9 @@ export default defineNuxtConfig({
   },
 
   routeRules: {
-    '/': { prerender: true }
+    '/': { prerender: true },
+    '/projects': { redirect: '/biosim-db' },
+    '/runs': { redirect: '/simulations' }
   },
 
   compatibilityDate: '2025-01-15',

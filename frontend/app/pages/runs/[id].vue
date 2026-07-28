@@ -209,7 +209,7 @@ onMounted(async () => {
 
         <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
           <h1 class="text-xl font-bold">{{normalize_text(run_info!.name)}}</h1>
-          <p class="text-center" v-dompurify-html="run_summary?.metadata?.[0]?.description"></p>
+          <p class="text-center" v-dompurify-html="run_summary?.metadata?.[0]?.description ? run_summary?.metadata?.[0]?.description : '<p><em>No description available for this run.</em></p>'"></p>
         </div>
 
         <div class="w-full flex flex-col gap-4">
