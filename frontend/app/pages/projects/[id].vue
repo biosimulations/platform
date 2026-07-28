@@ -209,13 +209,13 @@ const detailedInfoSections = computed(() => getMetadataSections())
               </div>
             </template>
 
-            <div class="metadata_panel flex-1 flex flex-col p-4 rounded-lg border border-neutral-300 bg-neutral-50">
+            <div class="metadata_panel sticky top-[calc(1rem+var(--ui-header-height))] flex-1 flex flex-col p-4 rounded-lg border border-neutral-300 bg-neutral-50">
               <div class="w-full flex items-center justify-start gap-2">
                 <Icon name="i-lucide-info" class="size-4.5 text-color" />
                 <p class="text-color font-bold">Project Overview</p>
               </div>
               <USeparator color="neutral" class="my-2" />
-              <table class="border-none p-0 m-0 border-collapse w-full">
+              <table class="overview_table border-none p-0 m-0 border-collapse w-full">
                 <tbody>
                 <tr>
                   <td class="py-1"><p class="text-sm font-bold">Project ID:</p></td>
@@ -260,6 +260,28 @@ const detailedInfoSections = computed(() => getMetadataSections())
                   </tbody>
                 </table>
               </template>
+
+              <div class="mt-4 pt-4 border-t border-neutral-200">
+                <UButton
+                  :to="`https://reproducibilityportal.org/model/${run_summary!.id}`"
+                  target="_blank"
+                  color="primary"
+                  variant="outline"
+                  icon="i-lucide-external-link"
+                  label="View in Reproducibility Portal"
+                  block
+                />
+                <UButton
+                  :to="`/runs/${run_summary!.id}`"
+                  color="primary"
+                  class="mt-2"
+                  variant="solid"
+                  size="lg"
+                  icon="i-lucide-activity"
+                  :label="`View Full Simulation Details`"
+                  block
+                />
+              </div>
             </div>
           </div>
 
@@ -314,22 +336,17 @@ const detailedInfoSections = computed(() => getMetadataSections())
             <p class="text-lg mb-2"><strong>Files & Outputs</strong></p>
             <FilesOutputsTable :summary="run_summary" :files="run_files" />
           </div>
-
-          <!-- Bottom CTA -->
-          <div class="mt-8 flex justify-center pb-8">
-            <UButton
-              :to="`/simulations/${run_summary!.id}`"
-              color="primary"
-              variant="solid"
-              size="lg"
-              icon="i-lucide-arrow-right"
-              trailing
-            >
-              View Full Simulation Details: #Id: {{ run_summary!.id }}
-            </UButton>
-          </div>
         </div>
       </template>
     </template>
   </section>
 </template>
+<style scoped lang="scss">
+.overview_table {
+  tr {
+    td:first-child {
+      white-space: nowrap;
+    }
+  }
+}
+</style>
