@@ -179,9 +179,9 @@ onMounted(async () => {
         </div>
 
         <div class="w-full flex flex-col gap-4">
-          <div class="w-full flex items-start gap-4">
+          <div class="w-full flex flex-col lg:flex-row items-start gap-4">
             <template v-if="!run_summary?.metadata?.[0]?.thumbnails?.[0]">
-              <div class="w-187.5 h-auto bg-neutral-50 flex items-center justify-center p-4 rounded-lg border border-neutral-300">
+              <div class="w-full lg:w-187.5 h-48 lg:h-auto bg-neutral-50 flex items-center justify-center p-4 rounded-lg border border-neutral-300">
                 <p><em>No thumbnail available</em></p>
               </div>
             </template>
@@ -201,7 +201,7 @@ onMounted(async () => {
               </div>
             </template>
 
-            <div class="metadata_panel sticky top-[calc(1rem+var(--ui-header-height))] flex-1 flex flex-col p-4 rounded-lg border border-neutral-300 bg-neutral-50">
+            <div class="metadata_panel lg:sticky lg:top-[calc(1rem+var(--ui-header-height))] w-full lg:w-auto flex-1 flex flex-col p-4 rounded-lg border border-neutral-300 bg-neutral-50">
               <div class="w-full flex items-center justify-start gap-2">
                 <Icon name="i-lucide-info" class="size-4.5 text-color" />
                 <p class="text-color font-bold">Metadata</p>
@@ -264,8 +264,8 @@ onMounted(async () => {
             <!-- Dynamic Chart Visualization -->
             <div v-if="visualizationsLists.length > 0">
               <div v-if="selectedVisualization" class="chart-container w-full p-6 border border-neutral-200 rounded-xl bg-neutral-50/50 shadow-sm min-h-[400px]">
-                <div class="w-full flex items-center justify-between gap-4">
-                  <UFormField class="w-max" label="Range Slider Display">
+                <div class="w-full flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+                  <UFormField class="w-full lg:w-max" label="Range Slider Display">
                     <USelectMenu
                       v-model="slider_enabled"
                       :items="['Shown', 'Hidden']"
