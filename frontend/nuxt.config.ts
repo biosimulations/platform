@@ -12,17 +12,18 @@ export default defineNuxtConfig({
     'nuxt-og-image'
   ],
 
-  vite: {
-    optimizeDeps: {
-      exclude: ["plotly.js-dist-min"],
-    },
-  },
-
   devtools: {
     enabled: true
   },
 
   css: ['~/assets/css/main.css'],
+
+  site: {
+    url: 'https://biosimulations.org',
+    name: 'BioSimulations',
+    description: 'Web application for sharing dynamical models of biological systems and visualizing their results',
+    defaultLocale: 'en'
+  },
 
   colorMode: {
     preference: 'light'
@@ -47,14 +48,13 @@ export default defineNuxtConfig({
     '/': { prerender: true }
   },
 
-  site: {
-    url: 'https://biosimulations.org',
-    name: 'BioSimulations',
-    description: 'Web application for sharing dynamical models of biological systems and visualizing their results',
-    defaultLocale: 'en'
-  },
-
   compatibilityDate: '2025-01-15',
+
+  vite: {
+    optimizeDeps: {
+      exclude: ["plotly.js-dist-min"],
+    },
+  },
 
   eslint: {
     config: {
@@ -63,5 +63,5 @@ export default defineNuxtConfig({
         braceStyle: '1tbs'
       }
     }
-  }
+  },
 })

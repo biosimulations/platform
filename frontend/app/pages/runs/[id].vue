@@ -11,7 +11,6 @@ const runtimeConfig = useRuntimeConfig()
 const route = useRoute()
 const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
 
-const loading = ref(true)
 const all_data_fetched = ref(false)
 const error_encountered = ref<string | undefined>(undefined)
 const breadcrumbs = ref<BreadcrumbItem[]>([])
@@ -37,7 +36,7 @@ watch(selectedVisualizationList, (newList) => {
   }
 });
 
-const slider_enabled = ref<'Shown'|'Hidden'>('Hidden')
+const slider_enabled = ref<'Shown' | 'Hidden'>('Hidden')
 const plot_layout = computed(() => {
   const rangeslider = slider_enabled.value === 'Shown' ? { autorange: true, bordercolor: '#ff7b00', borderwidth: 1, thickness: 0.15 } : undefined
 
@@ -91,23 +90,23 @@ async function fetch_run() {
   const run_endpoints: any[] = [
     {
       url: `${runtimeConfig.public.legacy_api_url}/runs/${route.params.id}`,
-      success: (data: SimulationRun) => {run_info.value = data},
+      success: (data: SimulationRun) => { run_info.value = data },
     },
     {
       url: `${runtimeConfig.public.legacy_api_url}/runs/${route.params.id}/summary`,
-      success: (data: SimulationRunSummary) => {run_summary.value = data},
+      success: (data: SimulationRunSummary) => { run_summary.value = data },
     },
     {
       url: `${runtimeConfig.public.legacy_api_url}/files/${route.params.id}`,
-      success: (data: ProjectFile[]) => {run_files.value = data},
+      success: (data: ProjectFile[]) => { run_files.value = data },
     },
     {
       url: `${runtimeConfig.public.legacy_api_url}/specifications/${route.params.id}`,
-      success: (data: SimulationRunSedDocument) => {run_specifications.value = data},
+      success: (data: SimulationRunSedDocument) => { run_specifications.value = data },
     },
     {
       url: `${runtimeConfig.public.legacy_api_url}/logs/${route.params.id}`,
-      success: (data: any) => {run_logs.value = data},
+      success: (data: any) => { run_logs.value = data },
     }
   ]
 
@@ -123,7 +122,7 @@ async function fetch_run() {
         if (fetched_data_array.length == run_endpoints.length) {
           all_data_fetched.value = true
 
-          useVisualizations(route.params.id as string, run_files.value || [], run_specifications.value).then(lists => {
+          useVisualizations(route.params.id as string, run_files.value || [], run_specifications.value).then((lists) => {
             visualizationsLists.value = lists;
             if (lists.length > 0) {
               selectedVisualizationList.value = lists[0];
@@ -175,7 +174,7 @@ onMounted(async () => {
 
         <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
           <h1 class="text-xl font-bold">{{normalize_text(run_info!.name)}}</h1>
-          <p class="text-center" v-html="run_summary?.metadata?.[0]?.description"></p>
+          <p class="text-center" v-dompurify-html="run_summary?.metadata?.[0]?.description"></p>
         </div>
 
         <div class="w-full flex flex-col gap-4">

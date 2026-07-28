@@ -4,18 +4,18 @@
       <div class="flex items-center justify-between">
         <h3 class="text-lg font-bold">Configure {{ props.visualization.name }}</h3>
       </div>
-      
+
       <div class="flex flex-col gap-2">
         <div v-for="(curve, index) in curves" :key="index" class="curve-config flex flex-col md:flex-row items-end gap-4 p-3 bg-neutral-50 border border-neutral-200 rounded relative group">
-          
-          <UButton 
-            v-if="curves.length > 1" 
-            icon="i-lucide-trash" 
-            color="red" 
-            variant="ghost" 
-            size="xs" 
+
+          <UButton
+            v-if="curves.length > 1"
+            icon="i-lucide-trash"
+            color="red"
+            variant="ghost"
+            size="xs"
             class="absolute top-1 right-1 md:-right-8 md:top-auto md:bottom-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
-            @click="removeCurve(index)" 
+            @click="removeCurve(index)"
           />
 
           <UFormField class="w-full md:flex-1" :label="props.visualization._type === 'Histogram1DVisualization' ? `Data ${index + 1}` : `Curve ${index + 1} - X Data`">
@@ -87,7 +87,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { UserDesignedVisualization } from '~/models/visualizations';
 import { flattenTaskResults, getRepeatedTaskTraceLabel } from '~/functions/utils';
 
@@ -132,7 +132,7 @@ watch(() => props.visualization._type, () => {
 async function fetchResults(uris: string[]) {
   // Group URIs by report (location/outputId)
   const reportMap: Record<string, Set<string>> = {};
-  uris.forEach(uri => {
+  uris.forEach((uri) => {
     // uri is format: location/outputId/dataSetId
     const parts = uri.split('/');
     const dataSetId = parts.pop();
@@ -144,12 +144,12 @@ async function fetchResults(uris: string[]) {
   const resultsData: any = {};
 
   // Fetch for each report
-  const promises = Object.keys(reportMap).map(async reportId => {
+  const promises = Object.keys(reportMap).map(async (reportId) => {
     try {
       const param = encodeURIComponent(reportId);
       const url = `${api_url}/results/${props.visualization.simulationRunId}/${param}?includeData=true`;
       const res: any = await $fetch(url);
-      
+
       const neededIds = reportMap[reportId];
       if (res && res.data) {
         res.data.forEach((datum: any) => {
@@ -172,11 +172,11 @@ async function generatePlot() {
   error.value = '';
   loading.value = true;
   plotlyDataLayout.value = null;
-  
+
   try {
     // Collect all required URIs
     const allUris = new Set<string>();
-    curves.value.forEach(curve => {
+    curves.value.forEach((curve) => {
       // In Nuxt UI, when using multiple select and value-key, v-model holds array of values or array of objects depending on version.
       // Let's normalize it to strings just in case
       const xUris = curve.xData.map(v => typeof v === 'object' ? v.uri : v);
@@ -192,7 +192,7 @@ async function generatePlot() {
     }
 
     const fetchedData = await fetchResults(Array.from(allUris));
-    
+
     // Now build Plotly traces
     const traces: any[] = [];
     const xAxisTitlesSet = new Set<string>();
@@ -200,21 +200,21 @@ async function generatePlot() {
 
     if (props.visualization._type === 'Histogram1DVisualization') {
       // Histogram logic
-      curves.value.forEach(curve => {
+      curves.value.forEach((curve) => {
         const xUris = curve.xData.map(v => typeof v === 'object' ? v.uri : v);
-        xUris.forEach(xUri => {
+        xUris.forEach((xUri) => {
           const xData = fetchedData[xUri];
           if (xData) {
             const xLabel = props.visualization.uriSedDataSetMap[xUri]?.label || xUri;
             xAxisTitlesSet.add(xLabel);
-            
+
             let flatData: any[] = [];
             if (Array.isArray(xData) && xData.length > 0 && Array.isArray(xData[0])) {
                flatData = flattenTaskResults([xData]).data[0][0];
             } else {
                flatData = Array.isArray(xData) ? xData : [xData];
             }
-            
+
             traces.push({
               name: xLabel,
               x: flatData,
@@ -227,11 +227,11 @@ async function generatePlot() {
       // Heatmap logic
       const xDataUris = curves.value[0].xData.map(v => typeof v === 'object' ? v.uri : v);
       const yDataUris = curves.value[0].yData.map(v => typeof v === 'object' ? v.uri : v);
-      
+
       if (xDataUris.length > 0 && yDataUris.length > 0) {
         const xValues = fetchedData[xDataUris[0]] || [];
         const yValues = fetchedData[yDataUris[0]] || [];
-        
+
         let zValues: any[] = [];
         if (xValues.length > 0 && Array.isArray(xValues[0])) {
            zValues = flattenTaskResults([xValues]).data[0];
@@ -250,15 +250,15 @@ async function generatePlot() {
       }
     } else {
       // Line logic
-      curves.value.forEach(curve => {
+      curves.value.forEach((curve) => {
         const xUris = curve.xData.map(v => typeof v === 'object' ? v.uri : v);
         const yUris = curve.yData.map(v => typeof v === 'object' ? v.uri : v);
 
-        xUris.forEach(xUri => {
-          yUris.forEach(yUri => {
+        xUris.forEach((xUri) => {
+          yUris.forEach((yUri) => {
             const xData = fetchedData[xUri];
             const yData = fetchedData[yUri];
-            
+
             if (xData && yData) {
               const xLabel = props.visualization.uriSedDataSetMap[xUri]?.label || xUri;
               const yLabel = props.visualization.uriSedDataSetMap[yUri]?.label || yUri;
@@ -267,8 +267,8 @@ async function generatePlot() {
 
               const flatData = flattenTaskResults([xData, yData]);
               for (let iTrace = 0; iTrace < flatData.data[0].length; iTrace++) {
-                const name = `${yLabel} vs ${xLabel}` + 
-                  (flatData.data[0].length > 1 ? ` (${getRepeatedTaskTraceLabel(iTrace, flatData.outerShape)})` : '');
+                const name = `${yLabel} vs ${xLabel}`
+                  + (flatData.data[0].length > 1 ? ` (${getRepeatedTaskTraceLabel(iTrace, flatData.outerShape)})` : '');
 
                 traces.push({
                   name: name,
@@ -286,7 +286,7 @@ async function generatePlot() {
 
     const xAxisTitlesArr = Array.from(xAxisTitlesSet);
     const yAxisTitlesArr = Array.from(yAxisTitlesSet);
-    
+
     plotlyDataLayout.value = {
       data: traces,
       layout: {

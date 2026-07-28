@@ -39,13 +39,15 @@ async function renderVega() {
 
   // Extract static target URLs for error tracking injection
   const dataUrls: string[] = [];
-  props.spec.data?.forEach((d: any) => { if (d?.url) dataUrls.push(d.url); });
+  props.spec.data?.forEach((d: any) => {
+    if (d?.url) dataUrls.push(d.url);
+  });
 
   // Porting console intercept log mechanics safely
   console.warn = function (...args: any[]): void {
     if (
-      args.length === 4 && args[0] === 'WARN' && args[1] === 'Loading failed' &&
-      dataUrls.includes(args[2]) && args[3]?.constructor?.name === 'Error'
+      args.length === 4 && args[0] === 'WARN' && args[1] === 'Loading failed'
+      && dataUrls.includes(args[2]) && args[3]?.constructor?.name === 'Error'
     ) {
       error.value = 'The data for the visualization could not be loaded.';
     } else if (builtInConsoleWarn) {

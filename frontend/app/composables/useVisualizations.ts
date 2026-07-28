@@ -1,6 +1,6 @@
 import type { ProjectFile, SimulationRunSedDocument } from '~/models/simulation';
 import type { VisualizationList, VegaVisualization, SedPlot2DVisualization, Visualization } from '~/models/visualizations';
-import {getPlotlyDataLayout, type SimulationRunOutput} from '~/functions/sed-plot-2d-visualization';
+import {getPlotlyDataLayout} from '~/functions/sed-plot-2d-visualization';
 import { reactive } from 'vue';
 
 export async function useVisualizations(
@@ -49,10 +49,10 @@ export async function useVisualizations(
       });
 
       // Fetch the actual Vega Spec asynchronously
-      $fetch(file.url).then(spec => {
+      $fetch(file.url).then((spec) => {
         vis.vegaSpec = spec;
         vis._isLoading = false;
-      }).catch(err => {
+      }).catch((err) => {
         console.error('Failed to fetch vega spec for ' + file.location, err);
         vis._isLoading = false;
         vis._error = 'Failed to load';
@@ -62,10 +62,12 @@ export async function useVisualizations(
     }
   );
 
-  const vegaVisualizationsList: VisualizationList[] = vegaVisualizations.length ? [{
+  const vegaVisualizationsList: VisualizationList[] = vegaVisualizations.length
+? [{
     title: 'Vega charts',
     visualizations: vegaVisualizations
-  }] : [];
+  }]
+: [];
 
   // 2. Process SED-ML Visualizations
   const sedmlVisualizationsList: VisualizationList[] = [];
@@ -88,17 +90,17 @@ export async function useVisualizations(
           plotlyDataLayout: { dataErrors: ['Loading...'] } as any,
           _isLoading: true
         });
-        
+
         visualizations.push(vis);
 
         // Fetch asynchronously
         const outputIdParam = encodeURIComponent(location + '/' + output.id);
         const resultUrl = `${api_url}/results/${runId}/${outputIdParam}?includeData=true`;
-        
+
         $fetch(resultUrl).then((results: any) => {
           vis.plotlyDataLayout = getPlotlyDataLayout(runId, location, output as any, results);
           vis._isLoading = false;
-        }).catch(err => {
+        }).catch((err) => {
           console.error(`Failed to generate Plotly data for ${output.id}`, err);
           vis.plotlyDataLayout = { dataErrors: ['The data for the plot could not be loaded.'] } as any;
           vis._isLoading = false;

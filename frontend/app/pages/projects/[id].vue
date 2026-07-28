@@ -10,7 +10,6 @@ const runtimeConfig = useRuntimeConfig()
 const route = useRoute()
 const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
 
-const loading = ref(true)
 const all_data_fetched = ref(false)
 const error_encountered = ref<string | undefined>(undefined)
 const breadcrumbs = ref<BreadcrumbItem[]>([])
@@ -89,7 +88,7 @@ async function fetch_run() {
 
     all_data_fetched.value = true;
 
-    useVisualizations(simRunId, run_files.value || [], run_specifications.value).then(lists => {
+    useVisualizations(simRunId, run_files.value || [], run_specifications.value).then((lists) => {
       visualizationsLists.value = lists;
     });
 
@@ -190,7 +189,7 @@ const detailedInfoSections = computed(() => getMetadataSections())
 
         <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
           <h1 class="text-xl font-bold">{{normalize_text(run_summary!.name)}}</h1>
-          <p class="text-center" v-html="run_summary?.metadata?.[0]?.description"></p>
+          <p class="text-center" v-dompurify-html="run_summary?.metadata?.[0]?.description"></p>
         </div>
 
         <div class="w-full flex flex-col gap-4">

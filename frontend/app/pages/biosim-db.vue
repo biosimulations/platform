@@ -2,7 +2,6 @@
 import {ref, resolveComponent, useTemplateRef} from 'vue'
 import {upperFirst} from 'scule'
 import type {TableColumn, TableRow} from '@nuxt/ui'
-import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 import type {TableFilter, TableFilterConfig, TablePagination} from "~/models/filtering";

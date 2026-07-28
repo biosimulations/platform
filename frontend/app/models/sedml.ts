@@ -146,18 +146,18 @@ export interface SerializedSedComputeModelChange extends Omit<SedComputeModelCha
   variables: SerializedSedVariable[];
 }
 
-export type SedModelChange =
-  | SedModelAttributeChange
-  | SedAddElementModelChange
-  | SedReplaceElementModelChange
-  | SedRemoveElementModelChange
-  | SedComputeModelChange;
-export type SerializedSedModelChange =
-  | SedModelAttributeChange
-  | SedAddElementModelChange
-  | SedReplaceElementModelChange
-  | SedRemoveElementModelChange
-  | SerializedSedComputeModelChange;
+export type SedModelChange
+  = | SedModelAttributeChange
+    | SedAddElementModelChange
+    | SedReplaceElementModelChange
+    | SedRemoveElementModelChange
+    | SedComputeModelChange;
+export type SerializedSedModelChange
+  = | SedModelAttributeChange
+    | SedAddElementModelChange
+    | SedReplaceElementModelChange
+    | SedRemoveElementModelChange
+    | SerializedSedComputeModelChange;
 
 export enum ModelLanguage {
   BNGL = 'BNGL',

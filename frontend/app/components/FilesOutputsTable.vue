@@ -53,7 +53,7 @@ const tableData = computed(() => {
         current = current.children[part]
       }
     }
-    
+
     function convertToArray(node: any): any[] | undefined {
       if (!node.children) return undefined
       return Object.values(node.children).map((child: any) => ({
@@ -64,7 +64,7 @@ const tableData = computed(() => {
         children: child.children ? convertToArray(child) : undefined,
       }))
     }
-    
+
     return convertToArray(root) || []
   }
 
@@ -115,11 +115,22 @@ function formatSize(valueBytes: number) {
   let quantity = valueBytes;
   let suffix = 'B';
 
-  if (valueBytes >= base ** 5) { quantity = valueBytes / base ** 5; suffix = 'PB'; }
-  else if (valueBytes >= base ** 4) { quantity = valueBytes / base ** 4; suffix = 'TB'; }
-  else if (valueBytes >= base ** 3) { quantity = valueBytes / base ** 3; suffix = 'GB'; }
-  else if (valueBytes >= base ** 2) { quantity = valueBytes / base ** 2; suffix = 'MB'; }
-  else if (valueBytes >= base) { quantity = valueBytes / base; suffix = 'KB'; }
+  if (valueBytes >= base ** 5) {
+    quantity = valueBytes / base ** 5
+    suffix = 'PB';
+  } else if (valueBytes >= base ** 4) {
+    quantity = valueBytes / base ** 4
+    suffix = 'TB';
+  } else if (valueBytes >= base ** 3) {
+    quantity = valueBytes / base ** 3
+    suffix = 'GB';
+  } else if (valueBytes >= base ** 2) {
+    quantity = valueBytes / base ** 2
+    suffix = 'MB';
+  } else if (valueBytes >= base) {
+    quantity = valueBytes / base
+    suffix = 'KB';
+  }
 
   let quantityStr;
   if (quantity === Math.round(quantity)) {

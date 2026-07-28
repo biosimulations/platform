@@ -4,7 +4,6 @@ import { upperFirst } from 'scule'
 import type {TableColumn} from '@nuxt/ui'
 import { useClipboard } from '@vueuse/core'
 import type {SimulationRuns, SimulationRun} from "~/models/simulators";
-import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import Loading from "~/components/Loading.vue";
 import type {TableFilterConfig, TableSort, TablePagination} from "~/models/filtering";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";

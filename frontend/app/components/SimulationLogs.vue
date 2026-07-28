@@ -1,6 +1,6 @@
 <template>
   <div class="flex flex-col gap-6" v-if="logs">
-    
+
     <div v-if="logs.sedDocuments && logs.sedDocuments.length > 0" class="flex flex-col gap-4">
       <h3 class="text-lg font-bold">Simulation experiments (SED-ML documents)</h3>
       <div v-for="docLog in logs.sedDocuments" :key="docLog.location" class="border border-neutral-200 rounded-lg p-4 bg-neutral-50 flex flex-col gap-2">
@@ -56,9 +56,9 @@
 </template>
 
 <script setup lang="ts">
-const props = defineProps<{
+defineProps<{
   logs: any;
-}>();
+}>()
 
 function statusColor(status: string) {
   if (!status) return 'bg-neutral-500';

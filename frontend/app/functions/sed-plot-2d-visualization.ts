@@ -1,4 +1,4 @@
-import type { SedPlot2D, SedStyle, SedLineStyleType } from '~/models/sedml';
+import type { SedPlot2D, SedStyle } from '~/models/sedml';
 import { flattenTaskResults, getRepeatedTaskTraceLabel } from './utils';
 import hexToRgba from 'hex-to-rgba';
 import {type PlotlyDataLayout, type PlotlyTrace, type PlotlyTraceLineDash, type PlotlyTraceMarkerSymbol, PlotlyTraceMode, PlotlyTraceType} from "~/models/plotly";
@@ -86,7 +86,7 @@ export function getPlotlyDataLayout(
   for (const curve of plot.curves) {
     const xGenId = typeof curve.xDataGenerator === 'string' ? curve.xDataGenerator : curve.xDataGenerator.id;
     const yGenId = typeof curve.yDataGenerator === 'string' ? curve.yDataGenerator : curve.yDataGenerator.id;
-    
+
     const xId = sedDocLocation + '/' + plot.id + '/' + xGenId;
     const yId = sedDocLocation + '/' + plot.id + '/' + yGenId;
 
@@ -96,7 +96,7 @@ export function getPlotlyDataLayout(
     if (xData && yData) {
       const xGenName = typeof curve.xDataGenerator === 'string' ? curve.xDataGenerator : (curve.xDataGenerator.name || curve.xDataGenerator.id);
       const yGenName = typeof curve.yDataGenerator === 'string' ? curve.yDataGenerator : (curve.yDataGenerator.name || curve.yDataGenerator.id);
-      
+
       xAxisTitlesSet.add(xGenName);
       yAxisTitlesSet.add(yGenName);
 
@@ -105,9 +105,9 @@ export function getPlotlyDataLayout(
       const flatData = flattenTaskResults([xData, yData]);
 
       for (let iTrace = 0; iTrace < flatData.data[0].length; iTrace++) {
-        const name =
-          (curve.name || curve.id) +
-          (flatData.data[0].length > 1 ? ` (${getRepeatedTaskTraceLabel(iTrace, flatData.outerShape)})` : '');
+        const name
+          = (curve.name || curve.id)
+            + (flatData.data[0].length > 1 ? ` (${getRepeatedTaskTraceLabel(iTrace, flatData.outerShape)})` : '');
         const trace: PlotlyTrace = {
           name: name,
           x: flatData.data[0][iTrace],
