@@ -1,3 +1,7 @@
+> **New feature request as of 07/16/2027 (low priority)**:
+> Add support for showing a simulation run's project (if it belongs to one), so that a column can be filtered on and displayed.
+> Project names would then need to be sortable and filterable like everything else.
+
 > **Status (updated 2026-06-05): backend complete; frontend wire-up in progress on a
 > separate branch.** `POST /simulations/runs` is live in `backend/biosim_server/simulations/`
 > — owner-scope (`type: all|user` + `user` email), pagination, sorting, filtering — returning
