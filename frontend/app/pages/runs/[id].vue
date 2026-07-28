@@ -79,6 +79,29 @@ const plot_config = ref({
 const run_specifications = ref<SimulationRunSedDocument | undefined>(undefined)
 const run_logs = ref<any>()
 
+function downloadStructuredLog() {
+  if (!run_logs.value) return;
+  const logStr = JSON.stringify(run_logs.value, null, 2);
+  const blob = new Blob([logStr], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'log.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadRawLog() {
+  if (!run_logs.value?.output) return;
+  const blob = new Blob([run_logs.value.output], { type: 'text/plain;charset=UTF-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'log.txt';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 useSeoMeta({
   title: () => run_summary.value ? run_summary.value.name : 'Run',
   description: () => run_summary.value?.metadata?.[0]?.abstract || 'Explore this simulation run on BioSimulations.',
@@ -382,7 +405,27 @@ onMounted(async () => {
             />
 
             <template #content>
-              <div class="mt-4">
+              <div class="mt-4 flex flex-col gap-4">
+                <div class="w-full flex flex-col md:flex-row items-center gap-4">
+                  <UButton
+                    icon="i-lucide-download"
+                    label="Structured log"
+                    color="primary"
+                    variant="soft"
+                    class="cursor-pointer"
+                    @click="downloadStructuredLog"
+                    :disabled="!run_logs"
+                  />
+                  <UButton
+                    icon="i-lucide-download"
+                    label="Combined standard output and error"
+                    color="primary"
+                    variant="soft"
+                    class="cursor-pointer"
+                    @click="downloadRawLog"
+                    :disabled="!run_logs?.output"
+                  />
+                </div>
                 <SimulationLogs :logs="run_logs" />
               </div>
             </template>
