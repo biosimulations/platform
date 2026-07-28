@@ -242,7 +242,7 @@ function camel_to_title_case(str: string): string {
 }
 
 function visit_page(e: Event, row: TableRow<ProjectStub>) {
-  window.open(`https://biosimulations.org/projects/${row.id}`)
+  navigateTo(`/projects/${row.id}`)
 }
 </script>
 
@@ -357,7 +357,7 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
           <USkeleton class="h-48" v-for="i in table_pagination.perPage" :key="i"></USkeleton>
         </template>
         <template v-else>
-          <a class="project_card cursor-pointer border no-underline border-neutral-300 rounded-lg overflow-hidden relative" :href="`https://biosimulations.org/projects/${project.id}`" v-for="project in projects" :key="project.id">
+          <NuxtLink class="project_card cursor-pointer border no-underline border-neutral-300 rounded-lg overflow-hidden relative" :to="`/projects/${project.id}`" v-for="project in projects" :key="project.id">
             <NuxtImg
               :src="project.image_url"
               width="400"
@@ -372,7 +372,7 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
                 <h3 class="text-base font-bold">{{project.name}}</h3>
                 <small class="w-full whitespace-nowrap overflow-hidden text-ellipsis">{{project.summary}}</small>
               </div>
-            </a>
+            </NuxtLink>
           <p class="empty_cards" v-if="!projects.length"><em>No projects found. Relax filter criteria to see broader results.</em></p>
         </template>
       </div>
