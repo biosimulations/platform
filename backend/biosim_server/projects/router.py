@@ -8,9 +8,10 @@ so paging through slim results is independent of the heavier facet computation
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import ValidationError
 
+from biosim_server.config import get_settings
 from biosim_server.dependencies import get_project_database_service
 from biosim_server.projects.models import (
     ProjectQueryStat,
@@ -21,6 +22,19 @@ from biosim_server.projects.models import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+
+
+def require_reindex_token(authorization: str | None = Header(default=None)) -> None:
+    """Guard POST /projects/reindex with a bearer token.
+
+    Disabled by default: with no token configured the endpoint returns 503, so
+    it can't be triggered over the public ingress. The routine rebuild runs as an
+    in-cluster CronJob (direct Mongo), not through this endpoint."""
+    token = get_settings().project_reindex_token
+    if not token:
+        raise HTTPException(status_code=503, detail="reindex endpoint disabled (no token configured)")
+    if authorization != f"Bearer {token}":
+        raise HTTPException(status_code=401, detail="invalid or missing reindex token")
 
 
 def _parse_filters(filters_json: str) -> list[ProjectSearchFilter]:
@@ -68,6 +82,7 @@ async def list_projects(
 @router.post(
     "/reindex",
     operation_id="reindex-projects",
+    dependencies=[Depends(require_reindex_token)],
     summary="Rebuild the platform project search index from source collections",
 )
 async def reindex_projects() -> dict[str, int]:
