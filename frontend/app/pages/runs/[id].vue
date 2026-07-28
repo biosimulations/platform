@@ -286,6 +286,29 @@ onMounted(async () => {
                   </tr>
                 </tbody>
               </table>
+
+              <div class="mt-4 pt-4 border-t border-neutral-200">
+                <UButton
+                  :to="`https://biosimulations.org/runs/new?projectUrl=${encodeURIComponent('https://api.biosimulations.org/runs/' + run_info!.id + '/download')}&simulator=${encodeURIComponent(run_info!.simulator!)}&simulatorVersion=${encodeURIComponent(run_info!.simulatorVersion!)}&runName=${encodeURIComponent(run_info!.name + ' (rerun)')}`"
+                  target="_blank"
+                  color="primary"
+                  variant="outline"
+                  icon="i-lucide-redo"
+                  label="Re-run Simulation"
+                  block
+                />
+                <UButton
+                  :to="`https://biosimulations.org/runs/customize?projectUrl=${encodeURIComponent('https://api.biosimulations.org/runs/' + run_info!.id + '/download')}&projectFileName=${encodeURIComponent(run_info!.name)}&simulator=${encodeURIComponent(run_info!.simulator!)}&simulatorVersion=${encodeURIComponent(run_info!.simulatorVersion!)}&runName=${encodeURIComponent(run_info!.name + ' (rerun)')}`"
+                  target="_blank"
+                  color="primary"
+                  class="mt-2"
+                  variant="solid"
+                  size="lg"
+                  icon="i-lucide-settings"
+                  label="Customize Simulation"
+                  block
+                />
+              </div>
             </div>
           </div>
 
