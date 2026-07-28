@@ -109,7 +109,7 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
           label: 'Export Run',
           icon: 'i-lucide-download',
           onSelect() {
-            // Add export function here
+            window.open(`${runtimeConfig.public.legacy_api_url}/runs/${row.original.id}/download`, '_blank')
           }
         },
         {
@@ -119,14 +119,14 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
           label: 'View Visualization',
           icon: 'i-lucide-chart-bar',
           onSelect() {
-            // Add corresponding function here
+            navigateTo(`/runs/${row.original.id}#visualization`)
           }
         },
         {
           label: 'View Logs',
           icon: 'i-lucide-file-text',
           onSelect() {
-            // Add corresponding function here
+            navigateTo(`/runs/${row.original.id}#logs`)
           }
         },
         {
@@ -149,24 +149,43 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
         {
           label: 'Delete Run',
           icon: 'i-lucide-trash',
-          onSelect() {
-            // Add corresponding function here
+          onSelect(e: any) {
+            deleting_row_id.value = row.original.id
           }
         }
       ]
 
-      return h(UDropdownMenu, {
-        'content': {
-          align: 'end'
-        },
-        items,
-        'aria-label': 'Actions dropdown'
-      }, () => h(UButton, {
-        'icon': 'i-lucide-ellipsis-vertical',
-        'color': 'neutral',
-        'variant': 'ghost',
-        'aria-label': 'Actions dropdown'
-      }))
+      return h('div', { class: 'flex items-center justify-end' }, [
+        h(resolveComponent('UPopover'), {
+          open: deleting_row_id.value === row.original.id,
+          'onUpdate:open': (val: boolean) => {
+            if (!val && deleting_row_id.value === row.original.id) {
+              deleting_row_id.value = null
+            }
+          },
+          content: { align: 'end' }
+        }, {
+          default: () => h(resolveComponent('UDropdownMenu'), {
+            'content': {
+              align: 'end'
+            },
+            items,
+            'aria-label': 'Actions dropdown'
+          }, () => h(resolveComponent('UButton'), {
+            'icon': 'i-lucide-ellipsis-vertical',
+            'color': 'neutral',
+            'variant': 'ghost',
+            'aria-label': 'Actions dropdown'
+          })),
+          content: () => h('div', { class: 'p-4 flex flex-col gap-2 w-64 text-left' }, [
+            h('p', { class: 'text-sm font-normal text-color' }, ['Are you sure you want to delete ', h('strong', row.original.name || row.original.id), '?']),
+            h('div', { class: 'flex justify-end gap-2 mt-2' }, [
+              h(resolveComponent('UButton'), { label: 'Cancel', color: 'neutral', variant: 'ghost', size: 'xs', onClick: () => deleting_row_id.value = null }),
+              h(resolveComponent('UButton'), { label: 'Delete', color: 'error', variant: 'solid', size: 'xs', onClick: () => confirm_delete(row.original as SimulationRun) })
+            ])
+          ])
+        })
+      ])
     }
   }]
 
@@ -329,6 +348,19 @@ function change_pagination(new_page: number) {
 const checkValidity = () => {
   if (user_input.value?.inputRef?.value) {
     user_input_valid.value = user_input.value!.inputRef.validity.valid
+  }
+}
+
+const deleting_row_id = ref<string | null>(null)
+
+async function confirm_delete(run: SimulationRun) {
+  try {
+    await $fetch(`${runtimeConfig.public.legacy_api_url}/runs/${run.id}`, { method: 'DELETE' })
+    toast.add({ title: 'Simulation run deleted.', color: 'success', icon: 'i-lucide-check' })
+    deleting_row_id.value = null
+    fetch_runs()
+  } catch (err: any) {
+    toast.add({ title: 'Error deleting run', description: err.message, color: 'error', icon: 'i-lucide-alert-circle' })
   }
 }
 </script>

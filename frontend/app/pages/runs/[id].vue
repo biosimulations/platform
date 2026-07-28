@@ -115,12 +115,18 @@ async function fetch_run() {
       method: 'GET',
     })
       .then((data: any) => {
-        console.log(`Fetched ${url}:`, data)
         success(data)
         fetched_data_array.push(true)
 
         if (fetched_data_array.length == run_endpoints.length) {
           all_data_fetched.value = true
+
+          nextTick(() => {
+            if (route.hash === '#logs') {
+              const el = document.querySelector('#logs');
+              if (el) el.scrollIntoView({ behavior: 'smooth' });
+            }
+          });
 
           useVisualizations(route.params.id as string, run_files.value || [], run_specifications.value).then((lists) => {
             visualizationsLists.value = lists;
@@ -130,6 +136,12 @@ async function fetch_run() {
                 selectedVisualization.value = lists[0].visualizations[0];
               }
             }
+            nextTick(() => {
+              if (route.hash === '#visualization') {
+                const el = document.querySelector(route.hash);
+                if (el) el.scrollIntoView({ behavior: 'smooth' });
+              }
+            });
           });
         }
       })
@@ -261,7 +273,7 @@ onMounted(async () => {
             <small class="mb-4">Select a plot defined in a SED-ML or <a class="underline hover:text-blue-500" href="https://vega.github.io/vega/" target="_blank">Vega&#8599;</a> document in the simulation project, or design a custom grid of plots. (Vega is a powerful format for describing data visualizations. By capturing how data should be used to paint visual elements, Vega enables reusable visualizations that can be re-painted with data from multiple simulations. Vega can also capture interactive and publication-quality graphics.)</small>
 
             <!-- Dynamic Chart Visualization -->
-            <div v-if="visualizationsLists.length > 0">
+            <div id="visualization" v-if="visualizationsLists.length > 0">
               <div v-if="selectedVisualization" class="chart-container w-full p-6 border border-neutral-200 rounded-xl bg-neutral-50/50 shadow-sm min-h-[400px]">
                 <div class="w-full flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
                   <UFormField class="w-full lg:w-max" label="Range Slider Display">
@@ -355,7 +367,7 @@ onMounted(async () => {
           </UCollapsible>
         </div>
 
-        <div class="w-full p-6 border border-neutral-200 rounded-xl bg-neutral-50/50 shadow-sm">
+        <div id="logs" class="w-full p-6 border border-neutral-200 rounded-xl bg-neutral-50/50 shadow-sm">
           <UCollapsible class="w-full flex flex-col gap-2" :default-open="true">
             <UButton
               class="group w-full text-lg font-bold text-color cursor-pointer p-0"
