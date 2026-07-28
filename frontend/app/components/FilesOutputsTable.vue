@@ -33,7 +33,7 @@ const tableData = computed(() => {
       const parts = f.location.split('/')
       let current = root
       for (let i = 0; i < parts.length; i++) {
-        const part = parts[i]
+        const part = parts[i]!
         if (!current.children[part]) {
           current.children[part] = {
             name: part,

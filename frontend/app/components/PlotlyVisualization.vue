@@ -16,7 +16,7 @@ const props = withDefaults(defineProps<{
 
 const loading = ref(false);
 const errors = ref<string[]>([]);
-const plotData = ref<any[] | undefined>(undefined);
+const plotData = ref<any[]>([]);
 const plotLayout = ref<any | undefined>(undefined);
 const currentSliderEnabled = ref(props.sliderEnabled);
 
@@ -67,7 +67,7 @@ watch(() => props.dataLayout, (value) => {
     errors.value = [];
   } else if (value.data && value.layout) {
     loading.value = false;
-    plotData.value = value.data;
+    plotData.value = value.data || [];
     plotLayout.value = value.layout;
     plotConfig.value.toImageButtonOptions.filename = `${props.projectTitle}_${props.plotTitle}`;
     errors.value = [];

@@ -11,7 +11,7 @@
           <UButton
             v-if="curves.length > 1"
             icon="i-lucide-trash"
-            color="red"
+            color="error"
             variant="ghost"
             size="xs"
             class="absolute top-1 right-1 md:-right-8 md:top-auto md:bottom-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
@@ -21,7 +21,7 @@
           <UFormField class="w-full md:flex-1" :label="props.visualization._type === 'Histogram1DVisualization' ? `Data ${index + 1}` : `Curve ${index + 1} - X Data`">
             <USelectMenu
               v-model="curve.xData"
-              :items="datasetOptions"
+              :items="(datasetOptions as any[])"
               multiple
               searchable
               label-key="label"
@@ -33,7 +33,7 @@
           <UFormField v-if="props.visualization._type !== 'Histogram1DVisualization'" class="w-full md:flex-1" :label="`Curve ${index + 1} - Y Data`">
             <USelectMenu
               v-model="curve.yData"
-              :items="datasetOptions"
+              :items="(datasetOptions as any[])"
               multiple
               searchable
               label-key="label"
@@ -104,7 +104,7 @@ const datasetOptions = computed(() => {
   return Object.values(props.visualization.uriSedDataSetMap || {});
 });
 
-const curves = ref([{ xData: [], yData: [] }]);
+const curves = ref<{ xData: any[]; yData: any[] }[]>([{ xData: [], yData: [] }]);
 
 const xAxisType = ref('linear');
 const yAxisType = ref('linear');
@@ -153,7 +153,7 @@ async function fetchResults(uris: string[]) {
       const neededIds = reportMap[reportId];
       if (res && res.data) {
         res.data.forEach((datum: any) => {
-          if (neededIds.has(datum.id)) {
+          if (neededIds && neededIds.has(datum.id)) {
             const uri = `${reportId}/${datum.id}`;
             resultsData[uri] = datum.values;
           }
@@ -205,12 +205,12 @@ async function generatePlot() {
         xUris.forEach((xUri) => {
           const xData = fetchedData[xUri];
           if (xData) {
-            const xLabel = props.visualization.uriSedDataSetMap[xUri]?.label || xUri;
+            const xLabel = props.visualization.uriSedDataSetMap?.[xUri]?.label || xUri;
             xAxisTitlesSet.add(xLabel);
 
             let flatData: any[] = [];
             if (Array.isArray(xData) && xData.length > 0 && Array.isArray(xData[0])) {
-               flatData = flattenTaskResults([xData]).data[0][0];
+               flatData = flattenTaskResults([xData]).data[0]?.[0] || [];
             } else {
                flatData = Array.isArray(xData) ? xData : [xData];
             }
@@ -225,16 +225,16 @@ async function generatePlot() {
       });
     } else if (props.visualization._type === 'Heatmap2DVisualization') {
       // Heatmap logic
-      const xDataUris = curves.value[0].xData.map(v => typeof v === 'object' ? v.uri : v);
-      const yDataUris = curves.value[0].yData.map(v => typeof v === 'object' ? v.uri : v);
+      const xDataUris = curves.value[0]?.xData.map(v => typeof v === 'object' ? v.uri : v) || [];
+      const yDataUris = curves.value[0]?.yData.map(v => typeof v === 'object' ? v.uri : v) || [];
 
       if (xDataUris.length > 0 && yDataUris.length > 0) {
-        const xValues = fetchedData[xDataUris[0]] || [];
-        const yValues = fetchedData[yDataUris[0]] || [];
+        const xValues = fetchedData[xDataUris[0]!] || [];
+        const yValues = fetchedData[yDataUris[0]!] || [];
 
         let zValues: any[] = [];
         if (xValues.length > 0 && Array.isArray(xValues[0])) {
-           zValues = flattenTaskResults([xValues]).data[0];
+           zValues = flattenTaskResults([xValues]).data[0] || [];
         } else {
            zValues = xValues;
         }
@@ -245,8 +245,8 @@ async function generatePlot() {
           y: yValues,
           z: zValues // This is a simplification. Actual heatmap logic requires properly gridded Z data.
         });
-        xAxisTitlesSet.add(props.visualization.uriSedDataSetMap[xDataUris[0]]?.label);
-        yAxisTitlesSet.add(props.visualization.uriSedDataSetMap[yDataUris[0]]?.label);
+        xAxisTitlesSet.add(props.visualization.uriSedDataSetMap?.[xDataUris[0]]?.label || xDataUris[0]);
+        yAxisTitlesSet.add(props.visualization.uriSedDataSetMap?.[yDataUris[0]]?.label || yDataUris[0]);
       }
     } else {
       // Line logic
@@ -260,20 +260,20 @@ async function generatePlot() {
             const yData = fetchedData[yUri];
 
             if (xData && yData) {
-              const xLabel = props.visualization.uriSedDataSetMap[xUri]?.label || xUri;
-              const yLabel = props.visualization.uriSedDataSetMap[yUri]?.label || yUri;
+              const xLabel = props.visualization.uriSedDataSetMap?.[xUri]?.label || xUri;
+              const yLabel = props.visualization.uriSedDataSetMap?.[yUri]?.label || yUri;
               xAxisTitlesSet.add(xLabel);
               yAxisTitlesSet.add(yLabel);
 
               const flatData = flattenTaskResults([xData, yData]);
-              for (let iTrace = 0; iTrace < flatData.data[0].length; iTrace++) {
+              for (let iTrace = 0; iTrace < (flatData.data[0]?.length || 0); iTrace++) {
                 const name = `${yLabel} vs ${xLabel}`
-                  + (flatData.data[0].length > 1 ? ` (${getRepeatedTaskTraceLabel(iTrace, flatData.outerShape)})` : '');
+                  + ((flatData.data[0]?.length || 0) > 1 ? ` (${getRepeatedTaskTraceLabel(iTrace, flatData.outerShape)})` : '');
 
                 traces.push({
                   name: name,
-                  x: flatData.data[0][iTrace],
-                  y: flatData.data[1][iTrace],
+                  x: flatData.data[0]![iTrace],
+                  y: flatData.data[1]![iTrace],
                   type: 'scatter',
                   mode: traceMode.value === 'lines+markers' ? 'lines+markers' : traceMode.value
                 });

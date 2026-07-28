@@ -14,7 +14,7 @@ const error = ref('');
 let builtInConsoleWarn: any = null;
 let resizeObserver: ResizeObserver | null = null;
 
-const renderDebounce = debounce(200, false, () => {
+const renderDebounce = debounce(200, () => {
   renderVega();
 });
 

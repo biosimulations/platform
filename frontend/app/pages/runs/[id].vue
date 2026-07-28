@@ -24,15 +24,15 @@ const img_zoomed = ref(false)
 const fetched_data_array: boolean[] = []
 
 const visualizationsLists = ref<VisualizationList[]>([])
-const selectedVisualizationList = ref<VisualizationList | null>(null)
-const selectedVisualization = ref<Visualization | null>(null)
+const selectedVisualizationList = ref<VisualizationList | undefined>(undefined)
+const selectedVisualization = ref<Visualization | undefined>(undefined)
 
 // Watch when selected visualization list changes, pick its first chart by default
 watch(selectedVisualizationList, (newList) => {
   if (newList && newList.visualizations.length > 0) {
     selectedVisualization.value = newList.visualizations[0];
   } else {
-    selectedVisualization.value = null;
+    selectedVisualization.value = undefined;
   }
 });
 
@@ -124,7 +124,7 @@ async function fetch_run() {
 
           useVisualizations(route.params.id as string, run_files.value || [], run_specifications.value).then((lists) => {
             visualizationsLists.value = lists;
-            if (lists.length > 0) {
+            if (lists.length > 0 && lists[0]) {
               selectedVisualizationList.value = lists[0];
               if (lists[0].visualizations.length > 0) {
                 selectedVisualization.value = lists[0].visualizations[0];
@@ -294,13 +294,13 @@ onMounted(async () => {
                   </div>
                 </div>
 
-                <div v-if="selectedVisualization._isLoading" class="w-full h-[400px] flex flex-col items-center justify-center gap-4 text-gray-500 mt-4">
+                <div v-if="(selectedVisualization as any)._isLoading" class="w-full h-[400px] flex flex-col items-center justify-center gap-4 text-gray-500 mt-4">
                   <UIcon name="i-lucide-loader-2" class="w-8 h-8 animate-spin" />
                   <p>Loading visualization data...</p>
                 </div>
-                <div v-else-if="selectedVisualization._error" class="w-full h-[400px] flex flex-col items-center justify-center gap-4 text-red-500 mt-4">
+                <div v-else-if="(selectedVisualization as any)._error" class="w-full h-[400px] flex flex-col items-center justify-center gap-4 text-red-500 mt-4">
                   <UIcon name="i-lucide-alert-circle" class="w-8 h-8" />
-                  <p>{{ selectedVisualization._error }}</p>
+                  <p>{{ (selectedVisualization as any)._error }}</p>
                 </div>
                 <template v-else>
                   <VegaVisualization

@@ -116,8 +116,23 @@ onMounted(async () => {
   }
 })
 
-function getMetadataSections() {
-  const sections = []
+interface MetadataValue {
+  label: string;
+  url?: string;
+}
+interface MetadataItem {
+  icon: string;
+  title: string;
+  values: MetadataValue[];
+}
+interface MetadataSection {
+  label: string;
+  defaultOpen: boolean;
+  items: MetadataItem[];
+}
+
+function getMetadataSections(): MetadataSection[] {
+  const sections: MetadataSection[] = []
 
   if (run_summary.value?.metadata?.[0]) {
     const md = run_summary.value.metadata[0]
@@ -148,23 +163,22 @@ function getMetadataSections() {
         ]
       })
     }
-    // Simulation details
-    const simItems = []
-    if (run_summary.value.run?.simulator) {
-      simItems.push({
-        icon: 'i-lucide-cpu',
-        title: 'Simulator',
-        values: [{ label: `${run_summary.value.run.simulator.name} v${run_summary.value.run.simulator.version}` }]
-      })
-    }
-    if (run_specifications.value?.tasks) {
-      const models = new Set(run_specifications.value.tasks.map(t => t.model?.language?.acronym || t.model?.language?.name || t.model?.language?.sedmlUrn))
-      simItems.push({
-        icon: 'i-lucide-file-code',
-        title: 'Model Formats',
-        values: [{ label: Array.from(models).join(', ') }]
-      })
-    }
+      const simItems: MetadataItem[] = []
+      if (run_summary.value.run?.simulator) {
+        simItems.push({
+          icon: 'i-lucide-cpu',
+          title: 'Simulator',
+          values: [{ label: `${run_summary.value.run.simulator.name} v${run_summary.value.run.simulator.version}` }]
+        })
+      }
+      if (run_specifications.value?.tasks) {
+        const models = new Set(run_specifications.value.tasks.map((t: any) => t.model?.language?.acronym || t.model?.language?.name || t.model?.language?.sedmlUrn))
+        simItems.push({
+          icon: 'i-lucide-file-code',
+          title: 'Model Formats',
+          values: [{ label: Array.from(models).join(', ') }]
+        })
+      }
     if (simItems.length > 0) {
       sections.push({ label: 'Simulation', defaultOpen: true, items: simItems })
     }
@@ -258,8 +272,8 @@ const detailedInfoSections = computed(() => getMetadataSections())
                           </li>
                         </ul>
                         <div v-else>
-                          <a v-if="info.values[0].url" :href="info.values[0].url" target="_blank" class="text-xs text-primary-600 hover:underline">{{ info.values[0].label }}</a>
-                          <span v-else class="text-xs text-gray-800">{{ info.values[0].label }}</span>
+                          <a v-if="info.values[0]?.url" :href="info.values[0]?.url" target="_blank" class="text-xs text-primary-600 hover:underline">{{ info.values[0]?.label }}</a>
+                          <span v-else class="text-xs text-gray-800">{{ info.values[0]?.label }}</span>
                         </div>
                       </td>
                     </tr>

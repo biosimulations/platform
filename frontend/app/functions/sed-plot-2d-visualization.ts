@@ -104,14 +104,14 @@ export function getPlotlyDataLayout(
 
       const flatData = flattenTaskResults([xData, yData]);
 
-      for (let iTrace = 0; iTrace < flatData.data[0].length; iTrace++) {
+      for (let iTrace = 0; iTrace < (flatData.data[0]?.length || 0); iTrace++) {
         const name
           = (curve.name || curve.id)
-            + (flatData.data[0].length > 1 ? ` (${getRepeatedTaskTraceLabel(iTrace, flatData.outerShape)})` : '');
+            + (flatData.data[0]!.length > 1 ? ` (${getRepeatedTaskTraceLabel(iTrace, flatData.outerShape)})` : '');
         const trace: PlotlyTrace = {
           name: name,
-          x: flatData.data[0][iTrace],
-          y: flatData.data[1][iTrace],
+          x: flatData.data[0]![iTrace],
+          y: flatData.data[1]![iTrace],
           xaxis: 'x1',
           yaxis: 'y1',
           type: PlotlyTraceType.scatter,
@@ -249,7 +249,7 @@ function getLocationFromSedmLocationId(outputLocationId: string): string {
 }
 
 function getOutputIdFromSedmlLocationId(location: string): string {
-  return location.split('/').reverse()[0];
+  return location.split('/').reverse()[0] || '';
 }
 
 function resolveStyle(style: SedStyle): SedStyle {
