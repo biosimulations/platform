@@ -97,7 +97,7 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
           label: 'Copy Sharable Link',
           icon: 'i-lucide-copy',
           onSelect() {
-            copy(`${runtimeConfig.public.base_url}/simulations/${row.original.id}`)
+            copy(`${runtimeConfig.public.base_url}/runs/${row.original.id}`)
 
             toast.add({
               title: 'Link copied to clipboard!',
