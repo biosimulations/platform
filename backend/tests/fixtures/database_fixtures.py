@@ -145,5 +145,6 @@ async def project_search_service_mongo(
     await projects_col.delete_many({})
     await metadata_col.delete_many({})
     await specifications_col.delete_many({})
+    await database.get_collection(settings.mongodb_collection_biosimulations_runs).delete_many({})
     await search_col.drop()
     set_project_database_service(old_projects_db_service)
