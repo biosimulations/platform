@@ -33,6 +33,7 @@ def _record(
     status: str = "CREATED",
     cache_buster: str = "0",
     submitted: datetime | None = None,
+    biosimulations_run_id: str | None = None,
 ) -> SimulationRunRecord:
     when = submitted or datetime(2024, 1, 1, tzinfo=timezone.utc)
     return SimulationRunRecord(
@@ -47,6 +48,7 @@ def _record(
         status=status,  # type: ignore[arg-type]
         submitted=when,
         updated=when,
+        biosimulations_run_id=biosimulations_run_id,
     )
 
 
@@ -211,7 +213,8 @@ def test_endpoint_service_unavailable(mock_get_runs_db: MagicMock) -> None:
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_endpoint_success_shape(mock_get_runs_db: MagicMock) -> None:
     runs_db = AsyncMock()
-    runs_db.query_simulation_runs.return_value = ([_record("a", status="SUCCEEDED")], 1)
+    runs_db.query_simulation_runs.return_value = (
+        [_record("a", status="SUCCEEDED", biosimulations_run_id="6a3d5603015a4d8b0bf24b74")], 1)
     mock_get_runs_db.return_value = runs_db
 
     client = TestClient(app)
@@ -223,7 +226,9 @@ def test_endpoint_success_shape(mock_get_runs_db: MagicMock) -> None:
     assert body["pagination"] == {"page": 1, "perPage": 20, "_total": 1}
     assert len(body["runs"]) == 1
     run = body["runs"][0]
-    assert run["id"] == "a"
+    assert run["id"] == "a"  # internal run_id (per-simulator job)
+    # the biosimulations ObjectId detail pages must key off, exposed separately
+    assert run["biosimulationsRunId"] == "6a3d5603015a4d8b0bf24b74"
     assert run["status"] == "SUCCEEDED"
     assert run["simulatorVersion"] == "1.0.0"
     assert run["simulatorDigest"] == "sha256:abc"

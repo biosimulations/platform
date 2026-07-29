@@ -103,6 +103,11 @@ class SimulationRun(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
+    # The biosimulations.org run id (24-char Mongo ObjectId). `id` above is our
+    # internal per-simulator run_id (a 32-char uuid4 hex); detail pages that fetch
+    # from the biosimulations API must key off this, not `id`. None until the run
+    # has been submitted to biosimulations and assigned an id.
+    biosimulations_run_id: str | None = Field(default=None, serialization_alias="biosimulationsRunId")
     name: str
     simulator: str
     simulator_version: str = Field(serialization_alias="simulatorVersion")
@@ -124,6 +129,7 @@ class SimulationRun(BaseModel):
     def from_record(cls, record: SimulationRunRecord) -> "SimulationRun":
         return cls(
             id=record.run_id,
+            biosimulations_run_id=record.biosimulations_run_id,
             name=record.name,
             simulator=record.simulator,
             simulator_version=record.simulator_version,
