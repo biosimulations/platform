@@ -11,7 +11,11 @@ from biosim_server.projects.models import (
     ProjectStubPage,
     ValueFrequency,
 )
-from biosim_server.projects.router import router as projects_router
+# NOTE: the FastAPI router is intentionally NOT re-exported here. It pulls in
+# `dependencies` (and transitively `biosim_runs`), whose import order only
+# resolves when the app boots via api.main. Importing this package for its
+# data/search classes (e.g. the reindex CLI) must stay free of that chain, so
+# import the router directly from `biosim_server.projects.router` where needed.
 
 __all__ = [
     "ProjectDatabaseService",
@@ -23,5 +27,4 @@ __all__ = [
     "ProjectStub",
     "ProjectStubPage",
     "ValueFrequency",
-    "projects_router",
 ]

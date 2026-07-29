@@ -17,7 +17,7 @@ from biosim_server.biosim_runs import BiosimulatorVersion
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.compatibility import compatibility_router
 from biosim_server.simulations import simulations_router
-from biosim_server.projects import projects_router
+from biosim_server.projects.router import router as projects_router
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflow, OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput, RunsVerifyWorkflow
