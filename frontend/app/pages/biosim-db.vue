@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {ref, resolveComponent, useTemplateRef} from 'vue'
 import {upperFirst} from 'scule'
-import type {TableColumn, TableRow} from '@nuxt/ui'
+import type {TableColumn} from '@nuxt/ui'
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 import type {TableFilter, TableFilterConfig, TablePagination} from "~/models/filtering";
@@ -240,8 +240,9 @@ function camel_to_title_case(str: string): string {
     .trim()
 }
 
-function visit_page(e: Event, row: TableRow<ProjectStub>) {
-  navigateTo(`/projects/${row.id}`)
+function visit_page(e: Event, row: any) {
+  const projectId = row?.original?.id;
+  navigateTo(`/projects/${projectId}`)
 }
 </script>
 

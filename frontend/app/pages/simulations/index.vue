@@ -149,7 +149,7 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
         {
           label: 'Delete Run',
           icon: 'i-lucide-trash',
-          onSelect(e: any) {
+          onSelect(_e: any) {
             deleting_row_id.value = row.original.id
           }
         }

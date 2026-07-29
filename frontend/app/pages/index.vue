@@ -17,6 +17,7 @@
     {
       label: 'Run a Simulation',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
+      to: '/simulations/run' as const,
       size: 'md' as const,
       color: 'info' as const,
       leadingIcon: 'i-gravity-ui-play-fill' // w-4
@@ -31,6 +32,7 @@
     {
       label: 'Browse Simulations',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
+      to: '/simulations' as const,
       size: 'md' as const,
       color: 'neutral' as const,
       variant: 'outline' as const,
@@ -57,6 +59,7 @@
     {
       label: 'Run a simulation',
       class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
+      to: '/simulations/run' as const,
       size: 'md' as const,
       color: 'neutral' as const,
       variant: 'subtle' as const,
@@ -72,6 +75,7 @@
     {
       label: 'Browse simulations',
       class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
+      to: '/simulations' as const,
       size: 'md' as const,
       color: 'neutral' as const,
       variant: 'subtle' as const,
