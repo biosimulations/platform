@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
-from motor.motor_asyncio import AsyncIOMotorCollection
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 
 from biosim_server.projects import ProjectSearchServiceMongo
 from biosim_server.projects.models import ProjectSearchFilter
@@ -29,7 +29,7 @@ def _project(pid: str, run: str, updated: datetime | None = None) -> dict[str, A
 
 def _metadata(run: str, *, title: str, abstract: str = "", description: str = "",
               taxa: list[str] | None = None, keywords: list[str] | None = None,
-              thumbnails: list[str] | None = None) -> dict[str, Any]:
+              thumbnails: list[str] | None = None, encodes: list[str] | None = None) -> dict[str, Any]:
     item: dict[str, Any] = {"title": title, "abstract": abstract, "description": description}
     if taxa is not None:
         item["taxa"] = [{"uri": None, "label": t} for t in taxa]
@@ -37,11 +37,23 @@ def _metadata(run: str, *, title: str, abstract: str = "", description: str = ""
         item["keywords"] = keywords
     if thumbnails is not None:
         item["thumbnails"] = thumbnails
+    if encodes is not None:
+        item["encodes"] = [{"uri": None, "label": e} for e in encodes]
     return {"simulationRun": run, "metadata": [item]}
 
 
-def _spec(run: str, languages: list[str]) -> dict[str, Any]:
-    return {"simulationRun": run, "models": [{"language": lg} for lg in languages]}
+def _spec(run: str, languages: list[str], *, sim_types: list[str] | None = None,
+          report: bool = False) -> dict[str, Any]:
+    doc: dict[str, Any] = {"simulationRun": run, "models": [{"language": lg} for lg in languages]}
+    if sim_types is not None:
+        doc["simulations"] = [{"_type": t} for t in sim_types]
+    if report:
+        doc["outputs"] = [{"_type": "SedReport"}]
+    return doc
+
+
+def _run_doc(run: str, *, simulator: str) -> dict[str, Any]:
+    return {"id": run, "simulator": simulator}
 
 
 async def _seed_and_build(
@@ -223,9 +235,50 @@ async def test_ensure_indexes_rebuilds_text_index_on_change(project_search_servi
     # stand up an old-style index (title only)
     await search_col.create_index([("title", "text")], weights={"title": 1}, name="project_text")
     await svc.ensure_indexes()
+    from biosim_server.config import get_settings
+
     weights = (await search_col.index_information())["project_text"]["weights"]
-    assert set(weights.keys()) == {"title", "abstract", "description", "keywords", "taxa"}
+    assert set(weights.keys()) == set(get_settings().project_search_text_weights)  # rebuilt to config
     assert weights["title"] == 10 and weights["keywords"] == 4 and weights["taxa"] == 3
+
+
+@pytest.mark.asyncio
+async def test_expanded_legacy_facets(
+    project_search_service_mongo: Cols, mongo_test_client: AsyncIOMotorClient
+) -> None:
+    """biology/modelFormats/simulationTypes/simulator/reports facets materialize
+    from Metadata (encodes), Specifications (models/simulations/outputs) and the
+    Simulation Runs doc (simulator)."""
+    from biosim_server.config import get_settings
+
+    settings = get_settings()
+    svc, projects_col, metadata_col, specifications_col, search_col = project_search_service_mongo
+    runs_col = mongo_test_client.get_database(settings.mongodb_database).get_collection(
+        settings.mongodb_collection_biosimulations_runs)
+    await projects_col.insert_one(_project("p1", "r1"))
+    await metadata_col.insert_one(_metadata("r1", title="Model", encodes=["cell cycle"], taxa=["Yeast"]))
+    await specifications_col.insert_one(
+        _spec("r1", ["urn:sedml:language:sbml"], sim_types=["SedUniformTimeCourseSimulation"], report=True))
+    await runs_col.insert_one(_run_doc("r1", simulator="tellurium"))
+    await svc.rebuild_index()
+
+    doc = await search_col.find_one({"id": "p1"})
+    assert doc is not None
+    assert doc["biology"] == ["cell cycle"]
+    assert doc["modelFormats"] == ["SBML"]
+    assert doc["simulationTypes"] == ["Uniform Time Course"]
+    assert doc["simulator"] == ["tellurium"]
+    assert doc["reports"] == ["true"]
+
+    stats = await svc.query_project_stats(filters=[], search_term="")
+    targets = {s.target for s in stats}
+    assert {"biology", "modelFormats", "simulationTypes", "simulator", "reports", "taxa", "keywords"} <= targets
+
+    # searchable: a term only in a facet field (biology/simulator) still matches
+    by_biology, _ = await svc.query_project_stubs(page=1, per_page=10, filters=[], search_term="cell cycle")
+    assert [s.id for s in by_biology] == ["p1"]
+    by_sim, _ = await svc.query_project_stubs(page=1, per_page=10, filters=[], search_term="tellurium")
+    assert [s.id for s in by_sim] == ["p1"]
 
 
 @pytest.mark.asyncio
