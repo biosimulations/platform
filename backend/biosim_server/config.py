@@ -70,6 +70,7 @@ class Settings(BaseSettings):
         "biology": 4,
         "modelFormats": 3,
         "simulationTypes": 2,
+        "simulationAlgorithms": 2,
         "simulator": 3,
     }
     # Bearer token required to call POST /projects/reindex. Empty (default)

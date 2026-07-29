@@ -43,10 +43,20 @@ def _metadata(run: str, *, title: str, abstract: str = "", description: str = ""
 
 
 def _spec(run: str, languages: list[str], *, sim_types: list[str] | None = None,
-          report: bool = False) -> dict[str, Any]:
+          algorithms: list[str] | None = None, report: bool = False) -> dict[str, Any]:
     doc: dict[str, Any] = {"simulationRun": run, "models": [{"language": lg} for lg in languages]}
-    if sim_types is not None:
-        doc["simulations"] = [{"_type": t} for t in sim_types]
+    types = sim_types or []
+    algos = algorithms or []
+    sims: list[dict[str, Any]] = []
+    for i in range(max(len(types), len(algos))):
+        s: dict[str, Any] = {}
+        if i < len(types):
+            s["_type"] = types[i]
+        if i < len(algos):
+            s["algorithm"] = {"kisaoId": algos[i]}
+        sims.append(s)
+    if sims:
+        doc["simulations"] = sims
     if report:
         doc["outputs"] = [{"_type": "SedReport"}]
     return doc
@@ -258,7 +268,8 @@ async def test_expanded_legacy_facets(
     await projects_col.insert_one(_project("p1", "r1"))
     await metadata_col.insert_one(_metadata("r1", title="Model", encodes=["cell cycle"], taxa=["Yeast"]))
     await specifications_col.insert_one(
-        _spec("r1", ["urn:sedml:language:sbml"], sim_types=["SedUniformTimeCourseSimulation"], report=True))
+        _spec("r1", ["urn:sedml:language:sbml"], sim_types=["SedUniformTimeCourseSimulation"],
+              algorithms=["KISAO_0000019"], report=True))  # KISAO:0000019 -> CVODE
     await runs_col.insert_one(_run_doc("r1", simulator="tellurium"))
     await svc.rebuild_index()
 
@@ -267,12 +278,14 @@ async def test_expanded_legacy_facets(
     assert doc["biology"] == ["cell cycle"]
     assert doc["modelFormats"] == ["SBML"]
     assert doc["simulationTypes"] == ["Uniform Time Course"]
+    assert doc["simulationAlgorithms"] == ["CVODE"]  # KISAO id resolved to name
     assert doc["simulator"] == ["tellurium"]
     assert doc["reports"] == ["true"]
 
     stats = await svc.query_project_stats(filters=[], search_term="")
     targets = {s.target for s in stats}
-    assert {"biology", "modelFormats", "simulationTypes", "simulator", "reports", "taxa", "keywords"} <= targets
+    assert {"biology", "modelFormats", "simulationTypes", "simulationAlgorithms",
+            "simulator", "reports", "taxa", "keywords"} <= targets
 
     # searchable: a term only in a facet field (biology/simulator) still matches
     by_biology, _ = await svc.query_project_stubs(page=1, per_page=10, filters=[], search_term="cell cycle")
