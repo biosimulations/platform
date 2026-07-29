@@ -5,4 +5,5 @@ resources:
   - api.yaml
   - worker.yaml
   - mongodb.yaml
+  - reindex-cronjob.yaml
   - frontend/

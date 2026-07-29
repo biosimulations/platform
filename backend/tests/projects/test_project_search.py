@@ -326,3 +326,32 @@ def test_endpoint_stats_shape(mock_get_db: MagicMock) -> None:
     body = resp.json()
     assert body[0]["target"] == "taxa"
     assert body[0]["valueFrequencies"][0] == {"value": "Human", "count": 2}
+
+
+@patch("biosim_server.projects.router.get_settings")
+def test_reindex_disabled_without_token(mock_settings: MagicMock) -> None:
+    mock_settings.return_value = MagicMock(project_reindex_token="")
+    client = TestClient(app)
+    assert client.post("/projects/reindex").status_code == 503
+
+
+@patch("biosim_server.projects.router.get_project_database_service")
+@patch("biosim_server.projects.router.get_settings")
+def test_reindex_requires_valid_token(mock_settings: MagicMock, mock_get_db: MagicMock) -> None:
+    mock_settings.return_value = MagicMock(project_reindex_token="s3cret")
+    mock_get_db.return_value = AsyncMock()
+    client = TestClient(app)
+    assert client.post("/projects/reindex").status_code == 401  # no header
+    assert client.post("/projects/reindex", headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+@patch("biosim_server.projects.router.get_project_database_service")
+@patch("biosim_server.projects.router.get_settings")
+def test_reindex_valid_token_rebuilds(mock_settings: MagicMock, mock_get_db: MagicMock) -> None:
+    mock_settings.return_value = MagicMock(project_reindex_token="s3cret")
+    db = AsyncMock()
+    db.rebuild_index = AsyncMock(return_value=7)
+    mock_get_db.return_value = db
+    client = TestClient(app)
+    resp = client.post("/projects/reindex", headers={"Authorization": "Bearer s3cret"})
+    assert resp.status_code == 200 and resp.json() == {"indexed": 7}

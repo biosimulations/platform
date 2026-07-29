@@ -65,6 +65,12 @@ class Settings(BaseSettings):
         "keywords": 4,
         "taxa": 3,
     }
+    # Bearer token required to call POST /projects/reindex. Empty (default)
+    # disables the endpoint entirely — the routine rebuild runs as an in-cluster
+    # CronJob (direct Mongo, no token), and admins can reindex via
+    # `python -m biosim_server.projects.reindex_cli`. Set a token only to enable
+    # ad-hoc HTTP-triggered reindexing.
+    project_reindex_token: str = ""
     # Legacy pre-2022 materialized summary; dead/abandoned (nothing writes it).
     # Kept only for reference — the API assembles from Projects + Metadata live.
     mongodb_collection_project_summary: str = "projectSummary"

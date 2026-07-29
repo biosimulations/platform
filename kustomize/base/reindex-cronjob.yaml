@@ -1,0 +1,42 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: project-search-reindex
+  labels:
+    app: project-search-reindex
+spec:
+  # Weekly, Sundays 03:00. The source project data changes rarely; this is a
+  # freshness safety net that also picks up any enrichment/index-logic change
+  # shipped since the last run, so deploys don't need a manual reindex.
+  schedule: "0 3 * * 0"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: project-search-reindex
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: reindex
+              # Same image as the api; the overlay `images:` transformer keeps
+              # the tag in lockstep with platform-api.
+              image: ghcr.io/biosimulations/platform-api:latest
+              imagePullPolicy: Always
+              command: ["python", "-m", "biosim_server.projects.reindex_cli"]
+              envFrom:
+                - configMapRef:
+                    name: api-config
+              env:
+                - name: MONGODB_URI
+                  valueFrom:
+                    secretKeyRef:
+                      name: shared-secrets
+                      key: mongodb-uri
+          imagePullSecrets:
+            - name: ghcr-secret
