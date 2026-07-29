@@ -7,7 +7,7 @@ import aiohttp
 from aiocache import SimpleMemoryCache, cached  # type: ignore
 
 from biosim_server.biosim_runs import BiosimulatorVersion
-from biosim_server.compatibility.kisao_data import EQUIVALENCE_CATEGORIES, KISAO_TERMS
+from biosim_server.common.kisao_data import EQUIVALENCE_CATEGORIES, KISAO_TERMS
 from biosim_server.compatibility.models import EligibleSimulator, KisaoTerm, OmexContent, SimulatorVersionDetail
 from biosim_server.config import get_settings
 

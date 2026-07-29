@@ -23,6 +23,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from pymongo import ASCENDING, DESCENDING, TEXT
 from typing_extensions import override
 
+from biosim_server.common.kisao_data import KISAO_TERMS
 from biosim_server.config import get_settings
 from biosim_server.projects.database import (
     ProjectDatabaseService,
@@ -47,7 +48,10 @@ logger = logging.getLogger(__name__)
 # the legacy biosimulations project facets (project-utils.ts getProjectSummary_*),
 # materialized here at index time. (simulationAlgorithms is omitted for now — it
 # needs the KISAO id->name map, which lives behind the compatibility package.)
-_FACET_TARGETS = ("taxa", "keywords", "biology", "modelFormats", "simulationTypes", "simulator", "reports")
+_FACET_TARGETS = (
+    "taxa", "keywords", "biology", "modelFormats",
+    "simulationTypes", "simulationAlgorithms", "simulator", "reports",
+)
 
 # Projected enrichment fields (from Specifications / the run doc).
 _SIMULATIONS = "_simulations"
@@ -124,6 +128,27 @@ def _simulation_types(simulations: Any) -> list[str]:
     return _distinct([_sed_type_label(s.get("_type")) for s in simulations if isinstance(s, dict)])
 
 
+def _kisao_name(kisao_id: Any) -> str:
+    """KISAO id -> algorithm name, falling back to the id. Specifications use the
+    underscore form (``KISAO_0000019``); KISAO_TERMS keys use the colon form."""
+    if not isinstance(kisao_id, str) or not kisao_id:
+        return ""
+    term = KISAO_TERMS.get(kisao_id.replace("KISAO_", "KISAO:", 1))
+    return term["name"] if term else kisao_id
+
+
+def _simulation_algorithms(simulations: Any) -> list[str]:
+    """Distinct SED-ML algorithm names (from each simulation's KISAO id)."""
+    if not isinstance(simulations, list):
+        return []
+    names: list[str] = []
+    for s in simulations:
+        algo = s.get("algorithm") if isinstance(s, dict) else None
+        if isinstance(algo, dict):
+            names.append(_kisao_name(algo.get("kisaoId")))
+    return _distinct(names)
+
+
 def _reports(outputs: Any) -> list[str]:
     """Legacy `reports` facet: whether the run produced a SED report."""
     has = isinstance(outputs, list) and any(
@@ -166,6 +191,7 @@ def _search_document(doc: dict[str, Any], api_base: str) -> dict[str, Any]:
         "biology": _label_values(meta.get("encodes")),
         "modelFormats": model_formats,
         "simulationTypes": _simulation_types(doc.get(_SIMULATIONS)),
+        "simulationAlgorithms": _simulation_algorithms(doc.get(_SIMULATIONS)),
         "simulator": [str(simulator)] if simulator else [],
         "reports": _reports(doc.get(_OUTPUTS)),
     }

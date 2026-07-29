@@ -7,7 +7,7 @@ and generates a Python module containing term names and ancestor relationships.
 Usage:
     uv run python scripts/generate_kisao_data.py
 
-The output is written to biosim_server/compatibility/kisao_data.py
+The output is written to biosim_server/common/kisao_data.py
 """
 
 import asyncio
@@ -199,7 +199,7 @@ async def main() -> int:
     # Determine output path
     script_dir = Path(__file__).parent
     project_root = script_dir.parent
-    output_path = project_root / "biosim_server" / "compatibility" / "kisao_data.py"
+    output_path = project_root / "biosim_server" / "common" / "kisao_data.py"
 
     async with aiohttp.ClientSession() as session:
         # Fetch all terms
