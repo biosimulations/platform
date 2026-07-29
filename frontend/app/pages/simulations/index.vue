@@ -4,7 +4,6 @@ import { upperFirst } from 'scule'
 import type {TableColumn} from '@nuxt/ui'
 import { useClipboard } from '@vueuse/core'
 import type {SimulationRuns, SimulationRun} from "~/models/simulators";
-import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
 import Loading from "~/components/Loading.vue";
 import type {TableFilterConfig, TableSort, TablePagination} from "~/models/filtering";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
@@ -97,7 +96,7 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
           label: 'Copy Sharable Link',
           icon: 'i-lucide-copy',
           onSelect() {
-            copy(`${runtimeConfig.public.base_url}/simulations/${row.original.id}`)
+            copy(`${runtimeConfig.public.base_url}/runs/${row.original.id}`)
 
             toast.add({
               title: 'Link copied to clipboard!',
@@ -110,7 +109,7 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
           label: 'Export Run',
           icon: 'i-lucide-download',
           onSelect() {
-            // Add export function here
+            window.open(`${runtimeConfig.public.legacy_api_url}/runs/${row.original.id}/download`, '_blank')
           }
         },
         {
@@ -120,14 +119,14 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
           label: 'View Visualization',
           icon: 'i-lucide-chart-bar',
           onSelect() {
-            // Add corresponding function here
+            navigateTo(`/runs/${row.original.id}#visualization`)
           }
         },
         {
           label: 'View Logs',
           icon: 'i-lucide-file-text',
           onSelect() {
-            // Add corresponding function here
+            navigateTo(`/runs/${row.original.id}#logs`)
           }
         },
         {
@@ -150,24 +149,43 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
         {
           label: 'Delete Run',
           icon: 'i-lucide-trash',
-          onSelect() {
-            // Add corresponding function here
+          onSelect(_e: any) {
+            deleting_row_id.value = row.original.id
           }
         }
       ]
 
-      return h(UDropdownMenu, {
-        'content': {
-          align: 'end'
-        },
-        items,
-        'aria-label': 'Actions dropdown'
-      }, () => h(UButton, {
-        'icon': 'i-lucide-ellipsis-vertical',
-        'color': 'neutral',
-        'variant': 'ghost',
-        'aria-label': 'Actions dropdown'
-      }))
+      return h('div', { class: 'flex items-center justify-end' }, [
+        h(resolveComponent('UPopover'), {
+          open: deleting_row_id.value === row.original.id,
+          'onUpdate:open': (val: boolean) => {
+            if (!val && deleting_row_id.value === row.original.id) {
+              deleting_row_id.value = null
+            }
+          },
+          content: { align: 'end' }
+        }, {
+          default: () => h(resolveComponent('UDropdownMenu'), {
+            'content': {
+              align: 'end'
+            },
+            items,
+            'aria-label': 'Actions dropdown'
+          }, () => h(resolveComponent('UButton'), {
+            'icon': 'i-lucide-ellipsis-vertical',
+            'color': 'neutral',
+            'variant': 'ghost',
+            'aria-label': 'Actions dropdown'
+          })),
+          content: () => h('div', { class: 'p-4 flex flex-col gap-2 w-64 text-left' }, [
+            h('p', { class: 'text-sm font-normal text-color' }, ['Are you sure you want to delete ', h('strong', row.original.name || row.original.id), '?']),
+            h('div', { class: 'flex justify-end gap-2 mt-2' }, [
+              h(resolveComponent('UButton'), { label: 'Cancel', color: 'neutral', variant: 'ghost', size: 'xs', onClick: () => deleting_row_id.value = null }),
+              h(resolveComponent('UButton'), { label: 'Delete', color: 'error', variant: 'solid', size: 'xs', onClick: () => confirm_delete(row.original as SimulationRun) })
+            ])
+          ])
+        })
+      ])
     }
   }]
 
@@ -330,6 +348,19 @@ function change_pagination(new_page: number) {
 const checkValidity = () => {
   if (user_input.value?.inputRef?.value) {
     user_input_valid.value = user_input.value!.inputRef.validity.valid
+  }
+}
+
+const deleting_row_id = ref<string | null>(null)
+
+async function confirm_delete(run: SimulationRun) {
+  try {
+    await $fetch(`${runtimeConfig.public.legacy_api_url}/runs/${run.id}`, { method: 'DELETE' })
+    toast.add({ title: 'Simulation run deleted.', color: 'success', icon: 'i-lucide-check' })
+    deleting_row_id.value = null
+    fetch_runs()
+  } catch (err: any) {
+    toast.add({ title: 'Error deleting run', description: err.message, color: 'error', icon: 'i-lucide-alert-circle' })
   }
 }
 </script>
@@ -538,16 +569,7 @@ const checkValidity = () => {
       </div>
     </div>
 
-    <div class="w-full md:w-max md:max-w-175 lg:max-w-225 flex flex-col items-center justify-center gap-2" v-if="error_encountered">
-      <DotLottieVue class="w-37.5 aspect-square" autoplay src="/animations/error.lottie" />
-      <h1 class="text-2xl font-bold">An error occurred while fetching simulation runs</h1>
-      <pre class="bg-neutral-100 rounded p-2">{{error_encountered}}</pre>
-
-      <div class="w-full flex-1 flex items-center justify-center gap-3 mt-4">
-        <UButton color="primary" class="cursor-pointer" to="/" icon="i-lucide-home" label="Go Home"></UButton>
-        <UButton color="neutral" class="cursor-pointer" variant="outline" icon="i-lucide-rotate-ccw" label="Retry" @click="fetch_runs()"></UButton>
-      </div>
-    </div>
+    <ErrorPage v-if="error_encountered" message="An error occurred while fetching simulation runs" :error="error_encountered" @refresh="fetch_runs()"/>
   </section>
 </template>
 <style>

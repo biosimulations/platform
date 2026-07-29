@@ -7,7 +7,9 @@ export default defineNuxtConfig({
     'lenis/nuxt',
     'nuxt-aos',
     '@nuxtjs/seo',
-    '@nuxt/image'
+    '@nuxt/image',
+    'nuxt-easy-lightbox',
+    'nuxt-og-image'
   ],
 
   devtools: {
@@ -15,6 +17,13 @@ export default defineNuxtConfig({
   },
 
   css: ['~/assets/css/main.css'],
+
+  site: {
+    url: 'https://biosimulations.org',
+    name: 'BioSimulations',
+    description: 'Web application for sharing dynamical models of biological systems and visualizing their results',
+    defaultLocale: 'en'
+  },
 
   colorMode: {
     preference: 'light'
@@ -36,10 +45,18 @@ export default defineNuxtConfig({
   },
 
   routeRules: {
-    '/': { prerender: true }
+    '/': { prerender: true },
+    '/projects': { redirect: '/biosim-db' },
+    '/runs': { redirect: '/simulations' }
   },
 
   compatibilityDate: '2025-01-15',
+
+  vite: {
+    optimizeDeps: {
+      exclude: ["plotly.js-dist-min"],
+    },
+  },
 
   eslint: {
     config: {
@@ -48,5 +65,5 @@ export default defineNuxtConfig({
         braceStyle: '1tbs'
       }
     }
-  }
+  },
 })

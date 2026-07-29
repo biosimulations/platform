@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import {ref, resolveComponent, useTemplateRef} from 'vue'
 import {upperFirst} from 'scule'
-import type {TableColumn, TableRow} from '@nuxt/ui'
-import {DotLottieVue} from "@lottiefiles/dotlottie-vue";
+import type {TableColumn} from '@nuxt/ui'
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 import type {TableFilter, TableFilterConfig, TablePagination} from "~/models/filtering";
@@ -69,98 +68,7 @@ const columns: TableColumn<ProjectStub>[] = [
         hour12: true
       })
     }
-  },
-  /*{
-    id: 'actions',
-    enableHiding: false,
-    meta: {
-      class: {
-        td: 'text-right'
-      }
-    },
-    cell: ({ row }) => {
-      const items = [
-        {
-          type: 'label',
-          label: 'Actions'
-        },
-        {
-          label: 'Copy Sharable Link',
-          icon: 'i-lucide-copy',
-          onSelect() {
-            copy(process.env.BASE_URL + row.original.id)
-
-            toast.add({
-              title: 'Link copied to clipboard!',
-              color: 'success',
-              icon: 'i-lucide-circle-check'
-            })
-          }
-        },
-        {
-          label: 'Export Run',
-          icon: 'i-lucide-download',
-          onSelect() {
-            // Add export function here
-          }
-        },
-        {
-          type: 'separator'
-        },
-        {
-          label: 'View Visualization',
-          icon: 'i-lucide-chart-bar',
-          onSelect() {
-            // Add corresponding function here
-          }
-        },
-        {
-          label: 'View Logs',
-          icon: 'i-lucide-file-text',
-          onSelect() {
-            // Add corresponding function here
-          }
-        },
-        {
-          label: 'Rerun Simulation',
-          icon: 'i-lucide-rotate-ccw',
-          onSelect() {
-            // Add corresponding function here
-          }
-        },
-        {
-          label: 'Publish Simulation',
-          icon: 'i-lucide-megaphone',
-          onSelect() {
-            // Add corresponding function here
-          }
-        },
-        {
-          type: 'separator'
-        },
-        {
-          label: 'Delete Run',
-          icon: 'i-lucide-trash',
-          onSelect() {
-            // Add corresponding function here
-          }
-        }
-      ]
-
-      return h(UDropdownMenu, {
-        'content': {
-          align: 'end'
-        },
-        items,
-        'aria-label': 'Actions dropdown'
-      }, () => h(UButton, {
-        'icon': 'i-lucide-ellipsis-vertical',
-        'color': 'neutral',
-        'variant': 'ghost',
-        'aria-label': 'Actions dropdown'
-      }))
-    }
-  }*/
+  }
 ]
 
 const table = useTemplateRef('table')
@@ -234,7 +142,7 @@ async function fetch_projects() {
     // Results: the platform backend already returns ProjectStub-shaped rows with
     // image_url + model_format populated — no per-project /files call needed.
     // Pagination is 1-indexed here; the table is 0-indexed, so add one.
-    const results = await $fetch(`${runtimeConfig.public.api_url}/projects`, {
+    $fetch<ProjectStubPage>(`${runtimeConfig.public.api_url}/projects`, {
       method: 'GET',
       query: {
         'searchTerm': fuzzy_search_term.value,
@@ -242,22 +150,22 @@ async function fetch_projects() {
         'perPage': table_pagination.value.perPage,
         'page': table_pagination.value.page + 1
       }
-    }) as ProjectStubPage
-
-    projects.value = results.items
-    total_results.value = results.total
+    }).then((result: ProjectStubPage) => {
+      projects.value = result.items
+      total_results.value = result.total
+    })
 
     // Facet counts come from a separate endpoint. Pass only the search term (not
     // the active filters) so the facet menu stays stable as filters are toggled.
-    const query_stats = await $fetch(`${runtimeConfig.public.api_url}/projects/stats`, {
+    $fetch<ProjectQueryStat[]>(`${runtimeConfig.public.api_url}/projects/stats`, {
       method: 'GET',
       query: {
         'searchTerm': fuzzy_search_term.value
       }
-    }) as ProjectQueryStat[]
-
-    filter_suggestions.value = query_stats_to_filter_groups(query_stats)
-    searched_filters.value = filter_suggestions.value.map((f, _index) => ({ target: f.target, allowable_values: []}))
+    }).then((query_stats: ProjectQueryStat[]) => {
+      filter_suggestions.value = query_stats_to_filter_groups(query_stats)
+      searched_filters.value = filter_suggestions.value.map((f, _index) => ({ target: f.target, allowable_values: []}))
+    })
 
     return
   } catch (error: any) {
@@ -295,6 +203,8 @@ function clear_chip(chip: AppChip) {
 
   found_category.allowable_values.splice(found_category.allowable_values.indexOf(chip.slug), 1)
   chips.value.splice(chips.value.indexOf(chip), 1)
+
+  fetch_projects()
 }
 
 function on_column_toggle() {
@@ -317,6 +227,8 @@ function update_filter_chips() {
       chips.value.push(new_chip)
     })
   })
+
+  fetch_projects()
 }
 
 function camel_to_title_case(str: string): string {
@@ -328,8 +240,9 @@ function camel_to_title_case(str: string): string {
     .trim()
 }
 
-function visit_page(e: Event, row: TableRow<ProjectStub>) {
-  window.open(`https://biosimulations.org/projects/${row.id}`)
+function visit_page(e: Event, row: any) {
+  const projectId = row?.original?.id;
+  navigateTo(`/projects/${projectId}`)
 }
 </script>
 
@@ -394,45 +307,47 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
     <div class="w-full flex flex-col gap-4" v-if="projects && !error_encountered">
       <USeparator />
 
-      <div class="w-max flex items-center justify-end self-end rounded bg-neutral-100">
-        <UButton size="sm" :label="`${display_mode == 'cards' ? '' : 'Table'}`" class="cursor-pointer" :color="`${display_mode == 'cards' ? 'subtle' : 'primary'}`" icon="i-lucide-list" type="button" @click="display_mode = 'table'"></UButton>
-        <UButton size="sm" :label="`${display_mode == 'table' ? '' : 'Cards'}`" class="cursor-pointer" :color="`${display_mode == 'table' ? 'subtle' : 'primary'}`" icon="i-lucide-layout-grid" type="button" @click="display_mode = 'cards'"></UButton>
+      <div class="w-full flex items-center justify-between gap-4">
+        <h2 class="text-xl font-bold">Results</h2>
+        <div class="flex items-center gap-4">
+          <UDropdownMenu
+            v-if="display_mode == 'table'"
+            :disabled="loading"
+            :content="{ align: 'end' }"
+            :items="
+                table?.tableApi
+                ?.getAllColumns()
+                .filter((column) => column.getCanHide())
+                .map((column) => ({
+                  label: upperFirst(column.id),
+                  type: 'checkbox' as const,
+                  checked: column.getIsVisible(),
+                  onUpdateChecked(checked: boolean) {
+                    table?.tableApi?.getColumn(column.id)?.toggleVisibility(checked)
+                    on_column_toggle()
+                  },
+                  onSelect(e: Event) {
+                    e.preventDefault()
+                  }
+                }))">
+            <UButton
+              label="Columns"
+              color="neutral"
+              variant="outline"
+              trailing-icon="i-lucide-chevron-down" />
+          </UDropdownMenu>
+
+          <div class="w-max flex items-center justify-end rounded bg-neutral-100">
+            <UButton size="sm" :label="`${display_mode == 'cards' ? '' : 'Table'}`" class="cursor-pointer" :color="`${display_mode == 'cards' ? 'subtle' : 'primary'}`" icon="i-lucide-list" type="button" @click="display_mode = 'table'"></UButton>
+            <UButton size="sm" :label="`${display_mode == 'table' ? '' : 'Cards'}`" class="cursor-pointer" :color="`${display_mode == 'table' ? 'subtle' : 'primary'}`" icon="i-lucide-layout-grid" type="button" @click="display_mode = 'cards'"></UButton>
+          </div>
+        </div>
       </div>
 
-      <div class="w-full flex items-center justify-between gap-8" v-if="display_mode == 'table'">
-        <h3 class="text-lg font-bold">Projects</h3>
-        <UDropdownMenu
-          :disabled="loading"
-          :content="{ align: 'end' }"
-          :items="
-              table?.tableApi
-              ?.getAllColumns()
-              .filter((column) => column.getCanHide())
-              .map((column) => ({
-                label: upperFirst(column.id),
-                type: 'checkbox' as const,
-                checked: column.getIsVisible(),
-                onUpdateChecked(checked: boolean) {
-                  table?.tableApi?.getColumn(column.id)?.toggleVisibility(checked)
-                  on_column_toggle()
-                },
-                onSelect(e: Event) {
-                  e.preventDefault()
-                }
-              }))">
-          <UButton
-            label="Columns"
-            color="neutral"
-            variant="outline"
-            trailing-icon="i-lucide-chevron-down" />
-        </UDropdownMenu>
-      </div>
-
-<!--      <Loading class="mx-auto w-max py-4" v-if="loading" message="Fetching projects..."/>-->
-
-      <UTable v-if="!loading && display_mode == 'table'"
+      <UTable v-if="display_mode == 'table'"
         class="w-full"
         ref="table"
+        :loading="loading"
         :data="projects"
         :columns="columns"
         @select="visit_page"
@@ -444,7 +359,7 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
           <USkeleton class="h-48" v-for="i in table_pagination.perPage" :key="i"></USkeleton>
         </template>
         <template v-else>
-          <a class="project_card cursor-pointer border no-underline border-neutral-300 rounded-lg overflow-hidden relative" :href="`https://biosimulations.org/projects/${project.id}`" v-for="project in projects" :key="project.id">
+          <NuxtLink class="project_card cursor-pointer border no-underline border-neutral-300 rounded-lg overflow-hidden relative" :to="`/projects/${project.id}`" v-for="project in projects" :key="project.id">
             <NuxtImg
               :src="project.image_url"
               width="400"
@@ -459,7 +374,7 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
                 <h3 class="text-base font-bold">{{project.name}}</h3>
                 <small class="w-full whitespace-nowrap overflow-hidden text-ellipsis">{{project.summary}}</small>
               </div>
-            </a>
+            </NuxtLink>
           <p class="empty_cards" v-if="!projects.length"><em>No projects found. Relax filter criteria to see broader results.</em></p>
         </template>
       </div>
@@ -483,16 +398,7 @@ function visit_page(e: Event, row: TableRow<ProjectStub>) {
       </div>
     </div>
 
-    <div class="w-full md:w-max md:max-w-175 lg:max-w-225 flex flex-col items-center justify-center gap-2" v-if="error_encountered">
-      <DotLottieVue class="w-37.5 aspect-square" autoplay src="/animations/error.lottie" />
-      <h1 class="text-2xl font-bold">An error occurred while fetching simulation projects</h1>
-      <pre class="bg-neutral-100 rounded p-2">{{error_encountered}}</pre>
-
-      <div class="w-full flex-1 flex items-center justify-center gap-3 mt-4">
-        <UButton color="primary" class="cursor-pointer" to="/" icon="i-lucide-home" label="Go Home"></UButton>
-        <UButton color="neutral" class="cursor-pointer" variant="outline" icon="i-lucide-rotate-ccw" label="Retry" @click="fetch_projects()"></UButton>
-      </div>
-    </div>
+    <ErrorPage v-if="error_encountered" message="An error occurred while fetching simulation projects" :error="error_encountered" @refresh="fetch_projects" />
   </section>
 </template>
 <style>
