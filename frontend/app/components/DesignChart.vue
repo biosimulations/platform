@@ -1,75 +1,88 @@
 <template>
   <div class="design-chart-container w-full flex flex-col gap-6">
-    <div class="configure-panel border border-neutral-200 rounded-lg p-5 bg-white shadow-sm flex flex-col gap-4">
+    <div class="configure-panel mt-4 border border-neutral-200 rounded-lg p-5 bg-white shadow-sm flex flex-col gap-4">
       <div class="flex items-center justify-between">
         <h3 class="text-lg font-bold">Configure {{ props.visualization.name }}</h3>
+        <UButton color="primary" class="cursor-pointer" label="Generate Plot" :loading="loading" @click="generatePlot" />
       </div>
 
-      <div class="flex flex-col gap-2">
-        <div v-for="(curve, index) in curves" :key="index" class="curve-config flex flex-col md:flex-row items-end gap-4 p-3 bg-neutral-50 border border-neutral-200 rounded relative group">
-
-          <UButton
-            v-if="curves.length > 1"
-            icon="i-lucide-trash"
-            color="error"
-            variant="ghost"
-            size="xs"
-            class="absolute top-1 right-1 md:-right-8 md:top-auto md:bottom-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
-            @click="removeCurve(index)"
-          />
-
-          <UFormField class="w-full md:flex-1" :label="props.visualization._type === 'Histogram1DVisualization' ? `Data ${index + 1}` : `Curve ${index + 1} - X Data`">
-            <USelectMenu
-              v-model="curve.xData"
-              :items="(datasetOptions as any[])"
-              multiple
-              searchable
-              label-key="label"
-              value-key="uri"
-              placeholder="Select data..."
-            />
+      <div class="settings-panel flex flex-col md:flex-row items-end justify-between gap-4">
+        <div class="w-max whitespace-nowrap flex flex-row items-end gap-4">
+          <UFormField label="X-Axis Scale">
+            <USelectMenu class="min-w-35" v-model="xAxisType" :items="['linear', 'log']" />
           </UFormField>
 
-          <UFormField v-if="props.visualization._type !== 'Histogram1DVisualization'" class="w-full md:flex-1" :label="`Curve ${index + 1} - Y Data`">
-            <USelectMenu
-              v-model="curve.yData"
-              :items="(datasetOptions as any[])"
-              multiple
-              searchable
-              label-key="label"
-              value-key="uri"
-              placeholder="Select Y data..."
-            />
+          <UFormField label="Y-Axis Scale">
+            <USelectMenu class="min-w-35" v-model="yAxisType" :items="['linear', 'log']" />
           </UFormField>
         </div>
 
-        <UButton v-if="props.visualization._type !== 'Heatmap2DVisualization'" class="w-max mt-1" icon="i-lucide-plus" color="neutral" variant="outline" size="sm" :label="props.visualization._type === 'Histogram1DVisualization' ? 'Add Data' : 'Add Curve'" @click="addCurve" />
+        <UFormField v-if="props.visualization._type === 'Line2DVisualization'" class="w-max" :ui="{label: 'whitespace-nowrap'}" label="Trace Mode">
+          <USelectMenu class="min-w-35" v-model="traceMode" :items="[{label: 'Lines', value: 'lines'}, {label: 'Markers', value: 'markers'}, {label: 'Lines & Markers', value: 'lines+markers'}]" label-key="label" value-key="value" />
+        </UFormField>
       </div>
 
-      <USeparator class="my-2" />
+      <UCard class="flex-1">
+        <template #header><p><strong>Curve Configuration</strong></p></template>
 
-      <div class="settings-panel flex flex-col md:flex-row items-end gap-4">
-        <UFormField class="w-full md:w-1/4" label="X-Axis Scale">
-          <USelectMenu v-model="xAxisType" :items="['linear', 'log']" />
-        </UFormField>
-
-        <UFormField class="w-full md:w-1/4" label="Y-Axis Scale">
-          <USelectMenu v-model="yAxisType" :items="['linear', 'log']" />
-        </UFormField>
-
-        <UFormField v-if="props.visualization._type === 'Line2DVisualization'" class="w-full md:w-1/4" label="Trace Mode">
-          <USelectMenu v-model="traceMode" :items="[{label: 'Lines', value: 'lines'}, {label: 'Markers', value: 'markers'}, {label: 'Lines & Markers', value: 'lines+markers'}]" label-key="label" value-key="value" />
-        </UFormField>
-
-        <div class="flex-1 flex justify-end">
-          <UButton color="primary" label="Generate Plot" :loading="loading" @click="generatePlot" />
+        <!-- Error Display -->
+        <div v-if="error" class="p-4 mb-4 bg-red-50 text-red-600 rounded">
+          {{ error }}
         </div>
-      </div>
-    </div>
 
-    <!-- Error Display -->
-    <div v-if="error" class="p-4 bg-red-50 text-red-600 rounded">
-      {{ error }}
+        <div v-for="(curve, index) in curves" :key="index" class="curve-config flex flex-col gap-4 p-3 bg-neutral-50/75 border border-neutral-200 rounded relative group" :class="{'mt-2': index > 0}">
+          <div class="flex-1 w-full flex items-center justify-between gap-4">
+            <p><strong>Curve {{index + 1}}</strong></p>
+            <UButton
+              v-if="curves.length > 1"
+              icon="i-lucide-trash"
+              color="error"
+              variant="ghost"
+              size="xs"
+              class="cursor-pointer"
+              @click="removeCurve(index)"
+            />
+          </div>
+          <div class="w-max flex items-center gap-4">
+            <UFormField class="w-full md:flex-1" :label="props.visualization._type === 'Histogram1DVisualization' ? `Data ${index + 1}` : `Curve ${index + 1} - X Data`">
+              <USelectMenu
+                v-model="curve.xData"
+                :items="(datasetOptions as any[])"
+                multiple
+                searchable
+                :content="{
+                      align: 'start',
+                      sideOffset: 4,
+                      collisionPadding: 16
+                    }"
+                label-key="label"
+                value-key="uri"
+                placeholder="Select X Data"
+              />
+            </UFormField>
+            <UFormField v-if="props.visualization._type !== 'Histogram1DVisualization'" class="w-full md:flex-1" :label="`Curve ${index + 1} - Y Data`">
+              <USelectMenu
+                v-model="curve.yData"
+                :items="(datasetOptions as any[])"
+                multiple
+                searchable
+                :content="{
+                      align: 'start',
+                      sideOffset: 4,
+                      collisionPadding: 16
+                    }"
+                label-key="label"
+                value-key="uri"
+                placeholder="Select Y Data"
+              />
+            </UFormField>
+          </div>
+        </div>
+
+        <template #footer>
+          <UButton v-if="props.visualization._type !== 'Heatmap2DVisualization'" class="w-max self-end cursor-pointer" icon="i-lucide-plus" size="sm" :label="props.visualization._type === 'Histogram1DVisualization' ? 'Add Data' : 'Add Curve'" @click="addCurve" />
+        </template>
+      </UCard>
     </div>
 
     <!-- Chart Display -->
