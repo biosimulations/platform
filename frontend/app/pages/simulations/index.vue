@@ -37,9 +37,9 @@ onMounted(async () => {
 
 const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
   {
-    accessorKey: 'id',
-    header: 'Id',
-    cell: ({ row }: { row: CoreRow<SimulationRun> }) => row.getValue('id')
+    accessorKey: 'biosimulationsRunId',
+    header: 'Identifier',
+    cell: ({ row }: { row: CoreRow<SimulationRun> }) => row.getValue('biosimulationsRunId')
   },
   {
     accessorKey: 'name',
@@ -150,16 +150,16 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
           label: 'Delete Run',
           icon: 'i-lucide-trash',
           onSelect(_e: any) {
-            deleting_row_id.value = row.original.id
+            deleting_row_id.value = row.original.biosimulationsRunId
           }
         }
       ]
 
       return h('div', { class: 'flex items-center justify-end' }, [
         h(resolveComponent('UPopover'), {
-          open: deleting_row_id.value === row.original.id,
+          open: deleting_row_id.value === row.original.biosimulationsRunId,
           'onUpdate:open': (val: boolean) => {
-            if (!val && deleting_row_id.value === row.original.id) {
+            if (!val && deleting_row_id.value === row.original.biosimulationsRunId) {
               deleting_row_id.value = null
             }
           },
