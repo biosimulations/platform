@@ -96,7 +96,7 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
           label: 'Copy Sharable Link',
           icon: 'i-lucide-copy',
           onSelect() {
-            copy(`${runtimeConfig.public.base_url}/runs/${row.original.id}`)
+            copy(`${runtimeConfig.public.base_url}/runs/${row.original.biosimulationsRunId}`)
 
             toast.add({
               title: 'Link copied to clipboard!',
@@ -109,7 +109,7 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
           label: 'Export Run',
           icon: 'i-lucide-download',
           onSelect() {
-            window.open(`${runtimeConfig.public.legacy_api_url}/runs/${row.original.id}/download`, '_blank')
+            window.open(`${runtimeConfig.public.legacy_api_url}/runs/${row.original.biosimulationsRunId}/download`, '_blank')
           }
         },
         {
@@ -119,14 +119,14 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
           label: 'View Visualization',
           icon: 'i-lucide-chart-bar',
           onSelect() {
-            navigateTo(`/runs/${row.original.id}#visualization`)
+            navigateTo(`/runs/${row.original.biosimulationsRunId}#visualization`)
           }
         },
         {
           label: 'View Logs',
           icon: 'i-lucide-file-text',
           onSelect() {
-            navigateTo(`/runs/${row.original.id}#logs`)
+            navigateTo(`/runs/${row.original.biosimulationsRunId}#logs`)
           }
         },
         {
@@ -355,7 +355,7 @@ const deleting_row_id = ref<string | null>(null)
 
 async function confirm_delete(run: SimulationRun) {
   try {
-    await $fetch(`${runtimeConfig.public.legacy_api_url}/runs/${run.id}`, { method: 'DELETE' })
+    await $fetch(`${runtimeConfig.public.legacy_api_url}/runs/${run.biosimulationsRunId}`, { method: 'DELETE' })
     toast.add({ title: 'Simulation run deleted.', color: 'success', icon: 'i-lucide-check' })
     deleting_row_id.value = null
     fetch_runs()

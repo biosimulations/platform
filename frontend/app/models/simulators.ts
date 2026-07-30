@@ -83,7 +83,11 @@ export interface SimulationRuns {
 }
 
 export interface SimulationRun {
-  id: string // uuid
+  id: string // internal per-simulator run_id (32-char uuid4 hex) — the table row key
+  // 24-char biosimulations.org ObjectId; use this (not id) to reference the run
+  // in the legacy biosimulations API (detail page, download, delete). Null until
+  // the run has been submitted to biosimulations and assigned an id.
+  biosimulationsRunId: string | null
   name: string
   simulator: string
   simulatorVersion: string
