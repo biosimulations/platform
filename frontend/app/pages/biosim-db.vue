@@ -300,7 +300,7 @@ function visit_page(e: Event, row: any) {
       </template>
     </UCollapsible>
 
-    <AppChipList :chips="chips" @removed="clear_chip($event)" :loading="loading" v-if="!advanced_filters_open && chips && chips.length"></AppChipList>
+    <AppChipList :chips="chips" @removed="clear_chip($event)" :size="'sm'" :loading="loading" v-if="!advanced_filters_open && chips && chips.length"></AppChipList>
 
 <!--    <Loading v-if="!projects && !error_encountered" message="Fetching simulation projects..."/>-->
 
