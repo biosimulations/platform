@@ -23,14 +23,15 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from pymongo import ASCENDING, DESCENDING, TEXT
 from typing_extensions import override
 
+from biosim_server.common.kisao_data import KISAO_TERMS
 from biosim_server.config import get_settings
 from biosim_server.projects.database import (
     ProjectDatabaseService,
+    _format_from_language_urn,
     _image_url,
     _join_stages,
     _label_values,
     _META,
-    _model_format,
     _MODELS,
     _TtlCache,
 )
@@ -43,9 +44,19 @@ from biosim_server.projects.models import (
 
 logger = logging.getLogger(__name__)
 
-# Facet targets are flat top-level array fields on the search document (unlike the
-# nested `_meta0.<field>` paths of the live-aggregation path).
-_FACET_TARGETS = ("taxa", "keywords")
+# Facet targets are flat top-level array fields on the search document. Mirrors
+# the legacy biosimulations project facets (project-utils.ts getProjectSummary_*),
+# materialized here at index time. (simulationAlgorithms is omitted for now — it
+# needs the KISAO id->name map, which lives behind the compatibility package.)
+_FACET_TARGETS = (
+    "taxa", "keywords", "biology", "modelFormats",
+    "simulationTypes", "simulationAlgorithms", "simulator", "reports",
+)
+
+# Projected enrichment fields (from Specifications / the run doc).
+_SIMULATIONS = "_simulations"
+_OUTPUTS = "_outputs"
+_SIMULATOR = "_simulator"
 
 # Name of the (single) $text index; the searchable fields + weights come from
 # settings.project_search_text_weights.
@@ -83,6 +94,69 @@ def _summarize(text: str, limit: int = _SUMMARY_MAX) -> str:
     return text[:limit].rstrip() + "…"
 
 
+# Insert a space before each interior capital: "UniformTimeCourse" -> "Uniform Time Course".
+_CAMEL_RE = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+def _sed_type_label(sed_type: Any) -> str:
+    """SED-ML simulation `_type` -> readable label, e.g.
+    ``SedUniformTimeCourseSimulation`` -> ``Uniform Time Course``."""
+    if not isinstance(sed_type, str) or not sed_type:
+        return ""
+    core = sed_type.removeprefix("Sed").removesuffix("Simulation")
+    return _CAMEL_RE.sub(" ", core).strip()
+
+
+def _distinct(values: list[str]) -> list[str]:
+    seen: dict[str, None] = {}
+    for v in values:
+        if v:
+            seen.setdefault(v, None)
+    return list(seen)
+
+
+def _model_formats(models: Any) -> list[str]:
+    """Distinct model-format acronyms across a run's SED-ML models (e.g. SBML)."""
+    if not isinstance(models, list):
+        return []
+    return _distinct([_format_from_language_urn(m.get("language")) for m in models if isinstance(m, dict)])
+
+
+def _simulation_types(simulations: Any) -> list[str]:
+    if not isinstance(simulations, list):
+        return []
+    return _distinct([_sed_type_label(s.get("_type")) for s in simulations if isinstance(s, dict)])
+
+
+def _kisao_name(kisao_id: Any) -> str:
+    """KISAO id -> algorithm name, falling back to the id. Specifications use the
+    underscore form (``KISAO_0000019``); KISAO_TERMS keys use the colon form."""
+    if not isinstance(kisao_id, str) or not kisao_id:
+        return ""
+    term = KISAO_TERMS.get(kisao_id.replace("KISAO_", "KISAO:", 1))
+    return term["name"] if term else kisao_id
+
+
+def _simulation_algorithms(simulations: Any) -> list[str]:
+    """Distinct SED-ML algorithm names (from each simulation's KISAO id)."""
+    if not isinstance(simulations, list):
+        return []
+    names: list[str] = []
+    for s in simulations:
+        algo = s.get("algorithm") if isinstance(s, dict) else None
+        if isinstance(algo, dict):
+            names.append(_kisao_name(algo.get("kisaoId")))
+    return _distinct(names)
+
+
+def _reports(outputs: Any) -> list[str]:
+    """Legacy `reports` facet: whether the run produced a SED report."""
+    has = isinstance(outputs, list) and any(
+        isinstance(o, dict) and o.get("_type") == "SedReport" for o in outputs
+    )
+    return ["true"] if has else ["false"]
+
+
 def _search_document(doc: dict[str, Any], api_base: str) -> dict[str, Any]:
     """Build one flat, indexable search document from an enriched aggregation row.
 
@@ -95,6 +169,8 @@ def _search_document(doc: dict[str, Any], api_base: str) -> dict[str, Any]:
     title = _plain_text(meta.get("title"))
     abstract = _plain_text(meta.get("abstract"))
     description = _plain_text(meta.get("description"))
+    model_formats = _model_formats(doc.get(_MODELS))
+    simulator = doc.get(_SIMULATOR)
     return {
         "id": pid,
         "simulationRun": run,
@@ -103,15 +179,21 @@ def _search_document(doc: dict[str, Any], api_base: str) -> dict[str, Any]:
         "updated": doc.get("updated"),
         "name": title or pid,
         "summary": _summarize(abstract or description),
-        "model_format": _model_format(doc.get(_MODELS)),
+        "model_format": model_formats[0] if model_formats else "",  # stub display (first)
         "image_url": _image_url(run, meta.get("thumbnails"), api_base),
         # Searchable text (indexed), HTML-stripped.
         "title": title,
         "abstract": abstract,
         "description": description,
-        # Facets (filterable + counted).
+        # Facets (filterable + counted) — mirrors the legacy biosimulations set.
         "taxa": _label_values(meta.get("taxa")),
         "keywords": _label_values(meta.get("keywords")),
+        "biology": _label_values(meta.get("encodes")),
+        "modelFormats": model_formats,
+        "simulationTypes": _simulation_types(doc.get(_SIMULATIONS)),
+        "simulationAlgorithms": _simulation_algorithms(doc.get(_SIMULATIONS)),
+        "simulator": [str(simulator)] if simulator else [],
+        "reports": _reports(doc.get(_OUTPUTS)),
     }
 
 
@@ -151,6 +233,7 @@ class ProjectSearchServiceMongo(ProjectDatabaseService):
         self._search_col = database.get_collection(settings.mongodb_collection_project_search)
         self._metadata_collection_name = settings.mongodb_collection_metadata
         self._specifications_collection_name = settings.mongodb_collection_specifications
+        self._biosim_runs_collection_name = settings.mongodb_collection_biosimulations_runs
         self._api_base = settings.biosimulations_api_base_url.rstrip("/")
         self._stats_cache = _TtlCache(settings.project_stats_cache_ttl_seconds)
 
@@ -169,8 +252,30 @@ class ProjectSearchServiceMongo(ProjectDatabaseService):
                     "as": "_spec",
                 }
             },
-            {"$addFields": {_MODELS: {"$ifNull": [{"$arrayElemAt": ["$_spec.models", 0]}, []]}}},
-            {"$project": {"id": 1, "simulationRun": 1, "created": 1, "updated": 1, _META: 1, _MODELS: 1}},
+            {"$addFields": {"_spec0": {"$ifNull": [{"$arrayElemAt": ["$_spec", 0]}, {}]}}},
+            {
+                "$lookup": {
+                    # the biosimulations run record (keyed by `id`) carries the simulator
+                    "from": self._biosim_runs_collection_name,
+                    "localField": "simulationRun",
+                    "foreignField": "id",
+                    "as": "_run",
+                }
+            },
+            {"$addFields": {"_run0": {"$ifNull": [{"$arrayElemAt": ["$_run", 0]}, {}]}}},
+            {
+                "$project": {
+                    "id": 1,
+                    "simulationRun": 1,
+                    "created": 1,
+                    "updated": 1,
+                    _META: 1,
+                    _MODELS: "$_spec0.models",
+                    _SIMULATIONS: "$_spec0.simulations",
+                    _OUTPUTS: "$_spec0.outputs",
+                    _SIMULATOR: "$_run0.simulator",
+                }
+            },
         ]
         return stages
 
@@ -215,8 +320,8 @@ class ProjectSearchServiceMongo(ProjectDatabaseService):
                 weights=weights,
                 name=_TEXT_INDEX_NAME,
             )
-        await self._search_col.create_index("taxa")
-        await self._search_col.create_index("keywords")
+        for target in _FACET_TARGETS:
+            await self._search_col.create_index(target)
         await self._search_col.create_index([("updated", DESCENDING), ("id", ASCENDING)])
         await self._search_col.create_index("id", unique=True)
 
@@ -273,7 +378,7 @@ class ProjectSearchServiceMongo(ProjectDatabaseService):
             match["$text"] = {"$search": search_term}
 
         counts: dict[str, dict[str, int]] = {t: {} for t in _FACET_TARGETS}
-        cursor = self._search_col.find(match, {"taxa": 1, "keywords": 1})
+        cursor = self._search_col.find(match, {t: 1 for t in _FACET_TARGETS})
         async for doc in cursor:
             for target in _FACET_TARGETS:
                 for value in doc.get(target) or []:

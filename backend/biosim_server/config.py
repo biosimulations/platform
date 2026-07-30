@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     mongodb_collection_projects: str = "Projects"
     mongodb_collection_metadata: str = "Metadata"
     mongodb_collection_specifications: str = "Specifications"
+    # biosimulations per-run records (note the space); source of the `simulator`
+    # facet. Keyed by `id` == a project's `simulationRun`.
+    mongodb_collection_biosimulations_runs: str = "Simulation Runs"
     # Platform-owned materialized search collection (Phase 1 $text). Built by
     # reading the biosimulations collections above; we own its $text index. The
     # "Platform" prefix keeps it clearly ours, not a biosimulations collection.
@@ -64,6 +67,11 @@ class Settings(BaseSettings):
         "description": 1,
         "keywords": 4,
         "taxa": 3,
+        "biology": 4,
+        "modelFormats": 3,
+        "simulationTypes": 2,
+        "simulationAlgorithms": 2,
+        "simulator": 3,
     }
     # Bearer token required to call POST /projects/reindex. Empty (default)
     # disables the endpoint entirely — the routine rebuild runs as an in-cluster
