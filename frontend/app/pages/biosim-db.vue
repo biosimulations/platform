@@ -257,7 +257,7 @@ function visit_page(e: Event, row: any) {
     </div>
 
     <div class="w-full flex items-center justify-between gap-4">
-      <UInput type="text" class="flex-1" icon="i-heroicons-magnifying-glass" placeholder="Search projects" v-model="fuzzy_search_term" />
+      <UInput type="text" class="flex-1" icon="i-heroicons-magnifying-glass" @keydown.enter="fetch_projects()" placeholder="Search projects" v-model="fuzzy_search_term" />
 
       <UButton
         label="Advanced Filters"
@@ -291,8 +291,13 @@ function visit_page(e: Event, row: any) {
                 :items="filter.values"
                 :loading="loading"
                 :multiple="true"
-                v-model="searched_filters[filter._index]!.allowable_values"
-                @update:model-value="update_filter_chips()"
+                :content="{
+                  align: 'start',
+                  sideOffset: 4,
+                  collisionPadding: 16
+                }"
+                :model-value="get_allowable_values(filter.target)"
+                @update:model-value="set_allowable_values(filter.target, $event)"
               />
             </div>
           </template>

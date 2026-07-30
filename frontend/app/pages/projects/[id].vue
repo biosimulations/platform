@@ -221,6 +221,7 @@ const detailedInfoSections = computed(() => getMetadataSections())
                 </div>
                 <NuxtImg :src="`${runtimeConfig.public.legacy_api_url}/files/${run_summary!.id}/${run_summary!.metadata![0]!.thumbnails[0]}/download?thumbnail=view`" alt="Simulation Thumbnail Image" class="w-full" />
                 <vue-easy-lightbox
+                  class="lenis-prevent"
                   :visible="img_zoomed"
                   :imgs="[`${runtimeConfig.public.legacy_api_url}/files/${run_summary!.id}/${run_summary!.metadata![0]!.thumbnails[0]}/download`]"
                   :index="0"
