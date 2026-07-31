@@ -1,9 +1,12 @@
 """Tests for OMEX archive parsing."""
 
+import io
+import zipfile
+
 import pytest
 from pathlib import Path
 
-from biosim_server.compatibility.omex_parser import parse_omex_content
+from biosim_server.compatibility.omex_parser import _normalize_location, parse_omex_content
 
 
 @pytest.fixture
@@ -78,3 +81,135 @@ def test_parse_invalid_omex() -> None:
     """Test handling of invalid OMEX content."""
     with pytest.raises(Exception):
         parse_omex_content(b"not a valid zip file")
+
+
+SEDML_L1V3 = """<?xml version="1.0" encoding="UTF-8"?>
+<sedML xmlns="http://sed-ml.org/sed-ml/level1/version3" level="1" version="3">
+    <listOfModels>
+        <model id="model1" language="urn:sedml:language:sbml" source="Szymanska2009.xml"/>
+    </listOfModels>
+    <listOfSimulations>
+        <uniformTimeCourse id="sim1" initialTime="0" outputStartTime="0" outputEndTime="1000" numberOfPoints="4000">
+            <algorithm kisaoID="KISAO:0000496"/>
+        </uniformTimeCourse>
+    </listOfSimulations>
+</sedML>"""
+
+
+def _build_omex(manifest_locations: dict[str, str], entries: dict[str, str]) -> bytes:
+    """Build an in-memory OMEX archive.
+
+    Args:
+        manifest_locations: manifest `location` -> `format` URI, written verbatim
+            so tests can exercise spellings that differ from the zip entry names.
+        entries: zip entry name -> file contents.
+    """
+    content_elements = "\n".join(
+        f'  <content location="{location}" format="{format_uri}"/>'
+        for location, format_uri in manifest_locations.items()
+    )
+    manifest = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<omexManifest xmlns="http://identifiers.org/combine.specifications/omex-manifest">\n'
+        f"{content_elements}\n"
+        "</omexManifest>"
+    )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.xml", manifest)
+        for name, contents in entries.items():
+            zf.writestr(name, contents)
+    return buf.getvalue()
+
+
+def test_parse_omex_with_dot_slash_manifest_locations() -> None:
+    """Manifest locations written as "./file" must resolve to bare zip entries.
+
+    Regression test: BioModels-derived archives declare "./x.sedml" in the
+    manifest while storing the entry as "x.sedml". Zip lookups are exact-string,
+    so the SED-ML was never read and the endpoint reported that the archive
+    contained no simulations.
+    """
+    file_content = _build_omex(
+        manifest_locations={
+            ".": "http://identifiers.org/combine.specifications/omex",
+            "./Szymanska2009.xml": "http://identifiers.org/combine.specifications/sbml",
+            "./BIOMD0000000896_sim.sedml": "http://identifiers.org/combine.specifications/sed-ml",
+        },
+        entries={
+            "Szymanska2009.xml": "<sbml/>",
+            "BIOMD0000000896_sim.sedml": SEDML_L1V3,
+        },
+    )
+
+    omex_content = parse_omex_content(file_content)
+
+    assert omex_content.parse_errors == []
+    assert omex_content.sedml_files == ["BIOMD0000000896_sim.sedml"]
+    assert [sim.algorithm.id for sim in omex_content.simulations] == ["KISAO:0000496"]
+    assert [sim.simulation_type for sim in omex_content.simulations] == ["uniformTimeCourse"]
+
+    # The "./"-prefixed model location must still match the SED-ML model source
+    assert len(omex_content.model_formats) == 1
+    assert omex_content.model_formats[0].location == "Szymanska2009.xml"
+    assert omex_content.model_formats[0].language == "urn:sedml:language:sbml"
+
+
+def test_parse_omex_with_leading_slash_manifest_locations() -> None:
+    """Locations written as "/file" resolve the same way as "./file"."""
+    file_content = _build_omex(
+        manifest_locations={"/sim.sedml": "http://identifiers.org/combine.specifications/sed-ml"},
+        entries={"sim.sedml": SEDML_L1V3},
+    )
+
+    omex_content = parse_omex_content(file_content)
+
+    assert omex_content.parse_errors == []
+    assert omex_content.sedml_files == ["sim.sedml"]
+    assert len(omex_content.simulations) == 1
+
+
+def test_parse_omex_reports_missing_sedml_instead_of_skipping() -> None:
+    """A declared-but-absent SED-ML file is reported rather than silently ignored."""
+    file_content = _build_omex(
+        manifest_locations={"absent.sedml": "http://identifiers.org/combine.specifications/sed-ml"},
+        entries={},
+    )
+
+    omex_content = parse_omex_content(file_content)
+
+    assert omex_content.simulations == []
+    assert len(omex_content.parse_errors) == 1
+    assert "absent.sedml" in omex_content.parse_errors[0]
+
+
+def test_parse_omex_reports_malformed_sedml() -> None:
+    """Unparseable SED-ML is surfaced as a parse error, not an empty result."""
+    file_content = _build_omex(
+        manifest_locations={"broken.sedml": "http://identifiers.org/combine.specifications/sed-ml"},
+        entries={"broken.sedml": "<sedML><unclosed>"},
+    )
+
+    omex_content = parse_omex_content(file_content)
+
+    assert omex_content.simulations == []
+    assert len(omex_content.parse_errors) == 1
+    assert "broken.sedml" in omex_content.parse_errors[0]
+
+
+@pytest.mark.parametrize(
+    ("location", "expected"),
+    [
+        ("./sim.sedml", "sim.sedml"),
+        ("/sim.sedml", "sim.sedml"),
+        ("sim.sedml", "sim.sedml"),
+        ("./nested/sim.sedml", "nested/sim.sedml"),
+        ("././sim.sedml", "sim.sedml"),
+        ("  ./sim.sedml  ", "sim.sedml"),
+        (".", "."),
+    ],
+)
+def test_normalize_location(location: str, expected: str) -> None:
+    """Manifest location spellings normalize to zip entry names."""
+    assert _normalize_location(location) == expected
