@@ -50,6 +50,46 @@ SIMULATION_TYPE_MAP = {
 }
 
 
+def _normalize_location(location: str) -> str:
+    """Normalize a manifest location to the spelling used for zip entry names.
+
+    COMBINE manifests routinely write archive-root-relative paths as
+    "./file.sedml" (and occasionally "/file.sedml"), while the zip entries are
+    stored as "file.sedml". Zip lookups are exact-string, so the two spellings
+    have to be reconciled before reading.
+    """
+    normalized = location.strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.lstrip("/")
+
+
+def _resolve_zip_entry(zf: zipfile.ZipFile, location: str) -> str | None:
+    """Map a manifest location onto an actual entry name in the archive.
+
+    Returns None if no entry can be identified, in which case the caller is
+    responsible for reporting the failure rather than skipping silently.
+    """
+    names = zf.namelist()
+    name_set = set(names)
+
+    normalized = _normalize_location(location)
+    if normalized in name_set:
+        return normalized
+    if location in name_set:
+        return location
+
+    # Last resort: an unambiguous basename match, which covers manifests that
+    # disagree with the archive about directory nesting. Ambiguous matches are
+    # deliberately left unresolved.
+    basename = normalized.rsplit("/", 1)[-1]
+    matches = [name for name in names if name.rsplit("/", 1)[-1] == basename]
+    if len(matches) == 1:
+        return matches[0]
+
+    return None
+
+
 def parse_omex_content(file_content: bytes) -> OmexContent:
     """Parse an OMEX archive and extract model formats and simulation requirements.
 
@@ -62,6 +102,7 @@ def parse_omex_content(file_content: bytes) -> OmexContent:
     model_formats: list[ModelFormat] = []
     simulations: list[SimulationRequirement] = []
     sedml_files: list[str] = []
+    parse_errors: list[str] = []
 
     with zipfile.ZipFile(BytesIO(file_content), 'r') as zf:
         # Parse manifest.xml to find files
@@ -74,28 +115,36 @@ def parse_omex_content(file_content: bytes) -> OmexContent:
             format_uri = content.get("format", "")
 
             # Skip the manifest itself
-            if location == "." or location == "manifest.xml":
+            if _normalize_location(location) in ("", ".", "manifest.xml"):
                 continue
 
             # Check if it's a model file
             if format_uri in MODEL_FORMAT_URIS:
                 model_formats.append(ModelFormat(
                     format_uri=format_uri,
-                    location=location
+                    location=_normalize_location(location)
                 ))
 
             # Check if it's a SED-ML file
             if format_uri in SEDML_FORMAT_URIS:
-                sedml_files.append(location)
+                sedml_files.append(_normalize_location(location))
 
         # Parse each SED-ML file
         for sedml_location in sedml_files:
+            entry_name = _resolve_zip_entry(zf, sedml_location)
+            if entry_name is None:
+                message = f"SED-ML file declared in manifest but not found in archive: {sedml_location}"
+                logger.warning(message)
+                parse_errors.append(message)
+                continue
             try:
-                sedml_content = zf.read(sedml_location)
+                sedml_content = zf.read(entry_name)
                 sedml_simulations = _parse_sedml(sedml_content, model_formats)
                 simulations.extend(sedml_simulations)
             except (KeyError, ET.ParseError) as e:
-                logger.warning(f"Failed to parse SED-ML file {sedml_location}: {e}")
+                message = f"Failed to parse SED-ML file {sedml_location}: {e}"
+                logger.warning(message)
+                parse_errors.append(message)
 
     # Deduplicate simulations by algorithm
     seen_algorithms: set[tuple[str, str]] = set()
@@ -109,7 +158,8 @@ def parse_omex_content(file_content: bytes) -> OmexContent:
     return OmexContent(
         model_formats=model_formats,
         simulations=unique_simulations,
-        sedml_files=sedml_files
+        sedml_files=sedml_files,
+        parse_errors=parse_errors
     )
 
 

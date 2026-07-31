@@ -66,6 +66,12 @@ async def check_compatibility(
         raise HTTPException(status_code=400, detail="No SED-ML files found in the OMEX archive")
 
     if not omex_content.simulations:
+        if omex_content.parse_errors:
+            raise HTTPException(
+                status_code=400,
+                detail="No simulations could be read from the SED-ML files: "
+                       + "; ".join(omex_content.parse_errors),
+            )
         raise HTTPException(status_code=400, detail="No simulations found in the SED-ML files")
 
     # Cache the OMEX file to database + GCS so it can be used by /simulations/run
