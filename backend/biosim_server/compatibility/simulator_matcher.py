@@ -1,6 +1,7 @@
 """Match OMEX requirements against simulator capabilities."""
 
 import logging
+import re
 from typing import Any
 
 import aiohttp
@@ -382,6 +383,22 @@ async def _check_version_compatibility(
     return None
 
 
+def _version_sort_key(version: str) -> tuple[tuple[int, ...], int, str]:
+    """Build an ordering key for a simulator version string.
+
+    Components are compared numerically so that "2.2.10" ranks above "2.2.8",
+    and version strings with differing component counts (e.g. vcell's
+    "7.5.0.99") compare element-wise. A pre-release suffix such as
+    "7.5.0.86-dev1" ranks below the corresponding plain release.
+    """
+    release, _, prerelease = version.partition("-")
+    numeric_parts: list[int] = []
+    for part in release.split("."):
+        leading_digits = re.match(r"\d+", part)
+        numeric_parts.append(int(leading_digits.group()) if leading_digits else 0)
+    return (tuple(numeric_parts), 0 if prerelease else 1, prerelease)
+
+
 async def find_compatible_simulators(
     omex_content: OmexContent,
     simulator_versions: list[BiosimulatorVersion],
@@ -446,6 +463,8 @@ async def find_compatible_simulators(
     eligible: list[EligibleSimulator] = []
     for sim_id, details in version_details_by_sim.items():
         any_exact = any(d.exact for d in details)
+        # Newest version first, with version_details kept in the same order
+        details.sort(key=lambda d: _version_sort_key(d.version), reverse=True)
         versions = [d.version for d in details]
         eligible.append(EligibleSimulator(
             id=sim_id,

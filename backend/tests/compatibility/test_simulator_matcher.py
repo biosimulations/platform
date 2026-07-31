@@ -14,6 +14,7 @@ from biosim_server.compatibility.simulator_matcher import (
     _get_algorithm_ancestors,
     _get_equivalence_ancestors,
     _get_simulator_spec,
+    _version_sort_key,
     are_algorithms_equivalent,
     find_compatible_simulators,
     get_kisao_term_name_sync,
@@ -501,3 +502,83 @@ async def test_find_compatible_simulators_real_api() -> None:
     equivalent_matches = [s for s in simulators if not s.exact]
     print(f"\nExact matches ({len(exact_matches)}): {[s.id for s in exact_matches]}")
     print(f"Equivalent matches ({len(equivalent_matches)}): {[s.id for s in equivalent_matches]}")
+
+
+def test_version_sort_key_orders_numerically() -> None:
+    """Version components compare numerically, not lexicographically."""
+    versions = ["2.2.1", "2.2.10", "2.2.8"]
+    assert sorted(versions, key=_version_sort_key, reverse=True) == ["2.2.10", "2.2.8", "2.2.1"]
+
+
+def test_version_sort_key_handles_four_components() -> None:
+    """vcell-style four-component versions sort newest first."""
+    versions = ["7.4.0.68", "7.5.0.99", "7.5.0.108", "7.7.0.9", "7.7.0.10", "7.6.0.40"]
+    assert sorted(versions, key=_version_sort_key, reverse=True) == [
+        "7.7.0.10", "7.7.0.9", "7.6.0.40", "7.5.0.108", "7.5.0.99", "7.4.0.68"
+    ]
+
+
+def test_version_sort_key_ranks_prerelease_below_release() -> None:
+    """A pre-release suffix sorts below the corresponding plain release."""
+    versions = ["7.5.0.86", "7.5.0.86-dev1", "7.5.0.89", "7.5.0.80"]
+    assert sorted(versions, key=_version_sort_key, reverse=True) == [
+        "7.5.0.89", "7.5.0.86", "7.5.0.86-dev1", "7.5.0.80"
+    ]
+
+
+def test_version_sort_key_tolerates_non_numeric_components() -> None:
+    """Unparseable components must not raise; ordering stays total."""
+    versions = ["1.0.0", "latest", "2.0"]
+    ordered = sorted(versions, key=_version_sort_key, reverse=True)
+    assert ordered[0] == "2.0"
+    assert set(ordered) == {"1.0.0", "latest", "2.0"}
+
+
+@pytest.mark.asyncio
+async def test_find_compatible_simulators_returns_versions_descending(
+    sample_omex_content: OmexContent
+) -> None:
+    """eligible_simulators[].versions must list the newest version first."""
+    from unittest.mock import AsyncMock, patch
+
+    # Supplied ascending, as the biosimulators API returns them
+    ascending = ["2.2.1", "2.2.8", "2.2.10"]
+    simulator_versions = [
+        BiosimulatorVersion(
+            id="tellurium",
+            name="tellurium",
+            version=version,
+            image_url=f"ghcr.io/biosimulators/tellurium:{version}",
+            image_digest="sha256:0c22827b4682273810d48ea606ef50c7163e5f5289740951c00c64c669409eae",
+            created="2024-10-10T22:00:50.110Z",
+            updated="2024-10-10T22:00:50.110Z"
+        )
+        for version in ascending
+    ]
+
+    tellurium_spec = {
+        "id": "tellurium",
+        "algorithms": [
+            {
+                "kisaoId": {"id": "KISAO_0000019"},  # CVODE
+                "modelFormats": [{"id": "format_2585"}],  # SBML
+                "simulationTypes": [{"id": "SedUniformTimeCourseSimulation"}]
+            }
+        ]
+    }
+
+    with patch(
+        "biosim_server.compatibility.simulator_matcher._get_simulator_spec",
+        new_callable=AsyncMock
+    ) as mock_get_spec:
+        mock_get_spec.return_value = tellurium_spec
+
+        simulators = await find_compatible_simulators(
+            sample_omex_content, simulator_versions, verbose=True
+        )
+
+    assert len(simulators) == 1
+    assert simulators[0].versions == ["2.2.10", "2.2.8", "2.2.1"]
+    # version_details must stay aligned with the versions array
+    assert simulators[0].version_details is not None
+    assert [d.version for d in simulators[0].version_details] == ["2.2.10", "2.2.8", "2.2.1"]
