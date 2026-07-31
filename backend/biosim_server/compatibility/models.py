@@ -25,6 +25,7 @@ class OmexContent(BaseModel):
     model_formats: list[ModelFormat]
     simulations: list[SimulationRequirement]
     sedml_files: list[str]
+    parse_errors: list[str] = []  # SED-ML files that could not be read or parsed
 
 
 class SimulatorVersionDetail(BaseModel):
