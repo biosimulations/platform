@@ -41,6 +41,9 @@ export default defineNuxtConfig({
       api_url: process.env.API_URL,
       biosimulations_api_url: process.env.BIOSIMULATIONS_API_URL,
       legacy_api_url: process.env.LEGACY_API_URL,
+      auth0Domain: process.env.NUXT_PUBLIC_AUTH0_DOMAIN,
+      auth0ClientId: process.env.NUXT_PUBLIC_AUTH0_CLIENT_ID,
+      auth0Audience: process.env.NUXT_PUBLIC_AUTH0_AUDIENCE
     }
   },
 

@@ -23,6 +23,8 @@ from biosim_server.simulations.models import (
 )
 from biosim_server.simulations.workflow import SimulationRunWorkflow, SimulationRunWorkflowInput
 
+from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/simulations", tags=["Simulations"])
@@ -140,7 +142,7 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
     ]
     return ConglomerateStatus(processing_id=workflow_id, jobs=jobs)
 
-
+'''
 @router.post(
     "/runs",
     response_model=ListSimulationRunsResponse,
@@ -160,7 +162,16 @@ async def list_simulation_runs(request: ListSimulationRunsRequest) -> ListSimula
         runs=[SimulationRun.from_record(record) for record in records],
         pagination=request.pagination.model_copy(update={"total": total}),
     )
+'''
 
+@router.post("/simulations/runs")
+async def get_runs(
+    query: RunsQuery,
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    if query.type == "user":
+        query.user = user.email
+)
 
 @router.get(
     "/{processing_id}",

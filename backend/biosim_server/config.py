@@ -21,6 +21,13 @@ if os.getenv(ENV_CONFIG_ENV_FILE) is not None and os.path.exists(str(os.getenv(E
 if os.getenv(ENV_SECRET_ENV_FILE) is not None and os.path.exists(str(os.getenv(ENV_SECRET_ENV_FILE))):
     load_dotenv(os.getenv(ENV_SECRET_ENV_FILE))
 
+class Auth0Settings(BaseSettings):
+    domain: str = Field(..., alias="AUTH0_DOMAIN"")
+    audience: str = Field(..., alias="AUTH0_AUDIENCE")
+    algorithms = list[str] = ["RS256"]
+
+    model_config = SettingsConfigDict(env_prefix"", extra="ignore")
+
 
 class Settings(BaseSettings):
     storage_backend: STORAGE_BACKEND = "gcs"
@@ -88,6 +95,9 @@ class Settings(BaseSettings):
     simdata_api_base_url: str = "https://simdata.api.biosimulations.org"
     biosimulators_api_base_url: str = "https://api.biosimulators.org"
     biosimulations_api_base_url: str = "https://api.biosimulations.org"
+    auth0_domain: str = ""
+    auth0_audience: str = ""
+    auth0_issuer: str = ""
 
     slurm_submit_host: str = ""   # "hamantis.cam.uchc.edu"
     slurm_submit_user: str = ""   # "crbmapi"
@@ -108,4 +118,3 @@ def get_local_cache_dir() -> Path:
     local_cache_dir = Path(settings.storage_local_cache_dir)
     local_cache_dir.mkdir(parents=True, exist_ok=True)
     return local_cache_dir
-

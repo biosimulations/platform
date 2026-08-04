@@ -8,6 +8,7 @@ from biosim_server.biosim_runs.biosim_service import BiosimService, BiosimServic
 from biosim_server.biosim_runs.database import DatabaseService, DatabaseServiceMongo
 from biosim_server.common.storage import FileService, FileServiceGCS, FileServiceLocal, FileServiceMinio
 from biosim_server.config import get_local_cache_dir, get_settings
+from biosim_server.common.auth import get_current_user
 
 if TYPE_CHECKING:
     # Imported lazily at runtime (see init_standalone) to avoid an import cycle:
