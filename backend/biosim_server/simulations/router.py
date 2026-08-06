@@ -163,13 +163,19 @@ async def run_simulations(
 )
 async def list_simulation_runs(
     request: ListSimulationRunsRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser | None = Depends(get_optional_user),
 ) -> ListSimulationRunsResponse:
-    # The caller's identity, not the request body, decides which user's runs
-    # "type": "user" scopes to -- a client-supplied `user` email would otherwise
-    # let any authenticated caller read anyone else's runs.
+    # Stays open to anonymous browsing (both "all" and a client-supplied "user"
+    # email) so the public runs listing keeps working with no login required.
+    # But when the caller IS authenticated, their verified identity -- not the
+    # request body -- decides which user's runs "type": "user" scopes to; a
+    # client-supplied `user` email would otherwise let any authenticated caller
+    # read anyone else's runs.
     if request.type == "user":
-        request.user = user.email
+        if user is not None:
+            request.user = user.email
+        elif not request.user:
+            raise HTTPException(status_code=400, detail="user (email) is required when type is 'user'")
 
     runs_db = get_simulation_run_database_service()
     if runs_db is None:
