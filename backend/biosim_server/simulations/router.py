@@ -3,7 +3,7 @@ import uuid
 from datetime import timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from biosim_server.biosim_runs import BiosimulatorVersion
 from biosim_server.dependencies import (
@@ -27,7 +27,8 @@ from biosim_server.simulations.models import (
 )
 from biosim_server.simulations.workflow import SimulationRunWorkflow, SimulationRunWorkflowInput
 
-from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user
+from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user, get_optional_user
+from biosim_server.common.auth.roles import ADMIN_ROLE, PUBLISHER_ROLE, require_owner_or_admin
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,10 @@ router = APIRouter(prefix="/simulations", tags=["Simulations"])
     dependencies=[Depends(get_temporal_client), Depends(get_biosim_service), Depends(get_omex_database_service)],
     summary="Run simulations for an OMEX archive across selected simulators",
 )
-async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
+async def run_simulations(
+    request: RunSimulationRequest,
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> ConglomerateStatus:
     # Look up OMEX file by omex_id (which is the file_hash_md5)
     omex_database = get_omex_database_service()
     if omex_database is None:
@@ -106,7 +110,12 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
                     simulator_version=sim.version,
                     simulator_digest=sim.image_digest,
                     cache_buster=cache_buster,
-                    email=request.email_address,
+                    # Trust the verified token's email over the client-supplied field
+                    # when the caller is authenticated -- request.email_address is
+                    # otherwise spoofable and would undermine ownership checks (e.g.
+                    # delete_simulation_run) downstream. Anonymous submissions keep
+                    # using the request body field unchanged.
+                    email=(user.email if user is not None and user.email else request.email_address),
                     status="CREATED",
                 ))
             except Exception as e:
@@ -345,6 +354,32 @@ async def cancel_simulation_run(
 
     updated_records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
     return _conglomerate_status_from_records(processing_id, updated_records)
+
+
+@router.delete(
+    "/{processing_id}",
+    status_code=204,
+    operation_id="delete-simulation-run",
+    summary="Delete a simulation run's records (admin: any run; publisher: own runs only)",
+)
+async def delete_simulation_run(
+    processing_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Response:
+    runs_db = get_simulation_run_database_service()
+    if runs_db is None:
+        raise HTTPException(status_code=503, detail="Simulation run database service not available")
+
+    records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
+    if not records:
+        raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+
+    if not (ADMIN_ROLE in user.roles or PUBLISHER_ROLE in user.roles):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Requires admin or publisher role to delete simulation runs")
+    require_owner_or_admin(user, (record.email for record in records), action="delete")
+
+    await runs_db.delete_simulation_runs_by_processing_id(processing_id)
+    return Response(status_code=204)
 
 
 # Maps the SimulationRunRecord display status back onto the SimulationJobStatus

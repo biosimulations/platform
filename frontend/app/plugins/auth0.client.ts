@@ -1,25 +1,3 @@
-
-
-/*
-import { createAuth0 } from '@auth0/auth0-vue'
-
-export default defineNuxtPlugin((nuxtApp) => {
-  const config = useRuntimeConfig()
-
-    nuxtApp.vueApp.use(
-      createAuth0({
-        domain: config.public.auth0_domain,
-        clientId: config.public.auth0_client_id,
-        authorizationParams: {
-          redirect_uri: window.location.origin,
-          scope: 'openid profile email'
-        }
-      })
-    )
-  })
-
-*/
-
 import { createAuth0 } from '@auth0/auth0-vue'
 
 export default defineNuxtPlugin((nuxtApp) => {

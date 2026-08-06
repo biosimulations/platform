@@ -154,6 +154,11 @@ class SimulationRunDatabaseService(ABC):
         pass
 
     @abstractmethod
+    async def delete_simulation_runs_by_processing_id(self, processing_id: str) -> None:
+        """Delete all SimulationRunRecords for a parent processing_id (workflow id)."""
+        pass
+
+    @abstractmethod
     async def delete_all_simulation_runs(self) -> None:
         pass
 
@@ -242,6 +247,13 @@ class SimulationRunDatabaseServiceMongo(SimulationRunDatabaseService):
             del doc_dict["_id"]
             records.append(SimulationRunRecord.model_validate(doc_dict))
         return records
+
+    @override
+    async def delete_simulation_runs_by_processing_id(self, processing_id: str) -> None:
+        logger.info(f"Deleting simulation run records for processing_id {processing_id}")
+        result = await self._runs_col.delete_many({"processing_id": processing_id})
+        if not result.acknowledged:
+            raise Exception("Delete failed")
 
     @override
     async def delete_all_simulation_runs(self) -> None:

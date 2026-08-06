@@ -67,9 +67,20 @@ async def update_me(
 ) -> UserProfile:
     _require_management_api()
     updates = request.model_dump(exclude_unset=True)
-    if updates:
-        await update_auth0_user(user.sub, **updates)
-    return await _build_profile(user)
+    if not updates:
+        return await _build_profile(user)
+    try:
+        auth0_user = await update_auth0_user(user.sub, **updates)
+    except Exception as e:
+        logger.error(f"Failed to update Auth0 user {user.sub}: {e}", exc_info=e)
+        raise HTTPException(status_code=502, detail="Failed to update profile via Auth0 Management API")
+    return UserProfile(
+        id=user.sub,
+        email=user.email,
+        provider=_provider_from_sub(user.sub),
+        name=auth0_user.get("name"),
+        email_verified=auth0_user.get("email_verified"),
+    )
 
 
 @router.delete(
@@ -80,5 +91,9 @@ async def update_me(
 )
 async def delete_me(user: AuthenticatedUser = Depends(get_current_user)) -> Response:
     _require_management_api()
-    await delete_auth0_user(user.sub)
+    try:
+        await delete_auth0_user(user.sub)
+    except Exception as e:
+        logger.error(f"Failed to delete Auth0 user {user.sub}: {e}", exc_info=e)
+        raise HTTPException(status_code=502, detail="Failed to delete account via Auth0 Management API")
     return Response(status_code=204)

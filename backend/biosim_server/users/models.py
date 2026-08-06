@@ -18,4 +18,4 @@ class UserProfile(BaseModel):
 
 
 class UpdateUserProfileRequest(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)

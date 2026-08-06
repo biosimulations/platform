@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 from biosim_server.api.main import app
 from biosim_server.biosim_omex.models import OmexFile
 from biosim_server.biosim_runs import BiosimulatorVersion
+from biosim_server.common.auth import get_current_user, get_optional_user
 from biosim_server.simulations.workflow import SimulationRunWorkflowInput
+from tests.fixtures.auth_fixtures import make_authenticated_user
 
 
 MOCK_OMEX_FILE = OmexFile(
@@ -238,6 +240,78 @@ def test_run_simulations_inserts_before_starting_workflow(
     assert response.status_code == 200
     # Every insert must precede the workflow start.
     assert order == ["insert", "insert", "start"], f"unexpected ordering: {order}"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_trusts_authenticated_email_over_request_body(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """An authenticated caller's token email overrides a spoofed request-body email_address."""
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    mock_get_runs_db.return_value = runs_db
+
+    user = make_authenticated_user(email="real-owner@example.com")
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        request = _make_request()
+        assert request["email_address"] != user.email
+        response = TestClient(app).post("/simulations/run", json=request)
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+
+    assert response.status_code == 200
+    inserted_record = runs_db.insert_simulation_run.call_args.args[0]
+    assert inserted_record.email == user.email
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_anonymous_still_uses_request_body_email(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """No bearer token -- behavior is unchanged from before the email-trust fix."""
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    mock_get_runs_db.return_value = runs_db
+
+    request = _make_request()
+    response = TestClient(app).post("/simulations/run", json=request)
+
+    assert response.status_code == 200
+    inserted_record = runs_db.insert_simulation_run.call_args.args[0]
+    assert inserted_record.email == request["email_address"]
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
@@ -665,3 +739,91 @@ def test_cancel_simulation_run_success(
     runs_db.update_simulation_run.assert_awaited_once_with("job-1", status="CANCELLED")
     body = response.json()
     assert body["jobs"][0]["status"] == "cancelled"
+
+
+# --------------------------- DELETE /{processing_id} ---------------------------
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_delete_simulation_run_requires_authentication(mock_get_runs_db: MagicMock) -> None:
+    response = TestClient(app).delete("/simulations/sim-run-d")
+    assert response.status_code == 401
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_delete_simulation_run_not_found(mock_get_runs_db: MagicMock, authenticated_user: object) -> None:
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = []
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).delete("/simulations/nonexistent")
+    assert response.status_code == 404
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_delete_simulation_run_forbidden_for_plain_user_role(mock_get_runs_db: MagicMock) -> None:
+    user = make_authenticated_user(roles=["user"])
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        runs_db = AsyncMock()
+        record = _make_run_record("job-1", processing_id="sim-run-d")
+        record.email = user.email  # type: ignore[attr-defined]
+        runs_db.get_simulation_runs_by_processing_id.return_value = [record]
+        mock_get_runs_db.return_value = runs_db
+
+        response = TestClient(app).delete("/simulations/sim-run-d")
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_delete_simulation_run_forbidden_for_publisher_non_owner(mock_get_runs_db: MagicMock) -> None:
+    user = make_authenticated_user(roles=["publisher"])
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        runs_db = AsyncMock()
+        record = _make_run_record("job-1", processing_id="sim-run-d")
+        record.email = "someone-else@example.com"  # type: ignore[attr-defined]
+        runs_db.get_simulation_runs_by_processing_id.return_value = [record]
+        mock_get_runs_db.return_value = runs_db
+
+        response = TestClient(app).delete("/simulations/sim-run-d")
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_delete_simulation_run_success_as_publisher_owner(mock_get_runs_db: MagicMock) -> None:
+    user = make_authenticated_user(roles=["publisher"])
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        runs_db = AsyncMock()
+        record = _make_run_record("job-1", processing_id="sim-run-d")
+        record.email = user.email  # type: ignore[attr-defined]
+        runs_db.get_simulation_runs_by_processing_id.return_value = [record]
+        mock_get_runs_db.return_value = runs_db
+
+        response = TestClient(app).delete("/simulations/sim-run-d")
+        assert response.status_code == 204
+        runs_db.delete_simulation_runs_by_processing_id.assert_awaited_once_with("sim-run-d")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_delete_simulation_run_success_as_admin_non_owner(mock_get_runs_db: MagicMock) -> None:
+    user = make_authenticated_user(roles=["admin"])
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        runs_db = AsyncMock()
+        record = _make_run_record("job-1", processing_id="sim-run-d")
+        record.email = "someone-else@example.com"  # type: ignore[attr-defined]
+        runs_db.get_simulation_runs_by_processing_id.return_value = [record]
+        mock_get_runs_db.return_value = runs_db
+
+        response = TestClient(app).delete("/simulations/sim-run-d")
+        assert response.status_code == 204
+        runs_db.delete_simulation_runs_by_processing_id.assert_awaited_once_with("sim-run-d")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
