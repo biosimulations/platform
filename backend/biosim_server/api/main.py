@@ -7,7 +7,7 @@ from typing import AsyncGenerator, Optional
 
 import dotenv
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, Query, APIRouter, Depends, HTTPException
+from fastapi import FastAPI, File, UploadFile, Query, APIRouter, Depends, HTTPException, Response
 from fastapi.openapi.docs import get_swagger_ui_html
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import HTMLResponse
@@ -18,12 +18,14 @@ from biosim_server.biosim_verify import CompareSettings
 from biosim_server.compatibility import compatibility_router
 from biosim_server.simulations import simulations_router
 from biosim_server.projects.router import router as projects_router
+from biosim_server.rbac_demo.router import router as rbac_demo_router
+from biosim_server.users.router import router as users_router
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflow, OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput, RunsVerifyWorkflow
 from biosim_server.config import get_local_cache_dir
 from biosim_server.dependencies import get_file_service, get_temporal_client, init_standalone, shutdown_standalone, \
-    get_biosim_service, get_omex_database_service
+    get_biosim_service, get_omex_database_service, get_mongo_client
 from biosim_server.log_config import setup_logging
 from biosim_server.version import __version__
 
@@ -114,6 +116,8 @@ app.add_middleware(
 app.include_router(compatibility_router)
 app.include_router(simulations_router)
 app.include_router(projects_router)
+app.include_router(users_router)
+app.include_router(rbac_demo_router)
 
 
 # -- endpoint logic -- #
@@ -129,6 +133,36 @@ def root() -> dict[str, str]:
 @app.get("/version")
 def get_version() -> str:
     return APP_VERSION
+
+
+@app.get("/health", include_in_schema=False)
+def health() -> dict[str, str]:
+    # Liveness: deliberately dependency-free so a transient Mongo/Temporal
+    # blip doesn't get the pod killed by a liveness probe.
+    return {"status": "ok"}
+
+
+@app.get("/ready", include_in_schema=False)
+async def ready(response: Response) -> dict[str, object]:
+    checks: dict[str, bool] = {}
+
+    mongo_client = get_mongo_client()
+    if mongo_client is None:
+        checks["mongodb"] = False
+    else:
+        try:
+            await mongo_client.admin.command("ping")
+            checks["mongodb"] = True
+        except Exception as e:
+            logger.warning(f"/ready: mongodb ping failed: {e}")
+            checks["mongodb"] = False
+
+    checks["temporal"] = get_temporal_client() is not None
+
+    ok = all(checks.values())
+    response.status_code = 200 if ok else 503
+    return {"status": "ready" if ok else "not ready", "checks": checks}
+
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html() -> HTMLResponse:

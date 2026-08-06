@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from biosim_server.biosim_runs import HDF5File
+
 
 class SimulatorSelection(BaseModel):
     id: str        # e.g., "copasi"
@@ -45,13 +47,14 @@ def _utcnow() -> datetime:
 
 
 # Frontend-facing run status. Internal SimulationJobStatus.status
-# ("processing" | "success" | "failure") maps onto these.
-RunDisplayStatus = Literal["CREATED", "SUCCEEDED", "FAILED"]
+# ("processing" | "success" | "failure" | "cancelled") maps onto these.
+RunDisplayStatus = Literal["CREATED", "SUCCEEDED", "FAILED", "CANCELLED"]
 
 _JOB_TO_DISPLAY_STATUS: dict[str, RunDisplayStatus] = {
     "processing": "CREATED",
     "success": "SUCCEEDED",
     "failure": "FAILED",
+    "cancelled": "CANCELLED",
 }
 
 
@@ -187,3 +190,43 @@ class ListSimulationRunsRequest(BaseModel):
 class ListSimulationRunsResponse(BaseModel):
     runs: list[SimulationRun]
     pagination: TablePagination
+
+
+class JobResult(BaseModel):
+    """One job's result-dataset catalog, part of GET /simulations/{id}/results.
+
+    `hdf5_file` is None when the job has no `biosimulations_run_id` yet (still
+    running) or its metadata couldn't be fetched."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    job_id: str = Field(serialization_alias="jobId")
+    simulator_id: str = Field(serialization_alias="simulatorId")
+    hdf5_file: HDF5File | None = Field(default=None, serialization_alias="hdf5File")
+
+
+class SimulationRunResults(BaseModel):
+    processing_id: str = Field(serialization_alias="processingId")
+    jobs: list[JobResult]
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class JobLogs(BaseModel):
+    """One job's logs, part of GET /simulations/{id}/logs.
+
+    `logs` is the passthrough biosimulations.org /logs/{id} payload (untyped --
+    no confirmed schema to model against); None when unavailable."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    job_id: str = Field(serialization_alias="jobId")
+    simulator_id: str = Field(serialization_alias="simulatorId")
+    logs: dict[str, Any] | None = None
+
+
+class SimulationRunLogs(BaseModel):
+    processing_id: str = Field(serialization_alias="processingId")
+    jobs: list[JobLogs]
+
+    model_config = ConfigDict(populate_by_name=True)
