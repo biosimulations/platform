@@ -14,14 +14,10 @@ common/auth/roles.py, not by hand-checking user.roles in each handler body.
 from fastapi import APIRouter, Depends
 
 from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user
-from biosim_server.common.auth.roles import require_roles
+from biosim_server.common.auth.roles import ADMIN_ROLE, PUBLISHER_ROLE, USER_ROLE, require_roles
 from biosim_server.rbac_demo.models import PublicMessage, RoleAnimalResponse, WhoAmIResponse
 
 router = APIRouter(prefix="/api/v1/demo", tags=["RBAC Demo"])
-
-ADMIN_ROLE = "admin"
-PUBLISHER_ROLE = "publisher"
-USER_ROLE = "user"
 
 # Checked in this order so a caller holding multiple roles (e.g. admin +
 # user) gets the most-privileged animal rather than an arbitrary one.

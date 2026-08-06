@@ -53,6 +53,9 @@ from tests.fixtures.slurm_fixtures import (  # noqa: F401
 from tests.fixtures.auth_fixtures import (  # noqa: F401
     authenticated_user,
 )
+
+# Fixtures for Keycloak integration tests: a Keycloak container, a test realm,
+# and clients/tokens for testing authentication and authorization.
 from tests.fixtures.keycloak.container import (  # noqa: F401
     keycloak_container,
     keycloak_realm,

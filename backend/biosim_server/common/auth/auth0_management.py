@@ -10,6 +10,7 @@ AUTH0_MANAGEMENT_CLIENT_SECRET). Callers should check `management_api_configured
 first and surface a 503 when it's false, rather than let these raise.
 """
 
+import asyncio
 import time
 from typing import Any
 
@@ -21,6 +22,7 @@ _token_cache: dict[str, Any] = {"access_token": None, "expires_at": 0.0}
 # Refresh a little before actual expiry to avoid racing a request against the
 # token dying mid-flight.
 _EXPIRY_SAFETY_MARGIN_SECONDS = 60
+_token_refresh_lock = asyncio.Lock()
 
 
 def management_api_configured() -> bool:
@@ -31,24 +33,32 @@ def management_api_configured() -> bool:
 async def _get_management_token() -> str:
     settings = get_settings().auth0
     now = time.time()
-    if _token_cache["access_token"] is None or now >= _token_cache["expires_at"]:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"https://{settings.domain}/oauth/token",
-                json={
-                    "client_id": settings.management_client_id,
-                    "client_secret": settings.management_client_secret,
-                    "audience": f"https://{settings.domain}/api/v2/",
-                    "grant_type": "client_credentials",
-                },
-                timeout=10.0,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            _token_cache["access_token"] = payload["access_token"]
-            _token_cache["expires_at"] = now + payload["expires_in"] - _EXPIRY_SAFETY_MARGIN_SECONDS
-    access_token: str = _token_cache["access_token"]
-    return access_token
+    if _token_cache["access_token"] is not None and now < _token_cache["expires_at"]:
+        access_token: str = _token_cache["access_token"]
+        return access_token
+
+    async with _token_refresh_lock:
+        # Re-check after acquiring the lock -- another concurrent caller may have
+        # already refreshed the token while we were waiting on it.
+        now = time.time()
+        if _token_cache["access_token"] is None or now >= _token_cache["expires_at"]:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"https://{settings.domain}/oauth/token",
+                    json={
+                        "client_id": settings.management_client_id,
+                        "client_secret": settings.management_client_secret,
+                        "audience": f"https://{settings.domain}/api/v2/",
+                        "grant_type": "client_credentials",
+                    },
+                    timeout=10.0,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                _token_cache["access_token"] = payload["access_token"]
+                _token_cache["expires_at"] = now + payload["expires_in"] - _EXPIRY_SAFETY_MARGIN_SECONDS
+        access_token = _token_cache["access_token"]
+        return access_token
 
 
 async def _auth_headers() -> dict[str, str]:

@@ -79,3 +79,17 @@ async def get_current_user(
     if not isinstance(roles, list):
         roles = []
     return AuthenticatedUser(sub=payload["sub"], email=payload.get("email"), roles=roles)
+
+
+async def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> AuthenticatedUser | None:
+    """Like get_current_user, but degrades to None instead of raising -- for endpoints
+    that stay open to anonymous callers while still trusting a token when one is given.
+    """
+    if credentials is None:
+        return None
+    try:
+        return await get_current_user(credentials)
+    except HTTPException:
+        return None

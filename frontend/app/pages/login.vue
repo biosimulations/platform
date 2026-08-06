@@ -1,24 +1,6 @@
-
-
-<!--
 <script setup lang="ts">
-const { loginWithRedirect, logout, user, isAuthenticated } = useAuth0()
-</script>
+import { useAuth0 } from '@auth0/auth0-vue'
 
-<template>
-  <button v-if="!isAuthenticated" @click="loginWithRedirect()">
-    Log in / Sign up
-  </button>
-  <div v-else>
-    {{ user?.email }}
-    <button @click="logout({ logoutParams: { returnTo: window.location.origin } })">
-      Log out
-    </button>
-  </div>
-</template>
--->
-
-<script setup lang="ts">
 const { loginWithRedirect } = useAuth0()
 const config = useRuntimeConfig()
 

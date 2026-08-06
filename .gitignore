@@ -213,3 +213,15 @@ backend/local_cache/
 # Per-overlay plaintext secrets (source for sealed secrets). Only the
 # secrets.dat.template is committed; the filled-in secrets.dat never is.
 kustomize/overlays/**/secrets.dat
+
+# Node artifacts accidentally installed outside frontend/ (which has its own
+# .gitignore already covering node_modules) -- backend/ is a Python project
+# and has no legitimate node_modules/lockfile of its own. Scoped to avoid
+# shadowing frontend/package-lock.json, which IS intentionally committed.
+/package-lock.json
+/backend/node_modules/
+/backend/package-lock.json
+
+# Stray poetry.lock -- this project's Python dependency manager is uv
+# (uv.lock, pyproject.toml), never poetry.
+poetry.lock
