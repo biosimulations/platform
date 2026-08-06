@@ -15,8 +15,12 @@ from biosim_server.dependencies import (
 from biosim_server.simulations.models import (
     RunSimulationRequest,
     ConglomerateStatus,
+    JobLogs,
+    JobResult,
     SimulationJobStatus,
+    SimulationRunLogs,
     SimulationRunRecord,
+    SimulationRunResults,
     ListSimulationRunsRequest,
     ListSimulationRunsResponse,
     SimulationRun,
@@ -142,16 +146,21 @@ async def run_simulations(request: RunSimulationRequest) -> ConglomerateStatus:
     ]
     return ConglomerateStatus(processing_id=workflow_id, jobs=jobs)
 
-'''
 @router.post(
     "/runs",
     response_model=ListSimulationRunsResponse,
     operation_id="list-simulation-runs",
     summary="List simulation runs (owner-scoped, paginated, sortable, filterable)",
 )
-async def list_simulation_runs(request: ListSimulationRunsRequest) -> ListSimulationRunsResponse:
-    if request.type == "user" and not request.user:
-        raise HTTPException(status_code=400, detail="user (email) is required when type is 'user'")
+async def list_simulation_runs(
+    request: ListSimulationRunsRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> ListSimulationRunsResponse:
+    # The caller's identity, not the request body, decides which user's runs
+    # "type": "user" scopes to -- a client-supplied `user` email would otherwise
+    # let any authenticated caller read anyone else's runs.
+    if request.type == "user":
+        request.user = user.email
 
     runs_db = get_simulation_run_database_service()
     if runs_db is None:
@@ -162,25 +171,9 @@ async def list_simulation_runs(request: ListSimulationRunsRequest) -> ListSimula
         runs=[SimulationRun.from_record(record) for record in records],
         pagination=request.pagination.model_copy(update={"total": total}),
     )
-'''
 
-@router.post("/simulations/runs")
-async def get_runs(
-    query: RunsQuery,
-    user: AuthenticatedUser = Depends(get_current_user),
-):
-    if query.type == "user":
-        query.user = user.email
-)
 
-@router.get(
-    "/{processing_id}",
-    response_model=ConglomerateStatus,
-    operation_id="get-simulation-status",
-    dependencies=[Depends(get_temporal_client)],
-    summary="Get status of a simulation run",
-)
-async def get_simulation_status(processing_id: str) -> ConglomerateStatus:
+async def _get_conglomerate_status(processing_id: str) -> ConglomerateStatus:
     temporal_client = get_temporal_client()
     if temporal_client is None:
         raise HTTPException(status_code=503, detail="Temporal service not available")
@@ -226,9 +219,142 @@ async def get_simulation_status(processing_id: str) -> ConglomerateStatus:
     return _conglomerate_status_from_records(processing_id, records)
 
 
+@router.get(
+    "/{processing_id}",
+    response_model=ConglomerateStatus,
+    operation_id="get-simulation-status",
+    dependencies=[Depends(get_temporal_client)],
+    summary="Get status of a simulation run",
+)
+async def get_simulation_status(processing_id: str) -> ConglomerateStatus:
+    return await _get_conglomerate_status(processing_id)
+
+
+@router.get(
+    "/{processing_id}/status",
+    response_model=ConglomerateStatus,
+    operation_id="get-simulation-status-explicit",
+    dependencies=[Depends(get_temporal_client)],
+    summary="Get status of a simulation run (explicit sub-resource, same data as GET /{id})",
+)
+async def get_simulation_status_explicit(processing_id: str) -> ConglomerateStatus:
+    return await _get_conglomerate_status(processing_id)
+
+
+@router.get(
+    "/{processing_id}/results",
+    response_model=SimulationRunResults,
+    operation_id="get-simulation-results",
+    summary="Get the result-dataset catalog for each job in a simulation run",
+)
+async def get_simulation_results(processing_id: str) -> SimulationRunResults:
+    runs_db = get_simulation_run_database_service()
+    if runs_db is None:
+        raise HTTPException(status_code=503, detail="Simulation run database service not available")
+    biosim_service = get_biosim_service()
+    if biosim_service is None:
+        raise HTTPException(status_code=503, detail="Biosim service not available")
+
+    records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
+    if not records:
+        raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+
+    jobs: list[JobResult] = []
+    for record in records:
+        hdf5_file = None
+        if record.biosimulations_run_id is not None:
+            try:
+                hdf5_file = await biosim_service.get_hdf5_metadata(record.biosimulations_run_id)
+            except Exception as e:
+                logger.info(f"No results yet for run {record.run_id} ({record.biosimulations_run_id}): {e}")
+        jobs.append(JobResult(job_id=record.run_id, simulator_id=record.simulator, hdf5_file=hdf5_file))
+
+    return SimulationRunResults(processing_id=processing_id, jobs=jobs)
+
+
+@router.get(
+    "/{processing_id}/logs",
+    response_model=SimulationRunLogs,
+    operation_id="get-simulation-logs",
+    summary="Get simulator logs for each job in a simulation run",
+)
+async def get_simulation_logs(processing_id: str) -> SimulationRunLogs:
+    runs_db = get_simulation_run_database_service()
+    if runs_db is None:
+        raise HTTPException(status_code=503, detail="Simulation run database service not available")
+    biosim_service = get_biosim_service()
+    if biosim_service is None:
+        raise HTTPException(status_code=503, detail="Biosim service not available")
+
+    records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
+    if not records:
+        raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+
+    jobs: list[JobLogs] = []
+    for record in records:
+        logs = None
+        if record.biosimulations_run_id is not None:
+            try:
+                logs = await biosim_service.get_sim_run_logs(record.biosimulations_run_id)
+            except Exception as e:
+                logger.info(f"No logs yet for run {record.run_id} ({record.biosimulations_run_id}): {e}")
+        jobs.append(JobLogs(job_id=record.run_id, simulator_id=record.simulator, logs=logs))
+
+    return SimulationRunLogs(processing_id=processing_id, jobs=jobs)
+
+
+@router.post(
+    "/{processing_id}/cancel",
+    response_model=ConglomerateStatus,
+    operation_id="cancel-simulation-run",
+    summary="Cancel a simulation run (owner only)",
+)
+async def cancel_simulation_run(
+    processing_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> ConglomerateStatus:
+    runs_db = get_simulation_run_database_service()
+    if runs_db is None:
+        raise HTTPException(status_code=503, detail="Simulation run database service not available")
+
+    records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
+    if not records:
+        raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+    if not any(record.email == user.email for record in records):
+        raise HTTPException(status_code=403, detail="Only the submitting user can cancel this simulation run")
+
+    temporal_client = get_temporal_client()
+    if temporal_client is None:
+        raise HTTPException(status_code=503, detail="Temporal service not available")
+
+    try:
+        workflow_handle = temporal_client.get_workflow_handle(workflow_id=processing_id)
+        await workflow_handle.cancel()
+    except Exception as e:
+        logger.warning(f"Failed to cancel Temporal workflow {processing_id}: {e}")
+
+    # The workflow itself has no cancellation handler to update run records, and
+    # Temporal cancellation is cooperative (may take a moment to settle), so update
+    # the queryable records directly here for an immediate, consistent frontend view.
+    for record in records:
+        if record.status in ("CREATED",):
+            try:
+                await runs_db.update_simulation_run(record.run_id, status="CANCELLED")
+            except Exception as e:
+                logger.warning(f"Failed to mark run {record.run_id} CANCELLED: {e}")
+
+    updated_records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
+    return _conglomerate_status_from_records(processing_id, updated_records)
+
+
 # Maps the SimulationRunRecord display status back onto the SimulationJobStatus
 # internal status. Inverse of job_status_to_display in simulations.models.
-_DISPLAY_TO_JOB_STATUS: dict[str, str] = {"CREATED": "processing", "SUCCEEDED": "success", "FAILED": "failure"}
+_DISPLAY_TO_JOB_STATUS: dict[str, str] = {
+    "CREATED": "processing",
+    "SUCCEEDED": "success",
+    "FAILED": "failure",
+    "CANCELLED": "cancelled",
+}
 
 
 def _conglomerate_status_from_records(

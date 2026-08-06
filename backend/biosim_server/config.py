@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 KV_DRIVER = Literal['file', 's3', 'gcs']
 TS_DRIVER = Literal['zarr', 'n5', 'zarr3']
@@ -22,11 +23,39 @@ if os.getenv(ENV_SECRET_ENV_FILE) is not None and os.path.exists(str(os.getenv(E
     load_dotenv(os.getenv(ENV_SECRET_ENV_FILE))
 
 class Auth0Settings(BaseSettings):
-    domain: str = Field(..., alias="AUTH0_DOMAIN"")
-    audience: str = Field(..., alias="AUTH0_AUDIENCE")
-    algorithms = list[str] = ["RS256"]
+    domain: str = Field(default="", alias="AUTH0_DOMAIN")
+    audience: str = Field(default="", alias="AUTH0_AUDIENCE")
+    algorithms: list[str] = ["RS256"]
+    # get_current_user derives the expected JWT issuer and JWKS URL from
+    # `domain` using Auth0's own convention ("https://{domain}/" and
+    # "https://{domain}/.well-known/jwks.json") when these are left blank.
+    # Set them explicitly to verify tokens from a different OIDC provider
+    # (e.g. a Keycloak realm in tests) whose issuer/JWKS URLs don't follow
+    # that shape -- Keycloak's issuer is "{base_url}/realms/{realm}" and its
+    # JWKS lives at "{issuer}/protocol/openid-connect/certs".
+    issuer: str = Field(default="", alias="AUTH0_ISSUER")
+    jwks_uri: str = Field(default="", alias="AUTH0_JWKS_URI")
+    # M2M application credentials for the Auth0 Management API (used by
+    # PATCH/DELETE /api/v1/me). Optional -- those endpoints 503 when unset.
+    management_client_id: str = Field(default="", alias="AUTH0_MANAGEMENT_CLIENT_ID")
+    management_client_secret: str = Field(default="", alias="AUTH0_MANAGEMENT_CLIENT_SECRET")
+    # Auth0 access tokens don't include role assignments by default -- roles
+    # have to be copied onto the token as a custom claim by an Auth0 Action
+    # (Auth0 Dashboard -> Actions -> Flows -> Login -> add a post-login
+    # action that sets `event.authorization.roles` into this claim on
+    # api.accessToken). Must be a fully-qualified, non-reserved URI per
+    # Auth0's namespaced-claim rules. Defaults to this API's own audience so
+    # it works out of the box for this tenant; override if the Action uses a
+    # different namespace.
+    roles_claim: str = Field(default="https://api.biosimulations.org/roles", alias="AUTH0_ROLES_CLAIM")
 
-    model_config = SettingsConfigDict(env_prefix"", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore", populate_by_name=True)
+
+    def issuer_url(self) -> str:
+        return self.issuer or f"https://{self.domain}/"
+
+    def jwks_url(self) -> str:
+        return self.jwks_uri or f"https://{self.domain}/.well-known/jwks.json"
 
 
 class Settings(BaseSettings):
@@ -95,9 +124,7 @@ class Settings(BaseSettings):
     simdata_api_base_url: str = "https://simdata.api.biosimulations.org"
     biosimulators_api_base_url: str = "https://api.biosimulators.org"
     biosimulations_api_base_url: str = "https://api.biosimulations.org"
-    auth0_domain: str = ""
-    auth0_audience: str = ""
-    auth0_issuer: str = ""
+    auth0: Auth0Settings = Field(default_factory=Auth0Settings)
 
     slurm_submit_host: str = ""   # "hamantis.cam.uchc.edu"
     slurm_submit_user: str = ""   # "crbmapi"

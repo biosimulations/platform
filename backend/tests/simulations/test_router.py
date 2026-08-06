@@ -506,3 +506,162 @@ def test_run_simulations_missing_fields() -> None:
     client = TestClient(app)
     response = client.post("/simulations/run", json={"omex_id": "abc"})
     assert response.status_code == 422
+
+
+# --------------------------- /status (explicit sub-resource) ---------------------------
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_get_simulation_status_explicit_matches_combined(mock_get_temporal: MagicMock) -> None:
+    """GET /{id}/status returns the same payload as GET /{id}."""
+    from biosim_server.simulations.models import ConglomerateStatus, SimulationJobStatus
+
+    expected = ConglomerateStatus(
+        processing_id="sim-run-test",
+        jobs=[SimulationJobStatus(job_id="abc123", simulator_id="copasi", version="4.34.251", status="success")],
+    )
+    temporal_client = MagicMock()
+    workflow_handle = AsyncMock()
+    workflow_handle.query.return_value = expected
+    temporal_client.get_workflow_handle.return_value = workflow_handle
+    mock_get_temporal.return_value = temporal_client
+
+    response = TestClient(app).get("/simulations/sim-run-test/status")
+    assert response.status_code == 200
+    assert response.json()["processing_id"] == "sim-run-test"
+
+
+# --------------------------- /results ---------------------------
+
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_get_simulation_results(mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock) -> None:
+    from biosim_server.biosim_runs import HDF5File
+
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record("job-1", processing_id="sim-run-r", biosimulations_run_id="biosim-1"),
+        _make_run_record("job-2", processing_id="sim-run-r", biosimulations_run_id=None),
+    ]
+    mock_get_runs_db.return_value = runs_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_hdf5_metadata.return_value = HDF5File(
+        filename="results.h5", id="biosim-1", uri="biosim-1", groups=[]
+    )
+    mock_get_biosim.return_value = biosim_service
+
+    response = TestClient(app).get("/simulations/sim-run-r/results")
+    assert response.status_code == 200
+    body = response.json()
+    by_id = {job["jobId"]: job for job in body["jobs"]}
+    assert by_id["job-1"]["hdf5File"] is not None
+    biosim_service.get_hdf5_metadata.assert_awaited_once_with("biosim-1")
+    # job-2 has no biosimulations_run_id yet -- no results, not an error.
+    assert by_id["job-2"]["hdf5File"] is None
+
+
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_get_simulation_results_not_found(mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock) -> None:
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = []
+    mock_get_runs_db.return_value = runs_db
+    mock_get_biosim.return_value = AsyncMock()
+
+    response = TestClient(app).get("/simulations/nonexistent/results")
+    assert response.status_code == 404
+
+
+# --------------------------- /logs ---------------------------
+
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_get_simulation_logs(mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock) -> None:
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record("job-1", processing_id="sim-run-l", biosimulations_run_id="biosim-1"),
+    ]
+    mock_get_runs_db.return_value = runs_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_sim_run_logs.return_value = {"stdout": "hello"}
+    mock_get_biosim.return_value = biosim_service
+
+    response = TestClient(app).get("/simulations/sim-run-l/logs")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["jobs"][0]["logs"] == {"stdout": "hello"}
+    biosim_service.get_sim_run_logs.assert_awaited_once_with("biosim-1")
+
+
+# --------------------------- /cancel ---------------------------
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_cancel_simulation_run_requires_authentication(
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock
+) -> None:
+    response = TestClient(app).post("/simulations/sim-run-c/cancel")
+    assert response.status_code == 401
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_cancel_simulation_run_not_found(
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock, authenticated_user: object
+) -> None:
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = []
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).post("/simulations/nonexistent/cancel")
+    assert response.status_code == 404
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_cancel_simulation_run_forbidden_for_non_owner(
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock, authenticated_user: object
+) -> None:
+    runs_db = AsyncMock()
+    record = _make_run_record("job-1", processing_id="sim-run-c")
+    record.email = "someone-else@example.com"  # type: ignore[attr-defined]
+    runs_db.get_simulation_runs_by_processing_id.return_value = [record]
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).post("/simulations/sim-run-c/cancel")
+    assert response.status_code == 403
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_cancel_simulation_run_success(
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock, authenticated_user: object
+) -> None:
+    from biosim_server.simulations.models import SimulationRunRecord
+
+    record: SimulationRunRecord = _make_run_record(  # type: ignore[assignment]
+        "job-1", processing_id="sim-run-c", status="CREATED"
+    )
+    record.email = authenticated_user.email  # type: ignore[attr-defined]
+
+    updated_record = record.model_copy(update={"status": "CANCELLED"})
+
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.side_effect = [[record], [updated_record]]
+    mock_get_runs_db.return_value = runs_db
+
+    # get_workflow_handle is synchronous on the real Temporal client (only the
+    # handle's own methods, like .cancel(), are async) -- MagicMock here, not
+    # AsyncMock, matches that and matches the other tests in this file.
+    temporal_client = MagicMock()
+    workflow_handle = AsyncMock()
+    temporal_client.get_workflow_handle.return_value = workflow_handle
+    mock_get_temporal.return_value = temporal_client
+
+    response = TestClient(app).post("/simulations/sim-run-c/cancel")
+    assert response.status_code == 200
+    workflow_handle.cancel.assert_awaited_once()
+    runs_db.update_simulation_run.assert_awaited_once_with("job-1", status="CANCELLED")
+    body = response.json()
+    assert body["jobs"][0]["status"] == "cancelled"
