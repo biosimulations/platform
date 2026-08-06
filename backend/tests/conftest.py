@@ -50,6 +50,23 @@ from tests.fixtures.slurm_fixtures import (  # noqa: F401
     ssh_service,
     slurm_template_hello,
 )
+from tests.fixtures.auth_fixtures import (  # noqa: F401
+    authenticated_user,
+)
+
+# Fixtures for Keycloak integration tests: a Keycloak container, a test realm,
+# and clients/tokens for testing authentication and authorization.
+from tests.fixtures.keycloak.container import (  # noqa: F401
+    keycloak_container,
+    keycloak_realm,
+)
+from tests.fixtures.keycloak.client import (  # noqa: F401
+    keycloak_auth_settings,
+    keycloak_async_client,
+    alice_token,
+    bob_token,
+    charlie_token,
+)
 
 
 # Add the --workflow-environment option

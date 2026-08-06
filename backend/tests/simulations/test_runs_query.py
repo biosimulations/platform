@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from pymongo import ASCENDING, DESCENDING
 
 from biosim_server.api.main import app
+from biosim_server.common.auth import AuthenticatedUser, get_optional_user
 from biosim_server.simulations import SimulationRunDatabaseServiceMongo, SimulationRunRecord
 from biosim_server.simulations.database import build_mongo_query, resolve_sort
 from biosim_server.simulations.models import (
@@ -193,16 +194,49 @@ async def test_db_sort_and_paginate(
 
 # --------------------------- FastAPI endpoint ---------------------------
 
-def test_endpoint_user_type_requires_user() -> None:
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_endpoint_all_works_anonymously(mock_get_runs_db: MagicMock) -> None:
+    # No Authorization header, type "all": list_simulation_runs depends on
+    # get_optional_user (not get_current_user), specifically so the public runs
+    # listing (e.g. the frontend's un-authenticated "Browse Simulation Runs" page)
+    # keeps working with no token at all.
+    runs_db = AsyncMock()
+    runs_db.query_simulation_runs.return_value = ([], 0)
+    mock_get_runs_db.return_value = runs_db
+
     client = TestClient(app)
-    resp = client.post("/simulations/runs", json={"type": "user", "filters": [],
+    resp = client.post("/simulations/runs", json={"type": "all", "filters": [],
                                                    "pagination": {"page": 1, "perPage": 20}})
-    assert resp.status_code == 400
-    assert "user" in resp.json()["detail"]
+    assert resp.status_code == 200
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
-def test_endpoint_service_unavailable(mock_get_runs_db: MagicMock) -> None:
+def test_endpoint_user_type_scoped_to_caller_ignores_body_user(mock_get_runs_db: MagicMock) -> None:
+    # A client-supplied `user` in the body must not be trusted when the caller IS
+    # authenticated -- the query is scoped to the verified token's own email.
+    # Overrides get_optional_user directly (not the `authenticated_user` fixture,
+    # which only overrides get_current_user and has no effect on this endpoint).
+    runs_db = AsyncMock()
+    runs_db.query_simulation_runs.return_value = ([], 0)
+    mock_get_runs_db.return_value = runs_db
+
+    user = AuthenticatedUser(sub="auth0|test-user-id", email="user@example.com")
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        client = TestClient(app)
+        resp = client.post("/simulations/runs", json={"type": "user", "user": "someone-else@example.com",
+                                                       "filters": [], "pagination": {"page": 1, "perPage": 20}})
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+
+    assert resp.status_code == 200
+    sent_request = runs_db.query_simulation_runs.call_args[0][0]
+    assert sent_request.user == user.email
+    assert sent_request.user != "someone-else@example.com"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_endpoint_service_unavailable(mock_get_runs_db: MagicMock, authenticated_user: AuthenticatedUser) -> None:
     mock_get_runs_db.return_value = None
     client = TestClient(app)
     resp = client.post("/simulations/runs", json={"type": "all", "filters": [],
@@ -211,7 +245,7 @@ def test_endpoint_service_unavailable(mock_get_runs_db: MagicMock) -> None:
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
-def test_endpoint_success_shape(mock_get_runs_db: MagicMock) -> None:
+def test_endpoint_success_shape(mock_get_runs_db: MagicMock, authenticated_user: AuthenticatedUser) -> None:
     runs_db = AsyncMock()
     runs_db.query_simulation_runs.return_value = (
         [_record("a", status="SUCCEEDED", biosimulations_run_id="6a3d5603015a4d8b0bf24b74")], 1)
