@@ -23,7 +23,7 @@ from biosim_server.users.router import router as users_router
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflow, OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput, RunsVerifyWorkflow
-from biosim_server.config import get_local_cache_dir
+from biosim_server.config import get_local_cache_dir, get_settings
 from biosim_server.dependencies import get_file_service, get_temporal_client, init_standalone, shutdown_standalone, \
     get_biosim_service, get_omex_database_service, get_mongo_client
 from biosim_server.log_config import setup_logging
@@ -95,8 +95,18 @@ APP_SERVERS: list[dict[str, str]] = [
 router = APIRouter()
 
 
+def _warn_if_auth0_misconfigured() -> None:
+    auth0 = get_settings().auth0
+    if not auth0.domain or not auth0.audience:
+        logger.warning(
+            "AUTH0_DOMAIN/AUTH0_AUDIENCE not set -- all endpoints behind get_current_user/"
+            "get_optional_user will reject every bearer token with 401."
+        )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    _warn_if_auth0_misconfigured()
     await init_standalone()
     yield
     await shutdown_standalone()

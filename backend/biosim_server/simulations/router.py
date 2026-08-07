@@ -3,7 +3,7 @@ import uuid
 from datetime import timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from biosim_server.biosim_runs import BiosimulatorVersion
 from biosim_server.dependencies import (
@@ -28,7 +28,7 @@ from biosim_server.simulations.models import (
 from biosim_server.simulations.workflow import SimulationRunWorkflow, SimulationRunWorkflowInput
 
 from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user, get_optional_user
-from biosim_server.common.auth.roles import ADMIN_ROLE, PUBLISHER_ROLE, require_owner_or_admin
+from biosim_server.common.auth.roles import ADMIN_ROLE, PUBLISHER_ROLE, require_owner_or_admin, require_roles
 
 logger = logging.getLogger(__name__)
 
@@ -165,16 +165,30 @@ async def list_simulation_runs(
     request: ListSimulationRunsRequest,
     user: AuthenticatedUser | None = Depends(get_optional_user),
 ) -> ListSimulationRunsResponse:
-    # Stays open to anonymous browsing (both "all" and a client-supplied "user"
-    # email) so the public runs listing keeps working with no login required.
-    # But when the caller IS authenticated, their verified identity -- not the
-    # request body -- decides which user's runs "type": "user" scopes to; a
-    # client-supplied `user` email would otherwise let any authenticated caller
-    # read anyone else's runs.
-    if request.type == "user":
-        if user is not None:
-            request.user = user.email
-        elif not request.user:
+    # Any email-based scoping of the listing -- "type": "user" or a "filters"
+    # entry on the "email" field -- requires a verified identity. Without this,
+    # an anonymous or authenticated-as-someone-else caller could read another
+    # user's full run history just by knowing/guessing their email, via either
+    # mechanism. "type": "all" with no email filter stays open to anonymous
+    # browsing.
+    wants_email_scope = request.type == "user" or any(f.id == "email" for f in request.filters)
+    if wants_email_scope:
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication required to filter runs by email")
+        if ADMIN_ROLE not in user.roles:
+            # Non-admins may only self-scope, and only via an exact-match email
+            # filter -- contains/starts_with/is_any would turn "filter by my own
+            # email" into an email-harvesting probe.
+            if request.type == "user":
+                request.user = user.email
+            for table_filter in request.filters:
+                if table_filter.id != "email":
+                    continue
+                if table_filter.operator not in (None, "equal", "is"):
+                    raise HTTPException(status_code=403, detail="Only an exact-match email filter is allowed")
+                if not user.email or str(table_filter.value or "").lower() != user.email.lower():
+                    raise HTTPException(status_code=403, detail="Can only filter runs by your own email")
+        elif request.type == "user" and not request.user:
             raise HTTPException(status_code=400, detail="user (email) is required when type is 'user'")
 
     runs_db = get_simulation_run_database_service()
@@ -322,7 +336,7 @@ async def get_simulation_logs(processing_id: str) -> SimulationRunLogs:
     "/{processing_id}/cancel",
     response_model=ConglomerateStatus,
     operation_id="cancel-simulation-run",
-    summary="Cancel a simulation run (owner only)",
+    summary="Cancel a simulation run (owner or admin)",
 )
 async def cancel_simulation_run(
     processing_id: str,
@@ -335,8 +349,7 @@ async def cancel_simulation_run(
     records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
     if not records:
         raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
-    if not any(record.email == user.email for record in records):
-        raise HTTPException(status_code=403, detail="Only the submitting user can cancel this simulation run")
+    require_owner_or_admin(user, (record.email for record in records), action="cancel")
 
     temporal_client = get_temporal_client()
     if temporal_client is None:
@@ -370,7 +383,7 @@ async def cancel_simulation_run(
 )
 async def delete_simulation_run(
     processing_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(require_roles(ADMIN_ROLE, PUBLISHER_ROLE)),
 ) -> Response:
     runs_db = get_simulation_run_database_service()
     if runs_db is None:
@@ -380,8 +393,6 @@ async def delete_simulation_run(
     if not records:
         raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
 
-    if not (ADMIN_ROLE in user.roles or PUBLISHER_ROLE in user.roles):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Requires admin or publisher role to delete simulation runs")
     require_owner_or_admin(user, (record.email for record in records), action="delete")
 
     await runs_db.delete_simulation_runs_by_processing_id(processing_id)

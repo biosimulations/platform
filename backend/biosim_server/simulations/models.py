@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from biosim_server.biosim_runs import HDF5File
 
@@ -96,6 +96,11 @@ class SimulationRunRecord(BaseModel):
     updated: datetime = Field(default_factory=_utcnow)
     biosimulations_run_id: str | None = None
     database_id: str | None = None
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
 
 
 class SimulationRun(BaseModel):

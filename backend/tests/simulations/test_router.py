@@ -741,6 +741,40 @@ def test_cancel_simulation_run_success(
     assert body["jobs"][0]["status"] == "cancelled"
 
 
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_cancel_simulation_run_success_as_admin_non_owner(
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock
+) -> None:
+    from biosim_server.simulations.models import SimulationRunRecord
+
+    user = make_authenticated_user(roles=["admin"])
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        record: SimulationRunRecord = _make_run_record(  # type: ignore[assignment]
+            "job-1", processing_id="sim-run-c", status="CREATED"
+        )
+        record.email = "someone-else@example.com"
+        updated_record = record.model_copy(update={"status": "CANCELLED"})
+
+        runs_db = AsyncMock()
+        runs_db.get_simulation_runs_by_processing_id.side_effect = [[record], [updated_record]]
+        mock_get_runs_db.return_value = runs_db
+
+        temporal_client = MagicMock()
+        workflow_handle = AsyncMock()
+        temporal_client.get_workflow_handle.return_value = workflow_handle
+        mock_get_temporal.return_value = temporal_client
+
+        response = TestClient(app).post("/simulations/sim-run-c/cancel")
+        assert response.status_code == 200
+        workflow_handle.cancel.assert_awaited_once()
+        body = response.json()
+        assert body["jobs"][0]["status"] == "cancelled"
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
 # --------------------------- DELETE /{processing_id} ---------------------------
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
@@ -750,13 +784,33 @@ def test_delete_simulation_run_requires_authentication(mock_get_runs_db: MagicMo
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
-def test_delete_simulation_run_not_found(mock_get_runs_db: MagicMock, authenticated_user: object) -> None:
+def test_delete_simulation_run_not_found_roleless_caller_forbidden(
+    mock_get_runs_db: MagicMock, authenticated_user: object
+) -> None:
+    """The admin-or-publisher role gate runs (via require_roles) before records are
+    fetched, so a roleless caller is rejected with 403 even for a nonexistent run --
+    it never leaks whether the run exists to someone who couldn't act on it regardless."""
     runs_db = AsyncMock()
     runs_db.get_simulation_runs_by_processing_id.return_value = []
     mock_get_runs_db.return_value = runs_db
 
     response = TestClient(app).delete("/simulations/nonexistent")
-    assert response.status_code == 404
+    assert response.status_code == 403
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_delete_simulation_run_not_found_as_admin(mock_get_runs_db: MagicMock) -> None:
+    user = make_authenticated_user(roles=["admin"])
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        runs_db = AsyncMock()
+        runs_db.get_simulation_runs_by_processing_id.return_value = []
+        mock_get_runs_db.return_value = runs_db
+
+        response = TestClient(app).delete("/simulations/nonexistent")
+        assert response.status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
@@ -833,9 +887,11 @@ def test_delete_simulation_run_success_as_admin_non_owner(mock_get_runs_db: Magi
 # Regression coverage for a bug where list_simulation_runs required get_current_user
 # (mandatory auth), which 401'd the frontend's public "Browse Simulation Runs" page --
 # that page calls POST /simulations/runs with no Authorization header at all. Fixed by
-# switching to get_optional_user: anonymous browsing works for both "all" and a
-# client-supplied "user" email (parity with the pre-auth/main behavior), while an
-# authenticated caller's verified email still overrides a client-supplied one.
+# switching to get_optional_user: anonymous browsing works for "all" with no email
+# scoping. Any email-based scoping -- "type": "user" or an "email" filter -- now
+# requires authentication and self-scopes to the caller's own email unless they're
+# admin (see test_list_simulation_runs_email_filter_* below); an authenticated
+# caller's verified email always overrides a client-supplied one.
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_list_simulation_runs_all_works_anonymously(mock_get_runs_db: MagicMock) -> None:
@@ -852,31 +908,152 @@ def test_list_simulation_runs_all_works_anonymously(mock_get_runs_db: MagicMock)
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
-def test_list_simulation_runs_user_type_anonymous_uses_request_email(mock_get_runs_db: MagicMock) -> None:
-    """No token, type "user": the client-supplied email is trusted as-is (no caller
-    identity exists to override it with) -- matches the frontend's un-authenticated
-    "My Runs" flow, where the user just types an email into a text box."""
-    runs_db = AsyncMock()
-    runs_db.query_simulation_runs.return_value = ([], 0)
-    mock_get_runs_db.return_value = runs_db
-
+def test_list_simulation_runs_user_type_anonymous_rejected(mock_get_runs_db: MagicMock) -> None:
+    """No token, type "user": 401 -- any email-scoping of the listing requires a
+    verified identity now; an anonymous caller can no longer read someone's run
+    history just by typing their email into a text box."""
     response = TestClient(app).post(
         "/simulations/runs",
         json={"type": "user", "user": "someone@example.com", "filters": [], "pagination": {"page": 1, "perPage": 20}},
     )
-    assert response.status_code == 200
-    sent_request = runs_db.query_simulation_runs.call_args.args[0]
-    assert sent_request.user == "someone@example.com"
+    assert response.status_code == 401
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
-def test_list_simulation_runs_user_type_anonymous_without_email_400(mock_get_runs_db: MagicMock) -> None:
-    """No token, type "user", and no `user` email in the body: 400 -- nothing to scope to."""
+def test_list_simulation_runs_user_type_anonymous_without_email_401(mock_get_runs_db: MagicMock) -> None:
+    """No token, type "user", no `user` email in the body: still 401 -- auth is
+    checked before the missing-email case."""
     response = TestClient(app).post(
         "/simulations/runs",
         json={"type": "user", "filters": [], "pagination": {"page": 1, "perPage": 20}},
     )
+    assert response.status_code == 401
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_user_type_authenticated_without_email_400(mock_get_runs_db: MagicMock) -> None:
+    """Authenticated but the token carries no email, type "user": 400 -- nothing to
+    scope to (mirrors the old anonymous-without-email case, now for an authenticated
+    caller whose identity provider didn't supply an email claim)."""
+    user = make_authenticated_user(email=None, roles=["admin"])
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        response = TestClient(app).post(
+            "/simulations/runs",
+            json={"type": "user", "filters": [], "pagination": {"page": 1, "perPage": 20}},
+        )
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
     assert response.status_code == 400
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_unauthenticated_email_filter_rejected(mock_get_runs_db: MagicMock) -> None:
+    """No token, type "all" but an "email" filter present: 401 -- closes the gap where
+    the generic filters list could be used to read another user's runs by email
+    without ever going through "type": "user"."""
+    response = TestClient(app).post(
+        "/simulations/runs",
+        json={
+            "type": "all",
+            "filters": [{"id": "email", "operator": "equal", "value": "victim@example.com"}],
+            "pagination": {"page": 1, "perPage": 20},
+        },
+    )
+    assert response.status_code == 401
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_email_filter_wrong_user_rejected(mock_get_runs_db: MagicMock) -> None:
+    """Authenticated as a plain user, "email" filter for someone else's address: 403."""
+    user = make_authenticated_user(email="caller@example.com", roles=["user"])
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        response = TestClient(app).post(
+            "/simulations/runs",
+            json={
+                "type": "all",
+                "filters": [{"id": "email", "operator": "equal", "value": "victim@example.com"}],
+                "pagination": {"page": 1, "perPage": 20},
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+    assert response.status_code == 403
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_email_filter_own_email_allowed(mock_get_runs_db: MagicMock) -> None:
+    """Authenticated as a plain user, "email" filter for their own address (any case):
+    200, and the query actually sent scopes to their (lowercased) email only."""
+    runs_db = AsyncMock()
+    runs_db.query_simulation_runs.return_value = ([], 0)
+    mock_get_runs_db.return_value = runs_db
+
+    user = make_authenticated_user(email="caller@example.com", roles=["user"])
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        response = TestClient(app).post(
+            "/simulations/runs",
+            json={
+                "type": "all",
+                "filters": [{"id": "email", "operator": "equal", "value": "Caller@Example.com"}],
+                "pagination": {"page": 1, "perPage": 20},
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+
+    assert response.status_code == 200
+    sent_request = runs_db.query_simulation_runs.call_args.args[0]
+    assert sent_request.filters[0].value == "Caller@Example.com"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_email_filter_contains_operator_rejected_for_non_admin(
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """Own email but operator "contains" instead of an exact match: 403 -- non-admins
+    can't use a partial-match email filter, which would turn "filter by my own email"
+    into an email-harvesting probe."""
+    user = make_authenticated_user(email="caller@example.com", roles=["user"])
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        response = TestClient(app).post(
+            "/simulations/runs",
+            json={
+                "type": "all",
+                "filters": [{"id": "email", "operator": "contains", "value": "caller@example.com"}],
+                "pagination": {"page": 1, "perPage": 20},
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+    assert response.status_code == 403
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_email_filter_admin_arbitrary_value_allowed(mock_get_runs_db: MagicMock) -> None:
+    """Caller with the admin role: arbitrary email + a partial-match operator is
+    allowed -- the admin carve-out for cross-user email search."""
+    runs_db = AsyncMock()
+    runs_db.query_simulation_runs.return_value = ([], 0)
+    mock_get_runs_db.return_value = runs_db
+
+    user = make_authenticated_user(email="admin@example.com", roles=["admin"])
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        response = TestClient(app).post(
+            "/simulations/runs",
+            json={
+                "type": "all",
+                "filters": [{"id": "email", "operator": "contains", "value": "victim"}],
+                "pagination": {"page": 1, "perPage": 20},
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+    assert response.status_code == 200
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
