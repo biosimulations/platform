@@ -85,6 +85,9 @@
         versions: z.array(z.string()),
         exact: z.boolean(),
         _selected_version: z.string('Select a version for this simulator').optional()
+      }).refine(sim => !!sim._selected_version, {
+        message: 'Select a version for this simulator',
+        path: ['_selected_version'],
       })
     ).min(1, 'At least one simulator must be selected'),
     email_address: z.email().optional(),

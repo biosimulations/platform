@@ -31,7 +31,7 @@ def require_roles(*allowed_roles: str) -> Callable[..., Coroutine[Any, Any, Auth
     return _check_roles
 
 
-def require_owner_or_admin(user: AuthenticatedUser, owner_emails: Iterable[str], *, action: str) -> None:
+def require_owner_or_admin(user: AuthenticatedUser, owner_emails: Iterable[str | None], *, action: str) -> None:
     """Raises 403 unless `user` is an admin or owns every record (email in owner_emails).
 
     Called inline from a handler body (not a Depends factory) since it needs
@@ -39,7 +39,7 @@ def require_owner_or_admin(user: AuthenticatedUser, owner_emails: Iterable[str],
     """
     if ADMIN_ROLE in user.roles:
         return
-    if any(email == user.email for email in owner_emails):
+    if user.email is not None and any(email == user.email for email in owner_emails):
         return
     raise HTTPException(
         status.HTTP_403_FORBIDDEN,

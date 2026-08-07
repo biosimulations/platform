@@ -97,7 +97,7 @@ export interface SimulationRun {
   maxTime: number
   envVars: string[]
   purpose: string
-  email: string
+  email: string | null
   status: string
   runtime: number
   projectSize: number

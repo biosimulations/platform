@@ -16,7 +16,7 @@ class RunSimulationRequest(BaseModel):
     name: str
     simulators: list[SimulatorSelection]
     is_commercial: bool = False
-    email_address: str
+    email_address: str | None = None
     newsletter_consent: bool = False
     cache_buster: str | None = Field(
         default=None,
@@ -87,7 +87,7 @@ class SimulationRunRecord(BaseModel):
     max_time: int = 0
     env_vars: list[str] = Field(default_factory=list)
     purpose: str = ""
-    email: str
+    email: str | None = None
     status: RunDisplayStatus = "CREATED"
     runtime: int = 0
     project_size: int = 0
@@ -99,8 +99,8 @@ class SimulationRunRecord(BaseModel):
 
     @field_validator("email")
     @classmethod
-    def _normalize_email(cls, value: str) -> str:
-        return value.strip().lower()
+    def _normalize_email(cls, value: str | None) -> str | None:
+        return value.strip().lower() if value else None
 
 
 class SimulationRun(BaseModel):
@@ -125,7 +125,7 @@ class SimulationRun(BaseModel):
     max_time: int = Field(serialization_alias="maxTime")
     env_vars: list[str] = Field(serialization_alias="envVars")
     purpose: str
-    email: str
+    email: str | None
     status: str
     runtime: int
     project_size: int = Field(serialization_alias="projectSize")
