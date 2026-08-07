@@ -147,3 +147,95 @@ def test_check_compatibility_success(
     assert "2.2.10" in tellurium["versions"]
     # version_details not populated in default (non-verbose) mode
     assert tellurium["version_details"] is None
+
+
+@patch("biosim_server.compatibility.router.get_biosim_service")
+@patch("biosim_server.compatibility.simulator_matcher._get_simulator_spec")
+def test_check_compatibility_dot_slash_manifest_locations(
+    mock_get_spec: AsyncMock,
+    mock_get_service: AsyncMock,
+    mock_biosim_service: AsyncMock
+) -> None:
+    """An archive whose manifest uses "./" locations must not 400.
+
+    Regression test for BioModels-derived archives (e.g. run
+    61fea4893c41b662ca49b3ca), which declare "./x.sedml" in the manifest while
+    storing the zip entry as "x.sedml". These previously returned 400
+    "No simulations found in the SED-ML files".
+    """
+    mock_get_service.return_value = mock_biosim_service
+    mock_get_spec.return_value = {
+        "id": "tellurium",
+        "name": "tellurium",
+        "version": "2.2.10",
+        "algorithms": [
+            {
+                "kisaoId": {"id": "KISAO_0000496"},
+                "modelFormats": [{"id": "format_2585"}],  # SBML
+                "simulationTypes": [{"id": "SedUniformTimeCourseSimulation"}]
+            }
+        ]
+    }
+
+    import io
+    import zipfile
+
+    sedml = """<?xml version="1.0" encoding="UTF-8"?>
+<sedML xmlns="http://sed-ml.org/sed-ml/level1/version3" level="1" version="3">
+    <listOfModels>
+        <model id="model1" language="urn:sedml:language:sbml" source="Szymanska2009.xml"/>
+    </listOfModels>
+    <listOfSimulations>
+        <uniformTimeCourse id="sim1" initialTime="0" outputStartTime="0" outputEndTime="1000" numberOfPoints="4000">
+            <algorithm kisaoID="KISAO:0000496"/>
+        </uniformTimeCourse>
+    </listOfSimulations>
+</sedML>"""
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as zf:
+        zf.writestr("manifest.xml", '''<?xml version="1.0" encoding="UTF-8"?>
+<omexManifest xmlns="http://identifiers.org/combine.specifications/omex-manifest">
+  <content location="./Szymanska2009.xml" format="http://identifiers.org/combine.specifications/sbml" master="false"/>
+  <content location="./BIOMD0000000896_sim.sedml" format="http://identifiers.org/combine.specifications/sed-ml" master="true"/>
+  <content location="." format="http://identifiers.org/combine.specifications/omex"/>
+</omexManifest>''')
+        zf.writestr("Szymanska2009.xml", "<sbml/>")
+        zf.writestr("BIOMD0000000896_sim.sedml", sedml)
+
+    client = TestClient(app)
+    response = client.post(
+        "/compatibility/check",
+        files={"uploaded_file": ("test.omex", buf.getvalue(), "application/octet-stream")}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["omex_content"]["sedml_files"] == ["BIOMD0000000896_sim.sedml"]
+    assert data["omex_content"]["parse_errors"] == []
+    assert [s["algorithm"]["id"] for s in data["omex_content"]["simulations"]] == ["KISAO:0000496"]
+    assert "tellurium" in [s["id"] for s in data["eligible_simulators"]]
+
+
+def test_check_compatibility_reports_unreadable_sedml() -> None:
+    """A declared-but-absent SED-ML file yields a specific error, not "no simulations"."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as zf:
+        zf.writestr("manifest.xml", '''<?xml version="1.0" encoding="UTF-8"?>
+<omexManifest xmlns="http://identifiers.org/combine.specifications/omex-manifest">
+  <content location="absent.sedml" format="http://identifiers.org/combine.specifications/sed-ml" master="true"/>
+</omexManifest>''')
+
+    client = TestClient(app)
+    response = client.post(
+        "/compatibility/check",
+        files={"uploaded_file": ("test.omex", buf.getvalue(), "application/octet-stream")}
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "absent.sedml" in detail
+    assert "No simulations could be read" in detail
