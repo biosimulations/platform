@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {ref, resolveComponent, useTemplateRef} from 'vue'
+import {ref, useTemplateRef} from 'vue'
 import {upperFirst} from 'scule'
 import type {TableColumn} from '@nuxt/ui'
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
@@ -8,9 +8,6 @@ import type {TableFilter, TableFilterConfig, TablePagination} from "~/models/fil
 import type {ProjectQueryStat, ProjectQueryStatFilter, ProjectSearchFilter, ProjectStub, ProjectStubPage,} from "~/models/projects";
 import type {CoreRow} from "@tanstack/table-core"
 import type {AppChip} from "~/models/common";
-
-const UButton = resolveComponent('UButton')
-const UDropdownMenu = resolveComponent('UDropdownMenu')
 
 const route = useRoute()
 const display_mode = ref<'cards' | 'table'>('cards')
@@ -23,53 +20,36 @@ const chips = ref<AppChip[]>([])
 const columns: TableColumn<ProjectStub>[] = [
   {
     accessorKey: 'id',
-    header: 'Id',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `${row.getValue('id')}`
+    header: 'Id'
   },
-  /*{
-    accessorKey: 'simulationRun',
-    header: 'Simulation Run',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `#${row.getValue('simulationRun')}`
-  },*/
   {
     accessorKey: 'name',
-    header: 'Name',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `${row.getValue('name')}`
+    header: 'Name'
   },
   {
     accessorKey: 'summary',
-    header: 'Abstract Summary',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `${row.getValue('summary')}`
+    header: 'Abstract Summary'
   },
   {
     accessorKey: 'created',
-    header: 'Created',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => {
-      return new Date(row.getValue('created')).toLocaleString('en-US', {
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      })
-    }
+    header: 'Created'
   },
   {
     accessorKey: 'updated',
-    header: 'Updated',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => {
-      return new Date(row.getValue('updated')).toLocaleString('en-US', {
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      })
-    }
+    header: 'Updated'
   }
 ]
+
+function formatDate(dateString: string) {
+  return new Date(dateString).toLocaleString('en-US', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  })
+}
 
 const table = useTemplateRef('table')
 const loading = ref(true)
@@ -357,6 +337,15 @@ function visit_page(e: Event, row: any) {
         :columns="columns"
         @select="visit_page"
         sticky>
+        <template #id-cell="{ row }">
+          <NuxtLink :to="`/projects/${row.original.id}`" class="text-primary-500 hover:underline" @click.stop>{{ row.original.id }}</NuxtLink>
+        </template>
+        <template #created-cell="{ row }">
+          {{ formatDate(row.original.created) }}
+        </template>
+        <template #updated-cell="{ row }">
+          {{ formatDate(row.original.updated) }}
+        </template>
       </UTable>
 
       <div class="card_wrapper w-full gap-4" v-if="display_mode == 'cards'">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { h, resolveComponent, ref, useTemplateRef } from 'vue'
+import { ref, useTemplateRef } from 'vue'
 import { upperFirst } from 'scule'
 import type {TableColumn} from '@nuxt/ui'
 import { useClipboard } from '@vueuse/core'
@@ -9,10 +9,6 @@ import type {TableFilterConfig, TableSort, TablePagination} from "~/models/filte
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 import type {CoreRow} from "@tanstack/table-core";
-
-const UButton = resolveComponent('UButton')
-const UBadge = resolveComponent('UBadge')
-const UDropdownMenu = resolveComponent('UDropdownMenu')
 
 const toast = useToast()
 const { copy } = useClipboard()
@@ -38,156 +34,124 @@ onMounted(async () => {
 const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
   {
     accessorKey: 'biosimulationsRunId',
-    header: 'Identifier',
-    cell: ({ row }: { row: CoreRow<SimulationRun> }) => row.getValue('biosimulationsRunId')
+    header: 'Identifier'
   },
   {
     accessorKey: 'name',
-    header: 'Name',
-    cell: ({ row }: { row: CoreRow<SimulationRun> }) => row.getValue('name')
+    header: 'Name'
   },
   {
     accessorKey: 'status',
-    header: 'Status',
-    cell: ({ row }: { row: CoreRow<SimulationRun> }) => {
-      const color = ({
-        SUCCEEDED: 'success' as const,
-        FAILED: 'error' as const,
-        CREATED: 'info' as const
-      })[row.getValue('status') as string]
-
-      return h(UBadge, { class: 'capitalize', variant: 'subtle', color }, () => row.getValue('status'))
-    }
+    header: 'Status'
   },
   {
     accessorKey: 'simulator',
-    header: 'Simulator',
-    cell: ({ row }: { row: CoreRow<SimulationRun> }) => row.getValue('simulator')
+    header: 'Simulator'
   },
   {
     accessorKey: 'submitted',
-    header: 'Submitted',
-    cell: ({ row }: { row: CoreRow<SimulationRun> }) => {
-      return new Date(row.getValue('submitted')).toLocaleString('en-US', {
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      })
-    }
+    header: 'Submitted'
   },
   {
     id: 'actions',
+    accessorKey: undefined,
     enableHiding: false,
     meta: {
       class: {
         td: 'text-right'
       }
-    },
-    cell: ({ row }) => {
-      const items = [
-        {
-          type: 'label',
-          label: 'Actions'
-        },
-        {
-          label: 'Copy Sharable Link',
-          icon: 'i-lucide-copy',
-          onSelect() {
-            copy(`${runtimeConfig.public.base_url}/runs/${row.original.biosimulationsRunId}`)
-
-            toast.add({
-              title: 'Link copied to clipboard!',
-              color: 'success',
-              icon: 'i-lucide-circle-check'
-            })
-          }
-        },
-        {
-          label: 'Export Run',
-          icon: 'i-lucide-download',
-          onSelect() {
-            window.open(`${runtimeConfig.public.legacy_api_url}/runs/${row.original.biosimulationsRunId}/download`, '_blank')
-          }
-        },
-        {
-          type: 'separator'
-        },
-        {
-          label: 'View Visualization',
-          icon: 'i-lucide-chart-bar',
-          onSelect() {
-            navigateTo(`/runs/${row.original.biosimulationsRunId}#visualization`)
-          }
-        },
-        {
-          label: 'View Logs',
-          icon: 'i-lucide-file-text',
-          onSelect() {
-            navigateTo(`/runs/${row.original.biosimulationsRunId}#logs`)
-          }
-        },
-        {
-          label: 'Rerun Simulation',
-          icon: 'i-lucide-rotate-ccw',
-          onSelect() {
-            // Add corresponding function here
-          }
-        },
-        {
-          label: 'Publish Simulation',
-          icon: 'i-lucide-megaphone',
-          onSelect() {
-            // Add corresponding function here
-          }
-        },
-        {
-          type: 'separator'
-        },
-        {
-          label: 'Delete Run',
-          icon: 'i-lucide-trash',
-          onSelect(_e: any) {
-            deleting_row_id.value = row.original.biosimulationsRunId
-          }
-        }
-      ]
-
-      return h('div', { class: 'flex items-center justify-end' }, [
-        h(resolveComponent('UPopover'), {
-          open: deleting_row_id.value === row.original.biosimulationsRunId,
-          'onUpdate:open': (val: boolean) => {
-            if (!val && deleting_row_id.value === row.original.biosimulationsRunId) {
-              deleting_row_id.value = null
-            }
-          },
-          content: { align: 'end' }
-        }, {
-          default: () => h(resolveComponent('UDropdownMenu'), {
-            'content': {
-              align: 'end'
-            },
-            items,
-            'aria-label': 'Actions dropdown'
-          }, () => h(resolveComponent('UButton'), {
-            'icon': 'i-lucide-ellipsis-vertical',
-            'color': 'neutral',
-            'variant': 'ghost',
-            'aria-label': 'Actions dropdown'
-          })),
-          content: () => h('div', { class: 'p-4 flex flex-col gap-2 w-64 text-left' }, [
-            h('p', { class: 'text-sm font-normal text-color' }, ['Are you sure you want to delete ', h('strong', row.original.name || row.original.id), '?']),
-            h('div', { class: 'flex justify-end gap-2 mt-2' }, [
-              h(resolveComponent('UButton'), { label: 'Cancel', color: 'neutral', variant: 'ghost', size: 'xs', onClick: () => deleting_row_id.value = null }),
-              h(resolveComponent('UButton'), { label: 'Delete', color: 'error', variant: 'solid', size: 'xs', onClick: () => confirm_delete(row.original as SimulationRun) })
-            ])
-          ])
-        })
-      ])
     }
-  }]
+  }
+]
+
+function getActionItems(row: CoreRow<SimulationRun>) {
+  return [
+    {
+      type: 'label',
+      label: 'Actions'
+    },
+    {
+      label: 'Copy Sharable Link',
+      icon: 'i-lucide-copy',
+      onSelect() {
+        copy(`${runtimeConfig.public.base_url}/runs/${row.original.biosimulationsRunId}`)
+
+        toast.add({
+          title: 'Link copied to clipboard!',
+          color: 'success',
+          icon: 'i-lucide-circle-check'
+        })
+      }
+    },
+    {
+      label: 'Export Run',
+      icon: 'i-lucide-download',
+      onSelect() {
+        window.open(`${runtimeConfig.public.legacy_api_url}/runs/${row.original.biosimulationsRunId}/download`, '_blank')
+      }
+    },
+    {
+      type: 'separator'
+    },
+    {
+      label: 'View Visualization',
+      icon: 'i-lucide-chart-bar',
+      onSelect() {
+        navigateTo(`/runs/${row.original.biosimulationsRunId}#visualization`)
+      }
+    },
+    {
+      label: 'View Logs',
+      icon: 'i-lucide-file-text',
+      onSelect() {
+        navigateTo(`/runs/${row.original.biosimulationsRunId}#logs`)
+      }
+    },
+    {
+      label: 'Rerun Simulation',
+      icon: 'i-lucide-rotate-ccw',
+      onSelect() {
+        // Add corresponding function here
+      }
+    },
+    {
+      label: 'Publish Simulation',
+      icon: 'i-lucide-megaphone',
+      onSelect() {
+        // Add corresponding function here
+      }
+    },
+    {
+      type: 'separator'
+    },
+    {
+      label: 'Delete Run',
+      icon: 'i-lucide-trash',
+      onSelect(_e: any) {
+        deleting_row_id.value = row.original.biosimulationsRunId
+      }
+    }
+  ]
+}
+
+function formatDate(dateString: string) {
+  return new Date(dateString).toLocaleString('en-US', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  })
+}
+
+function getStatusColor(status: string) {
+  return ({
+    SUCCEEDED: 'success' as const,
+    FAILED: 'error' as const,
+    CREATED: 'info' as const
+  })[status] || 'neutral'
+}
 
 const headerColumns = computed(() =>
   columns.filter((c): c is typeof c & { accessorKey: string } => typeof c.accessorKey === 'string')
@@ -455,7 +419,7 @@ async function confirm_delete(run: SimulationRun) {
               variant="ghost"
               :label="tableColumn.columnDef.header"
               :icon="table_sort.id === column.accessorKey ? (table_sort.direction === 'asc' ? 'i-lucide-arrow-up' : 'i-lucide-arrow-down') : 'i-lucide-arrow-up-down'"
-              class="-mx-2.5"
+              class="-mx-2.5 cursor-pointer"
               @click="change_sort(column.accessorKey)"
             />
 
@@ -463,6 +427,7 @@ async function confirm_delete(run: SimulationRun) {
               <UButton
                 :color="table_filters.filters[column.accessorKey]!.value ? 'primary' : 'neutral'"
                 variant="ghost"
+                class="cursor-pointer"
                 icon="i-lucide-filter"
               />
               <template #content>
@@ -545,9 +510,44 @@ async function confirm_delete(run: SimulationRun) {
             </UPopover>
           </div>
         </template>
-<!--        <template #name-cell="{ row }">
-          <p @click="process_click(row)">{{row}}</p>
-        </template>-->
+        <template #biosimulationsRunId-cell="{ row }">
+          <NuxtLink
+            :to="`/runs/${row.getValue('biosimulationsRunId')}`"
+            class="font-medium text-primary hover:underline"
+          >
+            {{ row.getValue('biosimulationsRunId') }}
+          </NuxtLink>
+        </template>
+        <template #status-cell="{ row }">
+          <UBadge class="capitalize" variant="subtle" :color="getStatusColor(row.original.status)">{{ row.original.status }}</UBadge>
+        </template>
+        <template #submitted-cell="{ row }">
+          {{ formatDate(row.original.submitted) }}
+        </template>
+        <template #actions-cell="{ row }">
+          <div class="flex items-center justify-end">
+            <UPopover :open="deleting_row_id === row.original.biosimulationsRunId"
+                      @update:open="(val: boolean) => { if (!val && deleting_row_id === row.original.biosimulationsRunId) deleting_row_id = null }"
+                      :content="{ align: 'end' }">
+              <template #default>
+                <UDropdownMenu :content="{ align: 'end' }" :items="getActionItems(row)" aria-label="Actions dropdown">
+                  <UButton class="cursor-pointer" icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" aria-label="Actions dropdown" />
+                </UDropdownMenu>
+              </template>
+              <template #content>
+                <div class="p-4 flex flex-col gap-2 w-64 text-left">
+                  <p class="text-sm font-normal text-color">
+                    Are you sure you want to delete <strong>{{ row.original.name || row.original.id }}</strong>?
+                  </p>
+                  <div class="flex justify-end gap-2 mt-2">
+                    <UButton label="Cancel" color="neutral" variant="ghost" size="xs" @click="deleting_row_id = null" />
+                    <UButton label="Delete" color="error" variant="solid" size="xs" @click="confirm_delete(row.original)" />
+                  </div>
+                </div>
+              </template>
+            </UPopover>
+          </div>
+        </template>
       </UTable>
 
       <USeparator class="mb-4"></USeparator>
