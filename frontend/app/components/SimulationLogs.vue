@@ -21,9 +21,7 @@
           <span class="font-bold">Exception:</span> {{ docLog.exception.message || docLog.exception.type || 'No details provided.' }}
         </div>
 
-        <div v-if="docLog.output" class="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap font-mono mt-2 leading-relaxed shadow-inner">
-          {{ docLog.output }}
-        </div>
+        <div v-if="docLog.output" class="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap font-mono mt-2 leading-relaxed shadow-inner" v-dompurify-html="formatLogOutput(docLog.output)"></div>
         <div v-else class="italic text-neutral-500 mt-2">
           No output log available.
         </div>
@@ -46,9 +44,7 @@
         <div v-if="t.task.exception" class="mt-2 text-sm text-red-600">
           <span class="font-bold">Exception:</span> {{ t.task.exception.message || t.task.exception.type || 'No details provided.' }}
         </div>
-        <div v-if="t.task.output" class="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap font-mono mt-2 leading-relaxed shadow-inner">
-          {{ t.task.output }}
-        </div>
+        <div v-if="t.task.output" class="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap font-mono mt-2 leading-relaxed shadow-inner" v-dompurify-html="formatLogOutput(t.task.output)"></div>
         <div v-else class="italic text-neutral-500 mt-2">
           No output log available.
         </div>
@@ -71,9 +67,7 @@
         <div v-if="r.report.exception" class="mt-2 text-sm text-red-600">
           <span class="font-bold">Exception:</span> {{ r.report.exception.message || r.report.exception.type || 'No details provided.' }}
         </div>
-        <div v-if="r.report.output" class="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap font-mono mt-2 leading-relaxed shadow-inner">
-          {{ r.report.output }}
-        </div>
+        <div v-if="r.report.output" class="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap font-mono mt-2 leading-relaxed shadow-inner" v-dompurify-html="formatLogOutput(r.report.output)"></div>
         <div v-else class="italic text-neutral-500 mt-2">
           No output log available.
         </div>
@@ -96,9 +90,7 @@
         <div v-if="p.plot.exception" class="mt-2 text-sm text-red-600">
           <span class="font-bold">Exception:</span> {{ p.plot.exception.message || p.plot.exception.type || 'No details provided.' }}
         </div>
-        <div v-if="p.plot.output" class="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap font-mono mt-2 leading-relaxed shadow-inner">
-          {{ p.plot.output }}
-        </div>
+        <div v-if="p.plot.output" class="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap font-mono mt-2 leading-relaxed shadow-inner" v-dompurify-html="formatLogOutput(p.plot.output)"></div>
         <div v-else class="italic text-neutral-500 mt-2">
           No output log available.
         </div>
@@ -125,9 +117,7 @@
           <span class="font-bold">Exception:</span> {{ logs.exception.message || logs.exception.type || 'No details provided.' }}
         </div>
 
-        <div v-if="logs.output" class="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap font-mono mt-2 leading-relaxed shadow-inner">
-          {{ logs.output }}
-        </div>
+        <div v-if="logs.output" class="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-lg text-sm overflow-x-auto whitespace-pre-wrap font-mono mt-2 leading-relaxed shadow-inner" v-dompurify-html="formatLogOutput(logs.output)"></div>
         <div v-else class="italic text-neutral-500 mt-2">
           No output log available.
         </div>
@@ -139,6 +129,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import Anser from 'anser'
+
+function formatLogOutput(output: string) {
+  if (!output) return '';
+  return Anser.ansiToHtml(output, { use_classes: false });
+}
 
 const props = defineProps<{
   logs: any;
