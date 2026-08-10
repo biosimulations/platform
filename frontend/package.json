@@ -19,6 +19,7 @@
     "@nuxt/image": "^2.0.0",
     "@nuxt/ui": "^4.2.1",
     "@nuxtjs/seo": "^5.3.6",
+    "@scaleway/random-name": "^6.0.2",
     "@stdlib/array-shape": "^0.2.3",
     "@stdlib/array-to-iterator": "^0.2.3",
     "@stdlib/iter-last": "^0.2.3",
