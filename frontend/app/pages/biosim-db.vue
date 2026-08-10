@@ -6,7 +6,6 @@ import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 import type {TableFilter, TableFilterConfig, TablePagination} from "~/models/filtering";
 import type {ProjectQueryStat, ProjectQueryStatFilter, ProjectSearchFilter, ProjectStub, ProjectStubPage,} from "~/models/projects";
-import type {CoreRow} from "@tanstack/table-core"
 import type {AppChip} from "~/models/common";
 
 const route = useRoute()
@@ -196,7 +195,7 @@ function change_pagination(new_page: number) {
   fetch_projects()
 }
 
-function update_filter_chips() {
+function _update_filter_chips() {
   if (!searched_filters.value || !searched_filters.value.length) return
 
   chips.value = []

@@ -84,7 +84,6 @@ const descriptionContent = computed(() => {
   const raw = run_summary.value?.metadata?.[0]?.description;
   if (!raw) return { html: '<p><em>No description available for this run.</em></p>', isLong: false };
   const stripped = raw.replace(/<\/?[^>]+(>|$)/g, "");
-  
   return { html: raw, isLong: stripped.length >= 250 };
 })
 
