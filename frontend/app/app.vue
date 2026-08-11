@@ -268,6 +268,7 @@ const navigation_items = ref<NavigationMenuItem[][]>([
 const lenisOptions = {
   // autoRaf: false,
   // lenis options (optional)
+  prevent: (node: any) => !!node.closest('.lenis-prevent')
 }
 
 onMounted(() => {

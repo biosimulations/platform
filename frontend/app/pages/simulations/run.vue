@@ -6,6 +6,7 @@
   import {normalize_text} from "~/functions/functions";
   import {type ArchiveCompatibilityResponse, type ConglomerateStatus, RunSimulationPayload, type Simulator, type SimulatorSelection} from "~/models/simulators";
   import { z } from 'zod'
+  import { randomName } from '@scaleway/random-name'
   //</editor-fold>
 
   const config = useRuntimeConfig()
@@ -58,6 +59,7 @@
 
   const archive_processed = ref(false)
   const submission_payload = reactive(new RunSimulationPayload())
+  submission_payload.name = randomName()
 
   const archive_compatibility_response = ref<ArchiveCompatibilityResponse | null>(null)
   const eligible_simulators = ref<Simulator[]>([])

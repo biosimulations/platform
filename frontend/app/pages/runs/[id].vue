@@ -79,6 +79,14 @@ const plot_config = ref({
 const run_specifications = ref<SimulationRunSedDocument | undefined>(undefined)
 const run_logs = ref<any>()
 
+const isDescriptionExpanded = ref(false)
+const descriptionContent = computed(() => {
+  const raw = run_summary.value?.metadata?.[0]?.description;
+  if (!raw) return { html: '<p><em>No description available for this run.</em></p>', isLong: false };
+  const stripped = raw.replace(/<\/?[^>]+(>|$)/g, "");
+  return { html: raw, isLong: stripped.length >= 250 };
+})
+
 function downloadStructuredLog() {
   if (!run_logs.value) return;
   const logStr = JSON.stringify(run_logs.value, null, 2);
@@ -209,7 +217,10 @@ onMounted(async () => {
 
         <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
           <h1 class="text-xl font-bold">{{normalize_text(run_info!.name)}}</h1>
-          <p class="text-center" v-dompurify-html="run_summary?.metadata?.[0]?.description ? run_summary?.metadata?.[0]?.description : '<p><em>No description available for this run.</em></p>'"></p>
+          <div class="text-center" :class="{'line-clamp-3': descriptionContent.isLong && !isDescriptionExpanded}" v-dompurify-html="descriptionContent.html"></div>
+          <UButton v-if="descriptionContent.isLong" @click="isDescriptionExpanded = !isDescriptionExpanded" class="mt-2 bg-white text-primary-500 font-bold hover:bg-gray-100 transition-colors" size="sm">
+            {{ isDescriptionExpanded ? 'Show Less' : 'Show More' }}
+          </UButton>
         </div>
 
         <div class="w-full flex flex-col gap-4">
@@ -227,6 +238,7 @@ onMounted(async () => {
                 </div>
                 <NuxtImg :src="`${runtimeConfig.public.legacy_api_url}/files/${run_info!.id}/${run_summary!.metadata![0]!.thumbnails[0]}/download?thumbnail=view`" alt="Simulation Thumbnail Image" class="w-full" />
                 <vue-easy-lightbox
+                  class="lenis-prevent"
                   :visible="img_zoomed"
                   :imgs="[`${runtimeConfig.public.legacy_api_url}/files/${run_info!.id}/${run_summary!.metadata![0]!.thumbnails[0]}/download`]"
                   :index="0"

@@ -16,7 +16,7 @@ function handle_remove($event: Event) {
 </script>
 
 <template>
-  <div class="py-1 rounded-md bg-primary-500/10 border border-primary-500/50 text-primary flex items-center justify-center" :class="{ 'opacity-50 cursor-not-allowed': loading, 'px-2': size === 'sm', 'px-1 py-[2px]': size === 'xs' }">
+  <div class="py-1 rounded-md bg-primary-500/10 border border-primary-500/50 text-primary flex items-center justify-center" :class="{ 'opacity-50 cursor-not-allowed': loading, 'px-2': size === 'sm', 'px-1 py-0.5': size === 'xs' }">
     <UIcon v-if="loading" class="size-4 mr-2 animate-spin" name="i-lucide-loader"></UIcon>
     <p class="text-sm font-medium" :class="{'text-[0.65rem]': size === 'xs', 'text-sm': size === 'sm'}">{{ label }}</p>
     <UTooltip v-if="removable" :text="`Remove ${label}`">

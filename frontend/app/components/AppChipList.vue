@@ -4,6 +4,7 @@ import type {AppChip} from "~/models/common";
 defineProps<{
   chips: AppChip[]
   loading: boolean
+  size: 'sm' | 'xs'
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +18,6 @@ function handle_remove(chip: AppChip) {
 
 <template>
   <div class="w-full flex flex-wrap items-center justify-start gap-2">
-    <Chip v-for="chip in chips" :key="chip.slug" :loading="loading" :label="chip.label" :removable="chip.removable" @removed="handle_remove(chip)"></Chip>
+    <Chip v-for="chip in chips" :key="chip.slug" :loading="loading" :label="chip.label" :removable="chip.removable" :size="size" @removed="handle_remove(chip)"></Chip>
   </div>
 </template>
