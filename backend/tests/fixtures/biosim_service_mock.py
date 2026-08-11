@@ -1,5 +1,6 @@
 import logging
 import uuid
+from typing import Any
 
 from typing_extensions import override
 
@@ -19,17 +20,21 @@ class BiosimServiceMock(BiosimService):
     sim_runs: dict[str, BiosimSimulationRun] = {}
     hdf5_files: dict[str, HDF5File] = {}
     hdf5_data: dict[str, dict[str, Hdf5DataValues]] = {}
+    run_logs: dict[str, dict[str, Any]] = {}
 
     def __init__(self,
                  sim_runs: dict[str, BiosimSimulationRun] | None = None,
                  hdf5_files: dict[str, HDF5File] | None = None,
-                 hdf5_data: dict[str, dict[str, Hdf5DataValues]] | None = None) -> None:
+                 hdf5_data: dict[str, dict[str, Hdf5DataValues]] | None = None,
+                 run_logs: dict[str, dict[str, Any]] | None = None) -> None:
         if sim_runs:
             self.sim_runs = sim_runs
         if hdf5_files:
             self.hdf5_files = hdf5_files
         if hdf5_data:
             self.hdf5_data = hdf5_data
+        if run_logs:
+            self.run_logs = run_logs
 
     @override
     async def get_sim_run(self, simulation_run_id: str) -> BiosimSimulationRun:
@@ -68,6 +73,14 @@ class BiosimServiceMock(BiosimService):
             return all_hdf5_values[dataset_name]
         else:
             raise ObjectNotFoundError("HDF5 metadata not found")
+
+    @override
+    async def get_sim_run_logs(self, simulation_run_id: str) -> dict[str, Any]:
+        logs = self.run_logs.get(simulation_run_id)
+        if logs is not None:
+            return logs
+        else:
+            raise ObjectNotFoundError("Logs not found")
 
     @override
     async def get_simulator_versions(self) -> list[BiosimulatorVersion]:

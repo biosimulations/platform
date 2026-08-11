@@ -292,10 +292,18 @@ onMounted(() => {
       </template>
 
 <!--      <UNavigationMenu class="hidden md:flex" orientation="horizontal" :items="navigation_items"></UNavigationMenu>-->
-
-      <template #right>
-        <UNavigationMenu class="hidden lg:flex" orientation="horizontal" :items="navigation_items"></UNavigationMenu>
-      </template>
+       <template #right>
+          <div class="flex items-center gap-3">
+            <UNavigationMenu
+              class="hidden lg:flex"
+              orientation="horizontal"
+              :items="navigation_items"
+            />
+            <ClientOnly>
+              <AuthMenu />
+            </ClientOnly>
+          </div>
+        </template>
 
       <template #body>
         <UNavigationMenu class="hidden md:flex" orientation="horizontal" :items="navigation_items"></UNavigationMenu>

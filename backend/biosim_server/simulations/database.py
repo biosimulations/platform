@@ -97,14 +97,17 @@ def build_mongo_query(request: ListSimulationRunsRequest) -> dict[str, Any]:
     """Build the Mongo filter for a runs listing request (owner scope + filters)."""
     query: dict[str, Any] = {}
     if request.type == "user" and request.user:
-        query["email"] = request.user
+        query["email"] = request.user.strip().lower()
     for table_filter in request.filters:
         if not table_filter.id:
             continue
         db_field = _FILTERABLE_FIELDS.get(table_filter.id)
         if db_field is None:
             continue
-        clause = _filter_clause(db_field, table_filter.operator, table_filter.value)
+        value = table_filter.value
+        if db_field == "email" and isinstance(value, str):
+            value = value.strip().lower()
+        clause = _filter_clause(db_field, table_filter.operator, value)
         if clause is None:
             continue
         existing = query.get(db_field)
@@ -151,6 +154,11 @@ class SimulationRunDatabaseService(ABC):
     @abstractmethod
     async def get_simulation_runs_by_processing_id(self, processing_id: str) -> list[SimulationRunRecord]:
         """Return all SimulationRunRecords for a parent processing_id (workflow id)."""
+        pass
+
+    @abstractmethod
+    async def delete_simulation_runs_by_processing_id(self, processing_id: str) -> None:
+        """Delete all SimulationRunRecords for a parent processing_id (workflow id)."""
         pass
 
     @abstractmethod
@@ -242,6 +250,13 @@ class SimulationRunDatabaseServiceMongo(SimulationRunDatabaseService):
             del doc_dict["_id"]
             records.append(SimulationRunRecord.model_validate(doc_dict))
         return records
+
+    @override
+    async def delete_simulation_runs_by_processing_id(self, processing_id: str) -> None:
+        logger.info(f"Deleting simulation run records for processing_id {processing_id}")
+        result = await self._runs_col.delete_many({"processing_id": processing_id})
+        if not result.acknowledged:
+            raise Exception("Delete failed")
 
     @override
     async def delete_all_simulation_runs(self) -> None:

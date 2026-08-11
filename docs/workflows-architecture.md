@@ -488,9 +488,12 @@ restructures are anticipated; not worth doing for PR2.5 alone.
   diff → versioning/contract → consider monorepo absorption. See the TODO
   section in [`simulation-runs-convergence-plan.md`](simulation-runs-convergence-plan.md);
   do the inventory before PR3 lands.
-- **No real auth.** Owner-scoped queries (`type=user` + `user=<email>`) trust
-  the supplied email today. Out of scope for the convergence work; flagged so
-  it doesn't get lost.
+- **Auth is real and enforced.** `common/auth/auth0.py` verifies real Auth0 JWTs
+  (JWKS/RS256/iss/aud). Owner-scoped queries (`type=user` + `user=<email>`, or an
+  `email` filter) on `POST /simulations/runs` now require authentication and
+  self-scope to the caller's verified email unless they hold the `admin` role —
+  a client-supplied email is never trusted. See `common/auth/roles.py` for the
+  `admin`/`publisher`/`user` role model and `require_roles`/`require_owner_or_admin`.
 
 ### Known issues from the PR #52 code review
 

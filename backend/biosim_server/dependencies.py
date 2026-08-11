@@ -87,6 +87,21 @@ def get_biosim_service() -> BiosimService | None:
     global global_biosim_service
     return global_biosim_service
 
+#------ raw Mongo client (standalone or pytest) ------
+# Exposed globally (distinct from the per-domain *DatabaseService wrappers)
+# so GET /ready can ping Mongo directly without adding a ping() method to
+# every domain's ABC.
+
+global_mongo_client: AsyncIOMotorClient | None = None
+
+def set_mongo_client(mongo_client: AsyncIOMotorClient | None) -> None:
+    global global_mongo_client
+    global_mongo_client = mongo_client
+
+def get_mongo_client() -> AsyncIOMotorClient | None:
+    global global_mongo_client
+    return global_mongo_client
+
 #------ Temporal workflow client ------
 
 global_temporal_client: TemporalClient | None = None
@@ -122,6 +137,7 @@ async def init_standalone() -> None:
     from biosim_server.projects.search import ProjectSearchServiceMongo
 
     motor_client = AsyncIOMotorClient(get_settings().mongodb_uri)
+    set_mongo_client(motor_client)
     db_service = DatabaseServiceMongo(db_client=motor_client)
     omex_db_service = OmexDatabaseServiceMongo(db_client=motor_client)
     runs_db_service = SimulationRunDatabaseServiceMongo(db_client=motor_client)
@@ -164,3 +180,4 @@ async def shutdown_standalone() -> None:
     # Shares the motor client closed via db_service above; just clear the handles.
     set_simulation_run_database_service(None)
     set_project_database_service(None)
+    set_mongo_client(None)
