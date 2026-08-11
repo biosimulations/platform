@@ -143,7 +143,11 @@ async function fetch_projects() {
       }
     }).then((query_stats: ProjectQueryStat[]) => {
       filter_suggestions.value = query_stats_to_filter_groups(query_stats)
-      searched_filters.value = filter_suggestions.value.map((f, _index) => ({ target: f.target, allowable_values: []}))
+      const old_searched = searched_filters.value
+      searched_filters.value = filter_suggestions.value.map((f, _index) => {
+        const existing = old_searched.find(s => s.target === f.target)
+        return { target: f.target, allowable_values: existing ? existing.allowable_values : [] }
+      })
     })
 
     return
@@ -184,6 +188,21 @@ function clear_chip(chip: AppChip) {
   chips.value.splice(chips.value.indexOf(chip), 1)
 
   fetch_projects()
+}
+
+function get_allowable_values(target: string): string[] {
+  const filter = searched_filters.value.find(f => f.target === target)
+  return filter ? filter.allowable_values : []
+}
+
+function set_allowable_values(target: string, values: string[]) {
+  let filter = searched_filters.value.find(f => f.target === target)
+  if (filter) {
+    filter.allowable_values = values
+  } else {
+    searched_filters.value.push({ target, allowable_values: values })
+  }
+  _update_filter_chips()
 }
 
 function on_column_toggle() {
@@ -322,8 +341,8 @@ function visit_page(e: Event, row: any) {
           </UDropdownMenu>
 
           <div class="w-max flex items-center justify-end rounded bg-neutral-100">
-            <UButton size="sm" :label="`${display_mode == 'cards' ? '' : 'Table'}`" class="cursor-pointer" :color="`${display_mode == 'cards' ? 'subtle' : 'primary'}`" icon="i-lucide-list" type="button" @click="display_mode = 'table'"></UButton>
-            <UButton size="sm" :label="`${display_mode == 'table' ? '' : 'Cards'}`" class="cursor-pointer" :color="`${display_mode == 'table' ? 'subtle' : 'primary'}`" icon="i-lucide-layout-grid" type="button" @click="display_mode = 'cards'"></UButton>
+            <UButton size="sm" :label="`${display_mode == 'cards' ? '' : 'Table'}`" class="cursor-pointer" :color="`${display_mode == 'cards' ? 'neutral' : 'primary'}`" :variant="`${display_mode == 'cards' ? 'ghost' : 'solid'}`" icon="i-lucide-list" type="button" @click="display_mode = 'table'"></UButton>
+            <UButton size="sm" :label="`${display_mode == 'table' ? '' : 'Cards'}`" class="cursor-pointer" :color="`${display_mode == 'table' ? 'neutral' : 'primary'}`" :variant="`${display_mode == 'table' ? 'ghost' : 'solid'}`" icon="i-lucide-layout-grid" type="button" @click="display_mode = 'cards'"></UButton>
           </div>
         </div>
       </div>

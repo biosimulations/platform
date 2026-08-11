@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, useTemplateRef } from 'vue'
 import { upperFirst } from 'scule'
-import type {TableColumn} from '@nuxt/ui'
+import type {DropdownMenuItem, TableColumn} from '@nuxt/ui'
 import { useClipboard } from '@vueuse/core'
 import type {SimulationRuns, SimulationRun} from "~/models/simulators";
 import Loading from "~/components/Loading.vue";
@@ -64,7 +64,7 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
   }
 ]
 
-function getActionItems(row: CoreRow<SimulationRun>) {
+function getActionItems(row: CoreRow<SimulationRun>): DropdownMenuItem[] {
   return [
     {
       type: 'label',
@@ -417,7 +417,7 @@ async function confirm_delete(run: SimulationRun) {
             <UButton
               color="neutral"
               variant="ghost"
-              :label="tableColumn.columnDef.header"
+              label="{{ tableColumn.columnDef.header }}"
               :icon="table_sort.id === column.accessorKey ? (table_sort.direction === 'asc' ? 'i-lucide-arrow-up' : 'i-lucide-arrow-down') : 'i-lucide-arrow-up-down'"
               class="-mx-2.5 cursor-pointer"
               @click="change_sort(column.accessorKey)"
