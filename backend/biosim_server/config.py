@@ -48,6 +48,14 @@ class Auth0Settings(BaseSettings):
     # it works out of the box for this tenant; override if the Action uses a
     # different namespace.
     roles_claim: str = Field(default="https://api.biosimulations.org/roles", alias="AUTH0_ROLES_CLAIM")
+    # Auth0 access tokens don't include `email` by default either -- unlike
+    # `roles_claim`, this is a hard Auth0 platform behavior, not a missing
+    # role assignment: `email` only lives on the ID token / `/userinfo` unless
+    # a Post-Login Action also stamps it onto the access token as a namespaced
+    # custom claim (get_current_user falls back to a plain "email" claim for
+    # OIDC providers that do put it on the access token, e.g. the Keycloak
+    # realm used in tests).
+    email_claim: str = Field(default="https://api.biosimulations.org/email", alias="AUTH0_EMAIL_CLAIM")
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore", populate_by_name=True)
 

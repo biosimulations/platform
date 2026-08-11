@@ -65,6 +65,18 @@ def test_build_query_user_scope() -> None:
     assert build_mongo_query(req) == {"email": "a@b.com"}
 
 
+def test_build_query_user_scope_lowercases_email() -> None:
+    req = ListSimulationRunsRequest(type="user", user="Foo@Bar.COM")
+    assert build_mongo_query(req) == {"email": "foo@bar.com"}
+
+
+def test_build_query_email_filter_lowercases_value() -> None:
+    req = ListSimulationRunsRequest(
+        filters=[TableFilter(id="email", operator="equal", value="Foo@Bar.COM")]
+    )
+    assert build_mongo_query(req)["email"] == "foo@bar.com"
+
+
 def test_build_query_contains_filter() -> None:
     req = ListSimulationRunsRequest(
         filters=[TableFilter(id="simulator", operator="contains", value="cop")]

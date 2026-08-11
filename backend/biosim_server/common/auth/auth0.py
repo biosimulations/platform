@@ -78,7 +78,13 @@ async def get_current_user(
     roles = payload.get(settings.roles_claim, [])
     if not isinstance(roles, list):
         roles = []
-    return AuthenticatedUser(sub=payload["sub"], email=payload.get("email"), roles=roles)
+    # Real Auth0 access tokens don't carry a plain "email" claim -- it has to be
+    # stamped on via a Post-Login Action as the namespaced settings.email_claim
+    # (see config.py). Fall back to plain "email" for OIDC providers that do put
+    # it on the access token by default (e.g. the Keycloak realm used in tests).
+    raw_email = payload.get(settings.email_claim) or payload.get("email")
+    email = (raw_email or "").strip().lower() or None
+    return AuthenticatedUser(sub=payload["sub"], email=email, roles=roles)
 
 
 async def get_optional_user(
