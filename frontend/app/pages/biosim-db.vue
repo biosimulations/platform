@@ -196,7 +196,7 @@ function get_allowable_values(target: string): string[] {
 }
 
 function set_allowable_values(target: string, values: string[]) {
-  let filter = searched_filters.value.find(f => f.target === target)
+  const filter = searched_filters.value.find(f => f.target === target)
   if (filter) {
     filter.allowable_values = values
   } else {
