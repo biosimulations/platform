@@ -1,16 +1,12 @@
 <script setup lang="ts">
-import {ref, resolveComponent, useTemplateRef} from 'vue'
+import {ref, useTemplateRef} from 'vue'
 import {upperFirst} from 'scule'
 import type {TableColumn} from '@nuxt/ui'
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 import type {TableFilter, TableFilterConfig, TablePagination} from "~/models/filtering";
 import type {ProjectQueryStat, ProjectQueryStatFilter, ProjectSearchFilter, ProjectStub, ProjectStubPage,} from "~/models/projects";
-import type {CoreRow} from "@tanstack/table-core"
 import type {AppChip} from "~/models/common";
-
-const UButton = resolveComponent('UButton')
-const UDropdownMenu = resolveComponent('UDropdownMenu')
 
 const route = useRoute()
 const display_mode = ref<'cards' | 'table'>('cards')
@@ -23,53 +19,36 @@ const chips = ref<AppChip[]>([])
 const columns: TableColumn<ProjectStub>[] = [
   {
     accessorKey: 'id',
-    header: 'Id',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `${row.getValue('id')}`
+    header: 'Id'
   },
-  /*{
-    accessorKey: 'simulationRun',
-    header: 'Simulation Run',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `#${row.getValue('simulationRun')}`
-  },*/
   {
     accessorKey: 'name',
-    header: 'Name',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `${row.getValue('name')}`
+    header: 'Name'
   },
   {
     accessorKey: 'summary',
-    header: 'Abstract Summary',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => `${row.getValue('summary')}`
+    header: 'Abstract Summary'
   },
   {
     accessorKey: 'created',
-    header: 'Created',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => {
-      return new Date(row.getValue('created')).toLocaleString('en-US', {
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      })
-    }
+    header: 'Created'
   },
   {
     accessorKey: 'updated',
-    header: 'Updated',
-    cell: ({ row }: { row: CoreRow<ProjectStub> }) => {
-      return new Date(row.getValue('updated')).toLocaleString('en-US', {
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      })
-    }
+    header: 'Updated'
   }
 ]
+
+function formatDate(dateString: string) {
+  return new Date(dateString).toLocaleString('en-US', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  })
+}
 
 const table = useTemplateRef('table')
 const loading = ref(true)
@@ -164,7 +143,11 @@ async function fetch_projects() {
       }
     }).then((query_stats: ProjectQueryStat[]) => {
       filter_suggestions.value = query_stats_to_filter_groups(query_stats)
-      searched_filters.value = filter_suggestions.value.map((f, _index) => ({ target: f.target, allowable_values: []}))
+      const old_searched = searched_filters.value
+      searched_filters.value = filter_suggestions.value.map((f, _index) => {
+        const existing = old_searched.find(s => s.target === f.target)
+        return { target: f.target, allowable_values: existing ? existing.allowable_values : [] }
+      })
     })
 
     return
@@ -207,6 +190,21 @@ function clear_chip(chip: AppChip) {
   fetch_projects()
 }
 
+function get_allowable_values(target: string): string[] {
+  const filter = searched_filters.value.find(f => f.target === target)
+  return filter ? filter.allowable_values : []
+}
+
+function set_allowable_values(target: string, values: string[]) {
+  const filter = searched_filters.value.find(f => f.target === target)
+  if (filter) {
+    filter.allowable_values = values
+  } else {
+    searched_filters.value.push({ target, allowable_values: values })
+  }
+  _update_filter_chips()
+}
+
 function on_column_toggle() {
   table_filters.value._hidden_exist = !table.value?.tableApi.getIsAllColumnsVisible()
 }
@@ -216,7 +214,7 @@ function change_pagination(new_page: number) {
   fetch_projects()
 }
 
-function update_filter_chips() {
+function _update_filter_chips() {
   if (!searched_filters.value || !searched_filters.value.length) return
 
   chips.value = []
@@ -257,7 +255,7 @@ function visit_page(e: Event, row: any) {
     </div>
 
     <div class="w-full flex items-center justify-between gap-4">
-      <UInput type="text" class="flex-1" icon="i-heroicons-magnifying-glass" placeholder="Search projects" v-model="fuzzy_search_term" />
+      <UInput type="text" class="flex-1" icon="i-heroicons-magnifying-glass" @keydown.enter="fetch_projects()" placeholder="Search projects" v-model="fuzzy_search_term" />
 
       <UButton
         label="Advanced Filters"
@@ -291,8 +289,13 @@ function visit_page(e: Event, row: any) {
                 :items="filter.values"
                 :loading="loading"
                 :multiple="true"
-                v-model="searched_filters[filter._index]!.allowable_values"
-                @update:model-value="update_filter_chips()"
+                :content="{
+                  align: 'start',
+                  sideOffset: 4,
+                  collisionPadding: 16
+                }"
+                :model-value="get_allowable_values(filter.target)"
+                @update:model-value="set_allowable_values(filter.target, $event)"
               />
             </div>
           </template>
@@ -300,7 +303,7 @@ function visit_page(e: Event, row: any) {
       </template>
     </UCollapsible>
 
-    <AppChipList :chips="chips" @removed="clear_chip($event)" :loading="loading" v-if="!advanced_filters_open && chips && chips.length"></AppChipList>
+    <AppChipList :chips="chips" @removed="clear_chip($event)" :size="'sm'" :loading="loading" v-if="!advanced_filters_open && chips && chips.length"></AppChipList>
 
 <!--    <Loading v-if="!projects && !error_encountered" message="Fetching simulation projects..."/>-->
 
@@ -338,8 +341,8 @@ function visit_page(e: Event, row: any) {
           </UDropdownMenu>
 
           <div class="w-max flex items-center justify-end rounded bg-neutral-100">
-            <UButton size="sm" :label="`${display_mode == 'cards' ? '' : 'Table'}`" class="cursor-pointer" :color="`${display_mode == 'cards' ? 'subtle' : 'primary'}`" icon="i-lucide-list" type="button" @click="display_mode = 'table'"></UButton>
-            <UButton size="sm" :label="`${display_mode == 'table' ? '' : 'Cards'}`" class="cursor-pointer" :color="`${display_mode == 'table' ? 'subtle' : 'primary'}`" icon="i-lucide-layout-grid" type="button" @click="display_mode = 'cards'"></UButton>
+            <UButton size="sm" :label="`${display_mode == 'cards' ? '' : 'Table'}`" class="cursor-pointer" :color="`${display_mode == 'cards' ? 'neutral' : 'primary'}`" :variant="`${display_mode == 'cards' ? 'ghost' : 'solid'}`" icon="i-lucide-list" type="button" @click="display_mode = 'table'"></UButton>
+            <UButton size="sm" :label="`${display_mode == 'table' ? '' : 'Cards'}`" class="cursor-pointer" :color="`${display_mode == 'table' ? 'neutral' : 'primary'}`" :variant="`${display_mode == 'table' ? 'ghost' : 'solid'}`" icon="i-lucide-layout-grid" type="button" @click="display_mode = 'cards'"></UButton>
           </div>
         </div>
       </div>
@@ -352,6 +355,15 @@ function visit_page(e: Event, row: any) {
         :columns="columns"
         @select="visit_page"
         sticky>
+        <template #id-cell="{ row }">
+          <NuxtLink :to="`/projects/${row.original.id}`" class="text-primary-500 hover:underline" @click.stop>{{ row.original.id }}</NuxtLink>
+        </template>
+        <template #created-cell="{ row }">
+          {{ formatDate(row.original.created) }}
+        </template>
+        <template #updated-cell="{ row }">
+          {{ formatDate(row.original.updated) }}
+        </template>
       </UTable>
 
       <div class="card_wrapper w-full gap-4" v-if="display_mode == 'cards'">

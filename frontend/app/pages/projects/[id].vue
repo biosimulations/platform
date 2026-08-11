@@ -64,6 +64,14 @@ const plot_config = ref({
 
 const run_specifications = ref<SimulationRunSedDocument | undefined>(undefined)
 
+const isDescriptionExpanded = ref(false)
+const descriptionContent = computed(() => {
+  const raw = run_summary.value?.metadata?.[0]?.description;
+  if (!raw) return { html: '', isLong: false };
+  const stripped = raw.replace(/<\/?[^>]+(>|$)/g, "");
+  return { html: raw, isLong: stripped.length >= 250 };
+})
+
 useSeoMeta({
   title: () => project_summary.value ? project_summary.value.simulationRun.name : 'Project',
   description: () => project_summary.value?.simulationRun?.metadata?.[0]?.abstract || 'Explore this project on BioSimulations.',
@@ -203,7 +211,12 @@ const detailedInfoSections = computed(() => getMetadataSections())
 
         <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
           <h1 class="text-xl font-bold">{{normalize_text(run_summary!.name)}}</h1>
-          <p class="text-center" v-dompurify-html="run_summary?.metadata?.[0]?.description"></p>
+          <template v-if="descriptionContent.html">
+            <div class="text-center" :class="{'line-clamp-3': descriptionContent.isLong && !isDescriptionExpanded}" v-dompurify-html="descriptionContent.html"></div>
+            <UButton v-if="descriptionContent.isLong" @click="isDescriptionExpanded = !isDescriptionExpanded" class="mt-2 bg-white text-primary-500 font-bold hover:bg-gray-100 transition-colors" size="sm">
+              {{ isDescriptionExpanded ? 'Show Less' : 'Show More' }}
+            </UButton>
+          </template>
         </div>
 
         <div class="w-full flex flex-col gap-4">
@@ -221,6 +234,7 @@ const detailedInfoSections = computed(() => getMetadataSections())
                 </div>
                 <NuxtImg :src="`${runtimeConfig.public.legacy_api_url}/files/${run_summary!.id}/${run_summary!.metadata![0]!.thumbnails[0]}/download?thumbnail=view`" alt="Simulation Thumbnail Image" class="w-full" />
                 <vue-easy-lightbox
+                  class="lenis-prevent"
                   :visible="img_zoomed"
                   :imgs="[`${runtimeConfig.public.legacy_api_url}/files/${run_summary!.id}/${run_summary!.metadata![0]!.thumbnails[0]}/download`]"
                   :index="0"
