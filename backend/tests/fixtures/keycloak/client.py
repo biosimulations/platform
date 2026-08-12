@@ -7,7 +7,11 @@ from httpx import ASGITransport, AsyncClient
 from biosim_server.api.main import app
 from biosim_server.common.auth import auth0 as auth0_module
 from biosim_server.config import get_settings
-from tests.fixtures.keycloak.container import KeycloakTestRealm
+from tests.fixtures.keycloak.container import (
+    NAMESPACED_EMAIL_CLIENT_ID,
+    NO_EMAIL_CLIENT_ID,
+    KeycloakTestRealm,
+)
 from tests.fixtures.keycloak.tokens import fetch_keycloak_token
 
 
@@ -75,4 +79,34 @@ async def charlie_token(keycloak_auth_settings: KeycloakTestRealm) -> str:
         client_id=keycloak_auth_settings.client_id,
         username="charlie",
         password="charlie-password",
+    )
+
+
+@pytest_asyncio.fixture
+async def alice_token_namespaced_email(keycloak_auth_settings: KeycloakTestRealm) -> str:
+    """Real Keycloak access token for Alice from NAMESPACED_EMAIL_CLIENT_ID, whose
+    protocol mappers stamp both the namespaced "https://api.biosimulations.org/email"
+    claim (hardcoded to "Real@Example.com") and a plain "email" claim
+    ("alice@example.com") -- lets tests prove get_current_user prefers the
+    namespaced claim.
+    """
+    return await fetch_keycloak_token(
+        issuer=keycloak_auth_settings.issuer,
+        client_id=NAMESPACED_EMAIL_CLIENT_ID,
+        username="alice",
+        password="alice-password",
+    )
+
+
+@pytest_asyncio.fixture
+async def alice_token_no_email_claim(keycloak_auth_settings: KeycloakTestRealm) -> str:
+    """Real Keycloak access token for Alice from NO_EMAIL_CLIENT_ID, whose protocol
+    mappers include neither the namespaced nor the plain "email" claim -- lets
+    tests prove a missing email claim degrades to None instead of crashing.
+    """
+    return await fetch_keycloak_token(
+        issuer=keycloak_auth_settings.issuer,
+        client_id=NO_EMAIL_CLIENT_ID,
+        username="alice",
+        password="alice-password",
     )
