@@ -221,6 +221,43 @@ These point at the public biosimulations.org services. Defaults are production; 
 |---|---|---|
 | `CORS_EXTRA_ORIGINS` | _empty_ | Comma-separated list of additional CORS origins appended to the built-in allowlist in `api/main.py`. **Required** for every deployment so the deployed frontend host (e.g. `https://biosim.biosimulations.org`) is allowed. The built-in list only covers local-dev loopbacks and cross-org trusted services — deploy-specific URLs are not hardcoded by design. |
 
+### Authentication (Auth0)
+
+All values are **non-secret** and belong in each overlay's `api.env` ConfigMap, never in a
+sealed secret. The Management API credentials at the bottom are the exception — they are
+credentials, are unset in every overlay today, and are tracked separately (TODO #23).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AUTH_REQUIRED` | `true` | Startup gate. When true, the API refuses to start unless the Auth0 configuration below is complete and well-formed. Set to `false` only to run deliberately without an identity provider. |
+| `AUTH0_DOMAIN` | _empty_ | **Bare hostname** of the Auth0 tenant, e.g. `tenant.us.auth0.com`. The issuer (`https://{domain}/`) and JWKS URL (`https://{domain}/.well-known/jwks.json`) are derived from it. A URL or a trailing slash here is a configuration error and is rejected at startup. |
+| `AUTH0_AUDIENCE` | _empty_ | The API identifier tokens must carry in `aud`. |
+| `AUTH0_ISSUER` | _derived_ | Explicit issuer override. Needed only for a non-Auth0 OIDC provider whose issuer does not follow Auth0's convention (the Keycloak realm used in tests). Must be set together with `AUTH0_JWKS_URI`. |
+| `AUTH0_JWKS_URI` | _derived_ | Explicit JWKS URL override. See above. |
+| `AUTH0_ROLES_CLAIM` | `https://api.biosimulations.org/roles` | Namespaced claim carrying role names. **Stamped by the Auth0 Post-Login Action** (`auth0/actions/post-login.js`) — without that Action the claim never arrives, every `require_roles` endpoint returns 403, and no admin exists. |
+| `AUTH0_EMAIL_CLAIM` | `https://api.biosimulations.org/email` | Namespaced claim carrying the user's email. Also stamped by the Action; `get_current_user` falls back to a plain `email` claim for providers that include one. |
+| `AUTH0_MANAGEMENT_CLIENT_ID` | _empty_ | M2M credentials for `PATCH`/`DELETE /api/v1/me`. **Secret** — sealed-secret path only. Unset in every cluster today, so those endpoints return 503. |
+| `AUTH0_MANAGEMENT_CLIENT_SECRET` | _empty_ | See above. |
+
+**Per-cluster configuration:**
+
+| Overlay | Auth0 configuration | Notes |
+|---|---|---|
+| `biosim-gke` | tenant + audience set | Production tier. |
+| `biosim-rke` | tenant + audience set | Prod tier; also backs the `biosim-rke-frontend-dev` preview frontend. |
+| `biosim-local` | _record the Step 2 decision here_ | |
+
+**Failure modes:**
+
+| Condition | Result |
+|---|---|
+| Missing/malformed config, `AUTH_REQUIRED=true` | Pod refuses to start; `kubectl logs` names the variable. |
+| Missing/malformed config, `AUTH_REQUIRED=false` | Pod starts; endpoints behind `get_current_user` return **503**. |
+| Auth0 unreachable, warm JWKS cache | Tokens still validate for up to 24 h; a WARN is logged per request. |
+| Auth0 unreachable, cold JWKS cache | **503** with `Retry-After: 10`. |
+| Invalid, expired, or wrongly-audienced token | **401**. |
+| Valid token, missing role | **403**. |
+
 ## Testing
 
 - **Framework:** pytest with pytest-asyncio

@@ -94,7 +94,7 @@ APP_SERVERS: list[dict[str, str]] = [
 
 router = APIRouter()
 
-
+"""
 def _warn_if_auth0_misconfigured() -> None:
     auth0 = get_settings().auth0
     if not auth0.domain or not auth0.audience:
@@ -102,11 +102,57 @@ def _warn_if_auth0_misconfigured() -> None:
             "AUTH0_DOMAIN/AUTH0_AUDIENCE not set -- all endpoints behind get_current_user/"
             "get_optional_user will reject every bearer token with 401."
         )
+"""
 
+def _validate_auth0_configuration() -> None:
+    """
+    Startup gate: refuse to serve traffic with an unusable Auth0 configuration.
+
+    Replaces _warn_if_auth0_misconfigured(), which both under-reacted (the pod
+    started anyway, reported healthy, and failed every authenticated request)
+    and misdescribed the failure -- it promised a 401, which has never been
+    what happens.
+
+    Raising here propagates out of `lifespan`, so uvicorn exits non-zero and
+    Kubernetes shows CrashLoopBackOff with the reason in `kubectl logs`. That
+    is the loudest signal available, and a cluster that cannot authenticate
+    anyone should be using it.
+    """
+    auth0 = get_settings().auth0
+    errors = auth0.configuration_errors()
+
+    if not auth0.required:
+        if errors:
+            logger.warning(
+                "AUTH_REQUIRED=false: starting with an incomplete Auth0 configuration "
+                "(%s). Every endpoint behind get_current_user/get_optional_user will "
+                "return 503 (Authentication temporarily unavailable); no request will "
+                "be authenticated in this deployment.",
+                "; ".join(errors),
+            )
+        else:
+            logger.warning(
+                "AUTH_REQUIRED=false: Auth0 startup validation skipped, though the "
+                "configuration looks complete."
+            )
+        return
+    if errors:
+        raise RuntimeError(
+            "Auth0 configuration is incomplete or invalid; refusing to start. "
+            + "; ".join(errors)
+            + ". Fix this cluster's kustomize/config/<cluster>/api.env, or set "
+            "AUTH_REQUIRED=false to run this deployment without authentication."
+        )
+    logger.info(
+        "Auth0 configuration validated: issuer=%s audience=%s",
+        auth0.issuer_url(),
+        auth0.audience,
+    )
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    _warn_if_auth0_misconfigured()
+    #_warn_if_auth0_misconfigured()
+    _validate_auth0_configuration()
     await init_standalone()
     yield
     await shutdown_standalone()

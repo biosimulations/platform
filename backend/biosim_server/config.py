@@ -25,6 +25,10 @@ if os.getenv(ENV_SECRET_ENV_FILE) is not None and os.path.exists(str(os.getenv(E
 class Auth0Settings(BaseSettings):
     domain: str = Field(default="", alias="AUTH0_DOMAIN")
     audience: str = Field(default="", alias="AUTH0_AUDIENCE")
+    # Startup gate: when true, the API refuses to start with an incomplete or
+    # malformed configuration (see _validate_auth0_configuration in api/main.py).
+    # Set false only to run deliberately without an identity provider.
+    required: bool = Field(default=True, alias="AUTH_REQUIRED")
     algorithms: list[str] = ["RS256"]
     # get_current_user derives the expected JWT issuer and JWKS URL from
     # `domain` using Auth0's own convention ("https://{domain}/" and
@@ -64,6 +68,49 @@ class Auth0Settings(BaseSettings):
 
     def jwks_url(self) -> str:
         return self.jwks_uri or f"https://{self.domain}/.well-known/jwks.json"
+
+    def configuration_errors(self) -> list[str]:
+        """
+        Names every reason these settings could not verify a token.
+
+        Returns an empty list when the configuration is usable. Pure and free
+        of side effects, so the startup gate, the tests, and any future /ready
+        check can all call it without coordinating.
+
+        Two shapes are accepted:
+          * the normal Auth0 one -- a bare AUTH0_DOMAIN, from which issuer_url()
+            and jwks_url() are derived; or
+          * explicit AUTH0_ISSUER *and* AUTH0_JWKS_URI overrides, which is how
+            a non-Auth0 OIDC provider is configured (the Keycloak realm in
+            tests/fixtures/keycloak does exactly this).
+        Half of the second shape is not a valid configuration and is reported.
+        """
+        errors: list[str] = []
+
+        if not self.audience:
+            errors.append("AUTH0_AUDIENCE is not set")
+
+        if not self.domain:
+            if not self.issuer:
+                errors.append(
+                    "AUTH0_DOMAIN is not set and no AUTH0_ISSUER override was provided"
+                )
+            if not self.jwks_uri:
+                errors.append(
+                    "AUTH0_DOMAIN is not set and no AUTH0_JWKS_URI override was provided"
+                )
+        elif "://" in self.domain or "/" in self.domain:
+            errors.append(
+                f"AUTH0_DOMAIN must be a bare hostname such as "
+                f"'tenant.us.auth0.com', not a URL or a path: {self.domain!r}"
+            )
+        elif self.domain != self.domain.strip() or "." not in self.domain:
+            errors.append(
+                f"AUTH0_DOMAIN does not look like a hostname: {self.domain!r}"
+            )
+        if not self.algorithms:
+            errors.append("the JWT algorithm allowlist resolved to an empty list")
+        return errors
 
 
 class Settings(BaseSettings):
