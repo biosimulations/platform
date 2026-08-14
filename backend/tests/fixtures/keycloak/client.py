@@ -22,8 +22,10 @@ def keycloak_auth_settings(keycloak_realm: KeycloakTestRealm, monkeypatch: pytes
     get_settings() is lru_cache'd, so there's no dependency-injection seam to
     swap in test config -- this mutates the live Auth0Settings singleton's
     fields in place; monkeypatch reverts each one automatically at teardown.
-    Also resets the module-level JWKS cache in auth0.py so a previously
-    fetched (Auth0 or prior-test-Keycloak) key set can't leak into this test.
+    Also resets the module-level JWKS cache in auth0.py -- including its
+    backoff and cooldown state -- so a previously fetched (Auth0 or
+    prior-test-Keycloak) key set, or an armed negative cache, can't leak into
+    this test.
     """
     settings = get_settings().auth0
     monkeypatch.setattr(settings, "domain", "")
@@ -31,8 +33,7 @@ def keycloak_auth_settings(keycloak_realm: KeycloakTestRealm, monkeypatch: pytes
     monkeypatch.setattr(settings, "jwks_uri", keycloak_realm.jwks_uri)
     monkeypatch.setattr(settings, "audience", keycloak_realm.audience)
     monkeypatch.setattr(settings, "roles_claim", keycloak_realm.roles_claim)
-    auth0_module._jwks_cache["keys"] = None
-    auth0_module._jwks_cache["fetched_at"] = 0.0
+    auth0_module._reset_jwks_cache()
     return keycloak_realm
 
 
