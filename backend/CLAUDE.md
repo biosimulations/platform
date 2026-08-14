@@ -323,6 +323,62 @@ Backend release steps (run from repo root unless noted):
    ```bash
    kubectl get pods -n biosim-gke
    ```
+6. **Verify authentication end to end** (required after any deploy that touches auth
+   configuration, and after any change to the Auth0 tenant or its Post-Login Action):
+
+   ```bash
+   # a. The startup gate passed
+   kubectl logs -n <namespace> deploy/api | grep 'Auth0 configuration validated'
+
+   # b. An invalid token is a 401 -- not a 500, not a 503
+   curl -s -o /dev/null -w '%{http_code}\n' \
+     -H 'Authorization: Bearer not-a-jwt' https://<API_HOST>/api/v1/me
+
+   # c. A known-roled user's token still carries the roles claim.
+   #    Full procedure, including how to obtain the token: auth0/README.md
+   #    -> "Smoke check". This is the check that catches a Post-Login Action
+   #    that was deleted, disabled, unbound from the Login flow, or deployed
+   #    to the wrong tenant -- none of which produce any other symptom until
+   #    a user reports a 403.
+   curl -s -H "Authorization: Bearer <TOKEN>" https://<API_HOST>/api/v1/me
+
+   # d. No pod is warning about the roles claim
+   kubectl logs -n <namespace> deploy/api --since=10m | grep -i 'roles claim'
+   #    expect: no output
+   ```
+
+   Also confirm no `AUTH_REQUIRED=false` reached a production overlay:
+
+   ```bash
+   grep -rn 'AUTH_REQUIRED' kustomize/config/
+
+#### Auth0 tenant decision (TODO #6)
+
+**Decision:** <RATIFY the dev tenant | MIGRATE to a production tenant>
+**Date:** <YYYY-MM-DD>
+**Decided by:** <name>
+
+**Tenant:** `<AUTH0_DOMAIN>`
+**Audience:** `<AUTH0_AUDIENCE>`
+**Claim namespaces:** `https://api.biosimulations.org/roles`, `.../email`
+(tenant-independent; must match `auth0/actions/post-login.js`)
+
+**Rationale:** <why>
+
+<If ratifying, also record:>
+
+- Accepted rate-limit ceiling: <value, from the Auth0 dashboard's tenant settings>
+- Accepted consequence: the `dev-` prefix appears in the issuer and in user-visible
+  login URLs.
+- Revisit trigger: <e.g. "before public launch", "at N registered users">
+
+<If migrating, also record:>
+
+- Cutover date: <YYYY-MM-DD>
+- Old tenant retained until: <YYYY-MM-DD>
+- Applications re-created: SPA client id `<CLIENT_ID>`, M2M for the Action,
+  M2M for the Management API (TODO #23) if enabled.
+
 
 ## Important Notes
 
