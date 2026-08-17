@@ -132,16 +132,62 @@ The workflow lives at `.github/workflows/frontend-ci.yaml` (repo root) and is pa
 
 ## Deploy
 
-**In progress on `frontend-backend-int`.** Plan: `docs/frontend-backend-integration-plan.md`. Decisions made: independent version streams (frontend at `0.1.0`, tagged `frontend-vX.Y.Z`), runtime-only Dockerfile (build outside Docker, image just runs `node .output/server/index.mjs`), shared Ingress with subdomain split, separate `frontend-dev` namespace on RKE for the frontend dev's branch deploys.
+Shipped and in production. The frontend versions independently of the backend
+(`frontend/package.json` → tag `frontend-vX.Y.Z` → image
+`ghcr.io/biosimulations/platform-frontend:frontend-X.Y.Z`). `frontend/Dockerfile`
+is runtime-only — CI runs `npm ci && npm run build` on the host and the image
+just runs `node .output/server/index.mjs`. Served at
+`biosim.biosimulations.org`, with `api.biosim.biosimulations.org` for the
+backend; SSR fetches inside the cluster use `NUXT_API_URL=http://api:8000` to
+skip the public ingress.
 
-As of writing, still TBD: `frontend/Dockerfile`, `kustomize/base/frontend/` sub-package, `kustomize/scripts/build_and_push.sh frontend`, frontend image registry choice (GHCR vs. dockerhub).
+**`biosim-gke` is GitOps-managed by Flux CD — merging a commit is the deploy.**
+Flux reconciles `kustomize/overlays/biosim-gke` from `main` every minute, so
+`kubectl apply` against that namespace gets reverted. Releasing is **two PRs**:
+
+1. **Release PR** — bump the version. `scripts/bump-frontend.sh` is
+   **patch-only**; for a minor/major run `npm version minor --no-git-tag-version`
+   and commit `package.json` + `package-lock.json` yourself. Merge.
+2. **Tag the merge commit on `main`** and push (`frontend-vX.Y.Z`) — this
+   triggers `.github/workflows/release.yaml`, which builds the image (Node 24,
+   amd64) and cuts a GitHub Release. The bump script tags the *branch* commit,
+   so re-tag `main`.
+3. **Verify the image published** — the release run's job conclusion is the
+   gate. The GHCR package is private, so anonymous manifest checks return 403
+   whether or not the tag exists, and a failed push still leaves the git tag and
+   the Release behind. This exact failure silently stranded `frontend-0.1.1` for
+   three weeks.
+4. **Deploy PR** — bump `newTag: frontend-X.Y.Z` in
+   `kustomize/overlays/biosim-gke/kustomization.yaml`. Merging deploys it.
+   Edit the line directly rather than using `kustomize edit set image`, which
+   reorders the block.
+
+Verify with `flux get kustomizations -A` (READY=True at the new revision) and
+`kubectl -n biosim-gke rollout status deploy/frontend`; `flux reconcile
+kustomization platform-biosim-gke --with-source` skips the poll interval. To
+roll back, revert the deploy commit — Flux restores the previous state within a
+minute.
+
+`kustomize/overlays/biosim-rke-frontend-dev/` (namespace `frontend-dev` on RKE,
+`biosim-dev.cam.uchc.edu`) is **not** under Flux and is applied by hand. It
+points at the RKE backend, and exists for WIP previews and catching
+production-build SSR bugs that `npm run dev` hides — not for personal iteration.
+
+> **SSR is where deploy-only frontend bugs live.** `/login` shipped a 500 in
+> `frontend-0.2.0` because `plugins/auth0.client.ts` is client-only, so
+> `useAuth0()` is undefined during SSR and `login.vue`'s top-level destructure
+> threw. In-app navigation never SSRs a page, so it looked fine everywhere
+> except a direct hit or refresh. Fixed by `'/login': { ssr: false }` in
+> `routeRules`. After any deploy, curl the affected routes directly rather than
+> clicking through the app.
 
 ## Important Notes
 
-1. **Node version matters** — several deps (notably oxc-parser native bindings) require Node 22+. On older Node, `npm install` silently skips optional platform bindings and `nuxt prepare` fails on `require()` of bindings. Use `nvm install 22 && nvm use 22` if needed.
-2. **No `frontend/Dockerfile`** — see Deploy section above.
-3. **Pre-existing lint/typecheck failures** — frontend CI was off in the monorepo until Phase 2 of the integration plan moved the workflow to `.github/workflows/frontend-ci.yaml`. By then ~1500 lint errors and several TS errors had accumulated. Expect `npm run lint` and `npm run typecheck` to fail on `main` until cleanup. Cleanup is its own task.
-4. **README is project-specific** — `frontend/README.md` was replaced with a project-specific quickstart on `frontend-backend-int`; the original Nuxt starter README is gone.
+1. **Node version matters** — several deps (notably oxc-parser native bindings) require Node 22+. On older Node, `npm install` silently skips optional platform bindings and `nuxt prepare` fails on `require()` of bindings. Use `nvm install 22 && nvm use 22` if needed. CI and the release image build on Node 24.
+2. **`npm run build` may not complete on macOS/arm64.** `@nuxt/image` pulls `ipx` as an **optional** dependency (`ipx@3.1.1` in `package-lock.json`), npm skips it there, and the build then dies at the prerender step — which exists only because of `'/': { prerender: true }` in `routeRules` — with `Cannot find package 'ipx'`. Installing it by hand is a trap: a newer major breaks on `createIPXH3Handler`, and the locked version needs `node-gyp` to compile `sharp`. Linux CI installs the optional dep normally, so this is a local-environment limit, not a code problem — verify with `npm run dev` (port 4200, no prerender) or let CI build it. A mismatched `ipx` in `node_modules` breaks the dev server too; `rm -rf node_modules/ipx` to recover.
+3. **`frontend/Dockerfile` is runtime-only** — the Nuxt build happens on the host (`npm ci && npm run build`) and the image just runs `node .output/server/index.mjs` over `.output`. Building the image without a fresh `.output` ships stale code. See Deploy above.
+4. **Pre-existing lint/typecheck failures** — frontend CI was off in the monorepo until Phase 2 of the integration plan moved the workflow to `.github/workflows/frontend-ci.yaml`. By then ~1500 lint errors and several TS errors had accumulated. Expect `npm run lint` and `npm run typecheck` to fail on `main` until cleanup. Cleanup is its own task.
+5. **README is project-specific** — `frontend/README.md` was replaced with a project-specific quickstart on `frontend-backend-int`; the original Nuxt starter README is gone.
 
 ## External Services
 
