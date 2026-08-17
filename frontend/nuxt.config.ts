@@ -50,7 +50,14 @@ export default defineNuxtConfig({
   routeRules: {
     '/': { prerender: true },
     '/projects': { redirect: '/biosim-db' },
-    '/runs': { redirect: '/simulations' }
+    '/runs': { redirect: '/simulations' },
+    // Client-only. The Auth0 SDK is installed by plugins/auth0.client.ts, which
+    // cannot run on the server (it reads window.location.origin for the
+    // redirect_uri), so useAuth0() is undefined during SSR and login.vue's
+    // top-level destructure throws a 500. The page is a redirect launcher with
+    // nothing to server-render anyway. Only direct hits and refreshes were
+    // affected -- in-app navigation to /login is client-side and always worked.
+    '/login': { ssr: false }
   },
 
   compatibilityDate: '2025-01-15',
