@@ -48,7 +48,15 @@ export default defineNuxtConfig({
   },
 
   routeRules: {
-    '/': { prerender: true },
+    // NOT prerendered. Prerendering runs at build time, where every
+    // NUXT_PUBLIC_* value is absent -- they are supplied at runtime from the
+    // deployment's ConfigMap -- so the generated HTML baked `api_url: ""`,
+    // `auth0Domain: ""`, and so on into its payload. The client then read
+    // those empties for the whole session, sending Log In to
+    // `https://authorize/?client_id=` and any API call to a relative URL on
+    // the frontend's own host. Runtime-configured public values and
+    // prerendering are fundamentally incompatible; the landing page is now
+    // server-rendered per request like every other route.
     '/projects': { redirect: '/biosim-db' },
     '/runs': { redirect: '/simulations' },
     // Client-only. The Auth0 SDK is installed by plugins/auth0.client.ts, which
