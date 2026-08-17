@@ -290,6 +290,20 @@ Backend release steps (run from repo root unless noted):
 > considerations" for the full rationale and the longer-term `workflow.patched`
 > pattern.
 
+<!-- -->
+
+> **Do not roll the `api` Deployment during an Auth0 outage.** The JWKS cache is
+> per-process and in-memory. A running pod serves cached signing keys for up to 24 hours
+> after the identity provider becomes unreachable, so an Auth0 incident is usually
+> invisible to users. A restarted pod starts with an empty cache and returns
+> `503 Authentication temporarily unavailable` on every authenticated request until Auth0
+> is reachable again. `strategy: Recreate` (kustomize/base/api.yaml) means a rollout
+> terminates the old pod first, so this is not recoverable mid-rollout.
+>
+> **The exception:** if you are told an Auth0 signing key has been **compromised**, roll the
+> pods immediately. A restart is the only way to purge a revoked key from the stale cache
+> before the 24-hour bound expires.
+
 1. **Bump version + tag** (bumps `version.py` + `pyproject.toml`, commits, tags `backend-vX.Y.Z`):
    ```bash
    bash backend/scripts/bump-backend.sh patch      # or minor|major|X.Y.Z
