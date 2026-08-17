@@ -59,7 +59,7 @@ This script is the **local / multi-arch fallback**. The normal path is the `rele
 
 ## Release automation
 
-`.github/workflows/release.yaml` builds + pushes images to GHCR and cuts a GitHub Release. **amd64-only.** Deploy to clusters stays a manual `kubectl apply` (see `backend/CLAUDE.md` → Deploy).
+`.github/workflows/release.yaml` builds + pushes images to GHCR and cuts a GitHub Release. **amd64-only.** It publishes images; it does not deploy them — see **Deploy (GitOps)** below.
 
 | Trigger | Builds | Image tag(s) | Release? |
 |---|---|---|---|
@@ -69,6 +69,23 @@ This script is the **local / multi-arch fallback**. The normal path is the `rele
 | `workflow_dispatch` (service + version inputs) | per input | per input | no |
 
 The git tag carries the `v`; the image tag strips it. A `plan` job guards that the tag's version matches the source version file(s) before any build runs. `workflow_dispatch` publishes images only (no Release) — use it for ad-hoc/re-builds.
+
+## Deploy (GitOps)
+
+**`biosim-gke` is reconciled by Flux CD: merging a change to `kustomize/overlays/biosim-gke/` on `main` is the deploy.** Flux polls this repo every minute and applies the overlay, so `kubectl apply` against that namespace is wrong — it gets reverted on the next reconcile. Flux itself is configured in the private `UCHHPC/k8s-config` repo under `gke/fluxcd/`; that README covers install, suspend/resume, and troubleshooting.
+
+`biosim-rke` and `biosim-local` are **not** under Flux — they are still applied by hand.
+
+Releasing and deploying are now **two separate PRs**, in this order:
+
+1. **Release PR** — bump the version file(s) only (`backend/scripts/bump-backend.sh`, `frontend/scripts/bump-frontend.sh`). Merge.
+2. **Tag the merge commit on `main`** and push it — this triggers `release.yaml`. The bump scripts tag the *branch* commit, so re-tag `main`.
+3. **Verify the images published.** The release run's job conclusion is the only reliable gate: the GHCR packages are private (anonymous manifest checks 403 regardless), and a failed push still leaves the git tag and GitHub Release behind.
+4. **Deploy PR** — bump `newTag` in the overlay. Merging deploys it.
+
+> **Do not merge step 4 before step 3 passes.** `api` runs `strategy: Recreate` at one replica, so an unpublished tag takes the API down rather than leaving old pods serving.
+
+Per-service specifics — including the Temporal worker-drain requirement and how it interacts with `flux suspend` — are in `backend/CLAUDE.md` → Deploy and `frontend/CLAUDE.md` → Deploy.
 
 ## Local development
 
