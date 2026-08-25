@@ -258,6 +258,8 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | Auth0 unreachable, cold JWKS cache | **503** with `Retry-After: 10`. |
 | Invalid, expired, or wrongly-audienced token | **401**. |
 | Valid token, missing role | **403**. |
+| Management API (`PATCH`/`DELETE /api/v1/me`) rate-limited (429) through all retries | **503** with `Retry-After`. |
+| Management API 5xx or transport failure through all retries | **502**. |
 
 **Anonymous `POST /simulations/run` (P1 #9 Option B).** This endpoint stays
 reachable without a bearer token, paired with the workflow rate limiter
