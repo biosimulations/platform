@@ -284,7 +284,7 @@ async def test_demo_private_me_requires_authentication() -> None:
 @asynccontextmanager
 async def _authenticated_as(roles: list[str] | None = None) -> AsyncIterator[AsyncClient]:
     """Overrides get_current_user for the duration of the `with` block, yielding a client to call through it."""
-    user = AuthenticatedUser(sub="auth0|test-user-id", email="user@example.com", roles=roles)
+    user = AuthenticatedUser(sub="auth0|test-user-id", email="user@example.com", roles=roles or [])
     app.dependency_overrides[get_current_user] = lambda: user
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:

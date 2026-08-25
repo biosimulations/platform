@@ -33,10 +33,13 @@ def require_roles(*allowed_roles: str) -> Callable[..., Coroutine[Any, Any, Auth
     intersection with AuthenticatedUser.roles, which is populated from the
     Auth0Settings.roles_claim custom claim -- see config.py for the Auth0
     Action setup this depends on.
+
+    An empty ``allowed_roles`` list is a programmer error and fails closed
+    (403), never as unrestricted access.
     """
 
     async def _check_roles(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
-        if not set(user.roles) & set(allowed_roles):
+        if not allowed_roles or not set(user.roles) & set(allowed_roles):
             _log_authorization_denial("missing_required_role", user)
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
@@ -45,6 +48,77 @@ def require_roles(*allowed_roles: str) -> Callable[..., Coroutine[Any, Any, Auth
         return user
 
     return _check_roles
+
+
+def require_all_roles(*required_roles: str) -> Callable[..., Coroutine[Any, Any, AuthenticatedUser]]:
+    """FastAPI dependency factory requiring every named role (AND).
+
+    Fails closed: an empty ``required_roles`` list is denied. A role does not
+    grant permissions; use ``require_permissions`` for those.
+    """
+
+    async def _check_all_roles(
+        user: AuthenticatedUser = Depends(get_current_user),
+    ) -> AuthenticatedUser:
+        if not required_roles or not set(required_roles).issubset(user.roles):
+            _log_authorization_denial("missing_required_role", user)
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Requires all role(s): {', '.join(required_roles)}",
+            )
+        return user
+
+    return _check_all_roles
+
+
+def require_permissions(
+    *allowed_permissions: str,
+) -> Callable[..., Coroutine[Any, Any, AuthenticatedUser]]:
+    """FastAPI dependency factory requiring at least one of ``allowed_permissions``.
+
+    Permissions come from the access-token ``permissions`` claim (Auth0 RBAC)
+    plus the OAuth ``scope`` string -- see get_current_user. Roles never satisfy
+    a permission check. Missing or malformed permission claims are empty, so
+    this fails closed.
+
+    An empty ``allowed_permissions`` list is denied.
+    """
+
+    async def _check_permissions(
+        user: AuthenticatedUser = Depends(get_current_user),
+    ) -> AuthenticatedUser:
+        if not allowed_permissions or not set(user.permissions) & set(allowed_permissions):
+            _log_authorization_denial("missing_required_permission", user)
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Requires one of permission(s): {', '.join(allowed_permissions)}",
+            )
+        return user
+
+    return _check_permissions
+
+
+def require_all_permissions(
+    *required_permissions: str,
+) -> Callable[..., Coroutine[Any, Any, AuthenticatedUser]]:
+    """FastAPI dependency factory requiring every named permission (AND).
+
+    Fails closed: an empty ``required_permissions`` list is denied. Holding a
+    role does not satisfy a permission requirement.
+    """
+
+    async def _check_all_permissions(
+        user: AuthenticatedUser = Depends(get_current_user),
+    ) -> AuthenticatedUser:
+        if not required_permissions or not set(required_permissions).issubset(user.permissions):
+            _log_authorization_denial("missing_required_permission", user)
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Requires all permission(s): {', '.join(required_permissions)}",
+            )
+        return user
+
+    return _check_all_permissions
 
 class _OwnedRecord(Protocol):
     """

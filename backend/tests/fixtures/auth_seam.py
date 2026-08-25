@@ -28,6 +28,7 @@ def make_auth0_settings(**overrides: Any) -> Auth0Settings:
             "issuer": ISSUER,
             "jwks_uri": DEFAULT_JWKS_URI,
             "audience": AUDIENCE,
+            "trusted_issuers_json": "",
         }
     )
     data.update(overrides)

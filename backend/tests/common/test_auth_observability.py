@@ -92,7 +92,7 @@ async def test_emitted_auth_log_never_contains_token_email_or_raw_subject(
     "case, expected_reason",
     [
         ("expired", "expired"),
-        ("wrong_aud", "invalid_claims"),
+        ("wrong_aud", "invalid_audience"),
         ("wrong_iss", "invalid_claims"),
         ("unknown_kid", "unknown_kid"),
         ("missing_sub", "missing_sub"),

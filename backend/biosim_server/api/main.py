@@ -148,9 +148,10 @@ def _validate_auth0_configuration() -> None:
             "AUTH_REQUIRED=false to run this deployment without authentication."
         )
     logger.info(
-        "Auth0 configuration validated: issuer=%s audience=%s",
-        auth0.issuer_url(),
-        auth0.audience,
+        "Auth0 configuration validated: issuer=%s audience=%s trusted_issuers=%d",
+        auth0.issuer_url() if not auth0.has_explicit_trusted_issuers() else "(explicit map)",
+        auth0.audience if not auth0.has_explicit_trusted_issuers() else "(per-issuer)",
+        len(auth0.trusted_issuer_map()),
     )
 
 @asynccontextmanager

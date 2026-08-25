@@ -5,7 +5,7 @@ depends on at runtime. **Nothing in this directory is deployed by CI or by `kube
 Auth0 Actions are dashboard-managed; these files are the reviewed source of truth that the
 dashboard is expected to match.
 
-```
+```text
 auth0/
 ├── README.md              this file
 └── actions/
@@ -21,6 +21,10 @@ The backend reads three custom claims from every access token:
 | `https://api.biosimulations.org/roles` | `AUTH0_ROLES_CLAIM` (`biosim_server/config.py`) | `common/auth/roles.py` — `require_roles`, `require_owner_or_admin` |
 | `https://api.biosimulations.org/email` | `AUTH0_EMAIL_CLAIM` | `require_owner_or_admin`'s legacy-email ownership fallback |
 | `https://api.biosimulations.org/email_verified` | `AUTH0_EMAIL_VERIFIED_CLAIM` | `require_owner_or_admin` — an unverified email must not grant ownership |
+
+The resource server authorizes API calls from the **access token**, not the ID token.
+Do not send an OIDC ID token in `Authorization: Bearer`. See
+`backend/docs/auth0-tokens-claims-endpoints.md`.
 
 Auth0 puts **none** of these on an access token by default. `actions/post-login.js` does.
 The claim names in that file MUST use backtick template literals

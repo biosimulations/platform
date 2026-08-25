@@ -10,7 +10,7 @@ The platform backend is a distributed microservices application for biosimulatio
 
 **Version:** 0.4.0
 **Python:** 3.13
-**Production URL:** https://biosim.biosimulations.org/docs
+**Production URL:** [https://biosim.biosimulations.org/docs](https://biosim.biosimulations.org/docs)
 
 ## Quick Commands
 
@@ -56,7 +56,7 @@ These are the same checks the repo-root `lefthook.yml` runs on commit/push and t
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │                   REST API (FastAPI)                     │
 │                   Port 8000                              │
@@ -79,7 +79,7 @@ These are the same checks the repo-root `lefthook.yml` runs on commit/push and t
 
 ## Directory Structure
 
-```
+```text
 backend/
 ├── biosim_server/
 │   ├── api/                    # FastAPI REST endpoints
@@ -136,7 +136,7 @@ backend/
 ## Key API Endpoints
 
 | Endpoint | Method | Purpose |
-|----------|--------|---------|
+| --- | --- | --- |
 | `/compatibility/check` | POST | Check OMEX archive compatibility with simulators |
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
 | `/simulations/runs` | POST | List simulation runs (owner-scoped, paginated, sortable, filterable) |
@@ -157,21 +157,26 @@ backend/
 ## Key Patterns
 
 ### Async Everywhere
+
 All I/O is async: FastAPI endpoints, MongoDB (Motor), HTTP (aiohttp), file ops.
 
 ### Temporal Workflows
+
 - `OmexSimWorkflow` - Run single simulator on OMEX file
 - `OmexVerifyWorkflow` - Orchestrate multiple simulators in parallel, then compare
 - `RunsVerifyWorkflow` - Compare existing runs
 - `SimulationRunWorkflow` - Run simulations without comparison (backend-for-frontend)
 
 ### Caching
+
 - OMEX files cached by MD5 hash in MongoDB + GCS
 - Sim results cached by (file_hash_md5, image_digest, cache_buster)
 - Simulator versions cached in memory (aiocache, 1hr TTL)
 
 ### Dependency Injection
+
 Global services in `dependencies.py`:
+
 ```python
 get_file_service()          # GCS operations
 get_database_service()      # MongoDB for runs
@@ -187,7 +192,7 @@ Environment variables (see `config.py`). All have defaults; override as needed.
 ### Storage
 
 | Variable | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `STORAGE_BACKEND` | `gcs` | Which `FileService` implementation to construct. One of `gcs`, `local`, `minio`. |
 | `STORAGE_BUCKET` | `files.biosimulations.dev` | Bucket name (used by `gcs` and `minio` backends). |
 | `STORAGE_ENDPOINT_URL` | `https://storage.googleapis.com` | S3-compatible endpoint URL (used by `minio`; e.g., `http://localhost:9000` for a local minio). |
@@ -202,7 +207,7 @@ Environment variables (see `config.py`). All have defaults; override as needed.
 These point at the public biosimulations.org services. Defaults are production; override only to target a staging instance or a mock for tests.
 
 | Variable | Default | Used by |
-|---|---|---|
+| --- | --- | --- |
 | `BIOSIMULATIONS_API_BASE_URL` | `https://api.biosimulations.org` | `BiosimServiceRest` — submit and poll simulation jobs |
 | `SIMDATA_API_BASE_URL` | `https://simdata.api.biosimulations.org` | `BiosimServiceRest` — fetch HDF5 outputs |
 | `BIOSIMULATORS_API_BASE_URL` | `https://api.biosimulators.org` | Simulator version metadata |
@@ -210,7 +215,7 @@ These point at the public biosimulations.org services. Defaults are production; 
 ### Infrastructure
 
 | Variable | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `TEMPORAL_SERVICE_URL` | `localhost:7233` | Temporal workflow server |
 | `MONGODB_URI` | `mongodb://localhost:27017` | MongoDB connection string |
 | `MONGODB_DATABASE` | `biosimulations` | MongoDB database name |
@@ -218,7 +223,7 @@ These point at the public biosimulations.org services. Defaults are production; 
 ### CORS
 
 | Variable | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `CORS_EXTRA_ORIGINS` | _empty_ | Comma-separated list of additional CORS origins appended to the built-in allowlist in `api/main.py`. **Required** for every deployment so the deployed frontend host (e.g. `https://biosim.biosimulations.org`) is allowed. The built-in list only covers local-dev loopbacks and cross-org trusted services — deploy-specific URLs are not hardcoded by design. |
 
 ### Authentication (Auth0)
@@ -228,7 +233,7 @@ sealed secret. The Management API credentials at the bottom are the exception �
 credentials, are unset in every overlay today, and are tracked separately (TODO #23).
 
 | Variable | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `AUTH_REQUIRED` | `true` | Startup gate. When true, the API refuses to start unless the Auth0 configuration below is complete and well-formed. Set to `false` only to run deliberately without an identity provider. |
 | `AUTH0_DOMAIN` | _empty_ | **Bare hostname** of the Auth0 tenant, e.g. `tenant.us.auth0.com`. The issuer (`https://{domain}/`) and JWKS URL (`https://{domain}/.well-known/jwks.json`) are derived from it. A URL or a trailing slash here is a configuration error and is rejected at startup. |
 | `AUTH0_AUDIENCE` | _empty_ | The API identifier tokens must carry in `aud`. |
@@ -237,13 +242,15 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | `AUTH0_ROLES_CLAIM` | `https://api.biosimulations.org/roles` | Namespaced claim carrying role names. **Stamped by the Auth0 Post-Login Action** (`auth0/actions/post-login.js`) — without that Action the claim never arrives, every `require_roles` endpoint returns 403, and no admin exists. |
 | `AUTH0_EMAIL_CLAIM` | `https://api.biosimulations.org/email` | Namespaced claim carrying the user's email. Also stamped by the Action; `get_current_user` falls back to a plain `email` claim for providers that include one. |
 | `AUTH0_EMAIL_VERIFIED_CLAIM` | `https://api.biosimulations.org/email_verified` | Namespaced claim carrying whether that email is verified. Stamped by the same Action. Authorization treats a missing claim as unverified (fail closed). Override only if the Action uses a different namespace. |
+| `AUTH0_PERMISSIONS_CLAIM` | `permissions` | Auth0 RBAC access-token claim (array) used by `require_permissions`. Missing/malformed → no permissions (fail closed). Roles never satisfy a permission check. See `docs/auth0-tokens-claims-endpoints.md`. |
+| `AUTH0_TRUSTED_ISSUERS` | _empty_ | Optional JSON object mapping `issuer` → `{audiences, jwks_uri}`. When set, token validation uses this **pairing** (an audience trusted for issuer A is not valid for issuer B). When unset, `AUTH0_DOMAIN`/`AUTH0_AUDIENCE` (or `AUTH0_ISSUER`/`AUTH0_JWKS_URI`) remain the single-issuer configuration. |
 | `AUTH0_MANAGEMENT_CLIENT_ID` | _empty_ | M2M credentials for `PATCH`/`DELETE /api/v1/me`. **Secret** — sealed-secret path only. Unset in every cluster today, so those endpoints return 503. |
 | `AUTH0_MANAGEMENT_CLIENT_SECRET` | _empty_ | See above. |
 
 **Per-cluster configuration:**
 
 | Overlay | Auth0 configuration | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `biosim-gke` | tenant + audience set | Production tier. |
 | `biosim-rke` | tenant + audience set | Prod tier; also backs the `biosim-rke-frontend-dev` preview frontend. |
 | `biosim-local` | _record the Step 2 decision here_ | |
@@ -251,13 +258,14 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 **Failure modes:**
 
 | Condition | Result |
-|---|---|
+| --- | --- |
 | Missing/malformed config, `AUTH_REQUIRED=true` | Pod refuses to start; `kubectl logs` names the variable. |
 | Missing/malformed config, `AUTH_REQUIRED=false` | Pod starts; endpoints behind `get_current_user` return **503**. |
 | Auth0 unreachable, warm JWKS cache | Tokens still validate for up to 24 h; a WARN is logged per request. |
 | Auth0 unreachable, cold JWKS cache | **503** with `Retry-After: 10`. |
 | Invalid, expired, or wrongly-audienced token | **401**. |
 | Valid token, missing role | **403**. |
+| Valid token, missing required permission/scope | **403**. |
 | Management API (`PATCH`/`DELETE /api/v1/me`) rate-limited (429) through all retries | **503** with `Retry-After`. |
 | Management API 5xx or transport failure through all retries | **502**. |
 
@@ -276,6 +284,10 @@ those two endpoints now require authentication. External/Swagger consumers of
 in this repository — treat that as an operational follow-up before advertising
 the gated contract as a breaking API change.
 
+**Which token to send:** the Platform API is an OAuth resource server and
+accepts **access tokens** only. Do not send an OIDC ID token in
+`Authorization`. Full contract: `docs/auth0-tokens-claims-endpoints.md`.
+
 **POST /projects/reindex (P1 #15): keep-and-harden.** The endpoint stays. It is
 the only HTTP path that can rebuild the project search index without cluster
 access. It remains disabled by default (`PROJECT_REINDEX_TOKEN` unset → 503)
@@ -291,7 +303,7 @@ enforces the configured number independently; the effective global ceiling is up
 evenly. To target a global ceiling `G`, configure the per-pod value as `G / 3`.
 
 | Variable | Default | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `RATE_LIMIT_ENABLED` | `true` | Kill-switch. Set `false` to disable rate limiting entirely without a code change -- an incident lever, mirroring `AUTH_REQUIRED`. |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Fixed-window size in seconds. |
 | `RATE_LIMIT_AUTHENTICATED_PER_WINDOW` | `30` | Per-pod requests per window for a caller identified by a verified token's `sub`. |
@@ -360,9 +372,11 @@ Backend release steps (run from repo root unless noted):
 > before the 24-hour bound expires.
 
 1. **Bump version + tag** (bumps `version.py` + `pyproject.toml`, commits, tags `backend-vX.Y.Z`):
+
    ```bash
    bash backend/scripts/bump-backend.sh patch      # or minor|major|X.Y.Z
    ```
+
 2. **Update kustomize overlays** — set `newTag: backend-X.Y.Z` in each overlay's `kustomization.yaml`:
    - `kustomize/overlays/biosim-gke/kustomization.yaml`
    - `kustomize/overlays/biosim-rke/kustomization.yaml`
@@ -370,10 +384,12 @@ Backend release steps (run from repo root unless noted):
 
    Commit these alongside the bump (the script commits only the version files).
 3. **Push the branch + tag** to build and publish images via CI:
+
    ```bash
    git push origin <branch>
    git push origin backend-vX.Y.Z
    ```
+
    The `release` workflow (`.github/workflows/release.yaml`) builds + pushes
    `platform-{api,worker}:backend-X.Y.Z` to GHCR (**amd64-only**) and cuts a
    GitHub Release. Watch it under the repo's Actions tab.
@@ -402,15 +418,19 @@ Backend release steps (run from repo root unless noted):
    production-tier cluster.
 
 5. **Apply to cluster** (example for biosim-gke) once images are published:
+
    ```bash
    export KUBECONFIG=<path-to-kubeconfig>
    cd kustomize/overlays/biosim-gke
    kubectl kustomize . | kubectl apply -f -
    ```
+
 6. **Verify**:
+
    ```bash
    kubectl get pods -n biosim-gke
    ```
+
 7. **Verify authentication end to end** (required after any deploy that touches auth
    configuration, and after any change to the Auth0 tenant or its Post-Login Action):
 
@@ -439,19 +459,20 @@ Backend release steps (run from repo root unless noted):
 
    ```bash
    grep -rn 'AUTH_REQUIRED' kustomize/config/
+   ```
 
-#### Auth0 tenant decision (TODO #6)
+### Auth0 tenant decision (TODO #6)
 
 **Decision:** <RATIFY the dev tenant | MIGRATE to a production tenant>
-**Date:** <YYYY-MM-DD>
-**Decided by:** <name>
+**Date:** `<YYYY-MM-DD>`
+**Decided by:** `<name>`
 
 **Tenant:** `<AUTH0_DOMAIN>`
 **Audience:** `<AUTH0_AUDIENCE>`
 **Claim namespaces:** `https://api.biosimulations.org/roles`, `.../email`
 (tenant-independent; must match `auth0/actions/post-login.js`)
 
-**Rationale:** <why>
+**Rationale:** `<why>`
 
 <If ratifying, also record:>
 
@@ -462,11 +483,10 @@ Backend release steps (run from repo root unless noted):
 
 <If migrating, also record:>
 
-- Cutover date: <YYYY-MM-DD>
-- Old tenant retained until: <YYYY-MM-DD>
+- Cutover date: `<YYYY-MM-DD>`
+- Old tenant retained until: `<YYYY-MM-DD>`
 - Applications re-created: SPA client id `<CLIENT_ID>`, M2M for the Action,
   M2M for the Management API (TODO #23) if enabled.
-
 
 ## Important Notes
 

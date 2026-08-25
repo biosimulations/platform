@@ -34,6 +34,7 @@ def _settings(**overrides: object) -> Auth0Settings:
         "AUTH0_AUDIENCE": "https://api.example.test",
         "AUTH0_ISSUER": "",
         "AUTH0_JWKS_URI": "",
+        "AUTH0_TRUSTED_ISSUERS": "",
     }
     base.update(overrides)
     return Auth0Settings(_env_file=None, **base) # type: ignore[call-arg,arg-type]

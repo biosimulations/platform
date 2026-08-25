@@ -39,6 +39,8 @@ in `shared.env`.**
 | `AUTH0_ROLES_CLAIM` | non-secret — a namespace URI in every token | `api.env` |
 | `AUTH0_EMAIL_CLAIM` | non-secret | `api.env` |
 | `AUTH0_EMAIL_VERIFIED_CLAIM` | non-secret — a namespace URI in every token | `api.env` |
+| `AUTH0_PERMISSIONS_CLAIM` | non-secret — Auth0 RBAC claim name (default `permissions`) | `api.env` |
+| `AUTH0_TRUSTED_ISSUERS` | non-secret — JSON issuer→audience map | `api.env` |
 | `AUTH0_MANAGEMENT_CLIENT_ID` | treat as secret (pairs with the secret) | **sealed secret** |
 | `AUTH0_MANAGEMENT_CLIENT_SECRET` | **SECRET** — grants `update:users`/`delete:users` on the whole tenant | **sealed secret** |
 
@@ -70,6 +72,13 @@ Not `https://tenant.us.auth0.com`, not a trailing slash, no whitespace.
 `config.py` derives the issuer (`https://{domain}/`) and the JWKS URL
 (`https://{domain}/.well-known/jwks.json`) from it; a URL here produces an issuer that
 matches no token. Since P0 #5 this is caught at startup, but catch it in review first.
+
+`AUTH0_TRUSTED_ISSUERS` is optional. When unset, the single-issuer
+`AUTH0_DOMAIN`/`AUTH0_AUDIENCE` (or `AUTH0_ISSUER`/`AUTH0_JWKS_URI`) shape is used.
+When set, it must be a JSON **object** mapping each issuer URL to
+`{"audiences": ["..."], "jwks_uri": "https://..."}`. This is a pairing, not two
+independent allowlists: an audience listed under issuer A is not valid for issuer B.
+See `backend/docs/auth0-tokens-claims-endpoints.md`.
 
 Every `.env` file here is `KEY=VALUE`, one per line, `#` comments, **and must end with a
 newline.**
