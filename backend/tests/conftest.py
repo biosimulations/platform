@@ -1,6 +1,18 @@
+import os
+
+# #20: the /api/v1/demo/* RBAC router is gated behind ENABLE_RBAC_DEMO (default
+# off). The demo and Keycloak integration suites need it mounted, so enable it
+# here -- BEFORE any biosim_server import constructs the lru_cached Settings and
+# before biosim_server.api.main builds `app` and reads the flag.
+os.environ.setdefault("ENABLE_RBAC_DEMO", "true")
+
+from typing import Iterator
+
 import pytest  # noqa: F401
 import pytest_asyncio  # noqa: F401
 from _pytest.config.argparsing import Parser
+
+from biosim_server.common.ratelimit import _reset_rate_limit_state
 
 from tests.fixtures.biosim_fixtures import (  # noqa: F401
     biosim_service_mock,
@@ -69,6 +81,24 @@ from tests.fixtures.keycloak.client import (  # noqa: F401
     alice_token_namespaced_email,
     alice_token_no_email_claim,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_ratelimit_buckets_between_tests() -> Iterator[None]:
+    """
+    Session-wide isolation for the workflow rate limiter (TODO P1 #10).
+
+    common/ratelimit.py keeps its counters in a module-level dict, keyed by
+    caller identity. Every test that drives a workflow-starting endpoint
+    through TestClient (e.g. /simulations/run, /verify/omex, /verify/runs)
+    does so as the same anonymous "testclient" IP identity -- without a
+    reset, those counters accumulate across the whole test session and an
+    unrelated later test can trip the real 429 once the default
+    anonymous_per_window quota is exhausted.
+    """
+    _reset_rate_limit_state()
+    yield
+    _reset_rate_limit_state()
 
 
 # Add the --workflow-environment option

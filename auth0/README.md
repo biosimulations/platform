@@ -14,19 +14,30 @@ auth0/
 
 ## Why this exists
 
-The backend reads two custom claims from every access token:
+The backend reads three custom claims from every access token:
 
 | Claim | Backend setting | Consumed by |
 | --- | --- | --- |
-| `https://api.biosimulations.org/roles` | `AUTH0_ROLES_CLAIM` (`biosim_server/config.py:50`) | `common/auth/roles.py` — `require_roles`, `require_owner_or_admin` |
-| `https://api.biosimulations.org/email` | `AUTH0_EMAIL_CLAIM` (`biosim_server/config.py:58`) | `require_owner_or_admin`'s ownership check |
+| `https://api.biosimulations.org/roles` | `AUTH0_ROLES_CLAIM` (`biosim_server/config.py`) | `common/auth/roles.py` — `require_roles`, `require_owner_or_admin` |
+| `https://api.biosimulations.org/email` | `AUTH0_EMAIL_CLAIM` | `require_owner_or_admin`'s legacy-email ownership fallback |
+| `https://api.biosimulations.org/email_verified` | `AUTH0_EMAIL_VERIFIED_CLAIM` | `require_owner_or_admin` — an unverified email must not grant ownership |
 
-Auth0 puts **neither** on an access token by default. `actions/post-login.js` does.
+Auth0 puts **none** of these on an access token by default. `actions/post-login.js` does.
+The claim names in that file MUST use backtick template literals
+(`` `${NAMESPACE}/roles` ``). Single-quoted `'${NAMESPACE}/roles'` is a literal
+JavaScript string and will stamp a claim the backend never reads.
 
-**If the Action is absent, disabled, or erroring:** every `require_roles` endpoint returns
-403, no admin exists, and owners cannot cancel or delete their own runs. The backend logs a
-WARNING naming this as the likely cause (`common/auth/auth0.py::_warn_roles_claim_absent`),
-but the HTTP responses are indistinguishable from a legitimate permissions denial.
+**If the Action is absent, disabled, erroring, or deployed from a copy that still
+uses single-quoted claim names:** every `require_roles` endpoint returns 403, no
+admin exists, and owners cannot cancel or delete their own runs via the email
+fallback. The backend logs a WARNING naming this as the likely cause
+(`common/auth/auth0.py::_warn_roles_claim_absent`), but the HTTP responses are
+indistinguishable from a legitimate permissions denial.
+
+**REQUIRES EXTERNAL ACTION — redeploy after any edit to `post-login.js`.**
+Committing the file does not update the tenant. Paste the file into the Auth0
+Dashboard Action, Deploy, confirm it is bound to the Login flow, then decode a
+real access token and confirm all three namespaced URIs are present.
 
 ## Required Auth0-side configuration
 

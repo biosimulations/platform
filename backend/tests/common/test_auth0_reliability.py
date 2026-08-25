@@ -13,7 +13,7 @@ network, no sleeping.
 
 
 import asyncio
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 from fastapi import HTTPException
@@ -21,10 +21,8 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from biosim_server.common.auth import auth0 as auth0_module
 from biosim_server.common.auth.auth0 import get_current_user
-from biosim_server.config import get_settings
+from tests.fixtures.auth_seam import install_auth_seam
 from tests.fixtures.jwks_fixtures import (
-    AUDIENCE,
-    ISSUER,
     FakeClock,
     FakeJwksEndpoint,
     connect_error,
@@ -36,18 +34,16 @@ OLD_KEY = make_key("kid-old")
 NEW_KEY = make_key("kid-new")
 
 @pytest.fixture(autouse=True)
-def _clean() -> Iterator[None]:
-    auth0_module._reset_jwks_cache()
-    yield
-    auth0_module._reset_jwks_cache()
+def _auth_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fresh Auth0 settings + JWKS cache for every test (#24)."""
+    install_auth_seam(monkeypatch)
+
 
 @pytest.fixture
-def auth_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = get_settings().auth0
-    monkeypatch.setattr(settings, "domain", "")
-    monkeypatch.setattr(settings, "issuer", ISSUER)
-    monkeypatch.setattr(settings, "jwks_uri", "https://idp.invalid/.well-known/jwks.json")
-    monkeypatch.setattr(settings, "audience", AUDIENCE)
+def auth_settings(_auth_seam: None) -> None:
+    """Kept so existing tests can request isolation without mutating globals."""
+    return None
+
 
 def _install(
     monkeypatch: pytest.MonkeyPatch, endpoint: FakeJwksEndpoint, clock: FakeClock
@@ -128,7 +124,7 @@ async def test_sustained_outage_then_recovery(
     clock.advance(11)
     await get_current_user(_creds(OLD_KEY.token()))
 
-    assert auth0_module._jwks_cache["last_failure_at"] == 0.0
+    assert auth0_module.get_jwks_cache().last_failure_at == 0.0
 
     # Backoff cleared and the cache is fresh again: no further fetches for a while
 

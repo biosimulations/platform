@@ -78,8 +78,9 @@ async def get_auth0_user(user_id: str) -> dict[str, Any]:
         return dict(resp.json())
 
 
-async def update_auth0_user(user_id: str, **fields: Any) -> dict[str, Any]:
+async def update_auth0_user(user_id: str, *, name: str | None = None) -> dict[str, Any]:
     settings = get_settings().auth0
+    fields = {"name": name} if name is not None else {}
     async with httpx.AsyncClient() as client:
         resp = await client.patch(
             f"https://{settings.domain}/api/v2/users/{user_id}",

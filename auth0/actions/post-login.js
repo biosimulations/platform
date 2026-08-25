@@ -36,12 +36,18 @@
  *
  * CLAIM NAMESPACE
  * ---------------
- * NAMESPACE below must match the backend's AUTH0_ROLES_CLAIM and
- * AUTH0_EMAIL_CLAIM settings exactly (biosim_server/config.py:50, :58 --
- * defaults "https://api.biosimulations.org/roles" and ".../email"). It is a
- * namespace URI, not a URL: nothing dereferences it, and it does NOT need to
- * change if the Auth0 tenant changes. If you change it here, change it in
- * every overlay's api.env in the same commit.
+ * NAMESPACE below must match the backend's AUTH0_ROLES_CLAIM,
+ * AUTH0_EMAIL_CLAIM, and AUTH0_EMAIL_VERIFIED_CLAIM settings exactly
+ * (biosim_server/config.py -- defaults "https://api.biosimulations.org/roles",
+ * ".../email", and ".../email_verified"). It is a namespace URI, not a URL:
+ * nothing dereferences it, and it does NOT need to change if the Auth0 tenant
+ * changes. If you change it here, change it in every overlay's api.env in the
+ * same commit.
+ *
+ * The claim names below MUST use backtick template literals. Single-quoted
+ * '${NAMESPACE}/...' is a literal string in JavaScript, not interpolation --
+ * Auth0 would stamp a claim named ${NAMESPACE}/roles, which the backend never
+ * reads.
  */
 
 const { ManagementClient } = require("auth0");
@@ -71,7 +77,8 @@ exports.onExecutePostLogin = async (event, api) => {
         }
     }
 
-    api.accessToken.setCustomClaim('${NAMESPACE}/roles', roles);
-    api.idToken.setCustomClaim('${NAMESPACE}/roles', roles);
-    api.accessToken.setCustomClaim('${NAMESPACE}/email', event.user.email);
+    api.accessToken.setCustomClaim(`${NAMESPACE}/roles`, roles);
+    api.idToken.setCustomClaim(`${NAMESPACE}/roles`, roles);
+    api.accessToken.setCustomClaim(`${NAMESPACE}/email`, event.user.email);
+    api.accessToken.setCustomClaim(`${NAMESPACE}/email_verified`, event.user.email_verified);
 };

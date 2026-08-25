@@ -236,6 +236,7 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | `AUTH0_JWKS_URI` | _derived_ | Explicit JWKS URL override. See above. |
 | `AUTH0_ROLES_CLAIM` | `https://api.biosimulations.org/roles` | Namespaced claim carrying role names. **Stamped by the Auth0 Post-Login Action** (`auth0/actions/post-login.js`) — without that Action the claim never arrives, every `require_roles` endpoint returns 403, and no admin exists. |
 | `AUTH0_EMAIL_CLAIM` | `https://api.biosimulations.org/email` | Namespaced claim carrying the user's email. Also stamped by the Action; `get_current_user` falls back to a plain `email` claim for providers that include one. |
+| `AUTH0_EMAIL_VERIFIED_CLAIM` | `https://api.biosimulations.org/email_verified` | Namespaced claim carrying whether that email is verified. Stamped by the same Action. Authorization treats a missing claim as unverified (fail closed). Override only if the Action uses a different namespace. |
 | `AUTH0_MANAGEMENT_CLIENT_ID` | _empty_ | M2M credentials for `PATCH`/`DELETE /api/v1/me`. **Secret** — sealed-secret path only. Unset in every cluster today, so those endpoints return 503. |
 | `AUTH0_MANAGEMENT_CLIENT_SECRET` | _empty_ | See above. |
 
@@ -257,6 +258,58 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | Auth0 unreachable, cold JWKS cache | **503** with `Retry-After: 10`. |
 | Invalid, expired, or wrongly-audienced token | **401**. |
 | Valid token, missing role | **403**. |
+
+**Anonymous `POST /simulations/run` (P1 #9 Option B).** This endpoint stays
+reachable without a bearer token, paired with the workflow rate limiter
+(P1 #10). The production frontend currently submits runs without an
+`Authorization` header, so requiring auth here would break the UI. Authenticated
+API clients still have their token's `sub` persisted as `owner_sub`. Anonymous
+and frontend-originated runs persist `owner_sub = NULL` until the frontend
+attaches tokens. This is an explicit product decision, not an omission.
+Revisit when the frontend sends bearer tokens (that is the gate for Option A).
+
+The frontend does **not** call `POST /verify/omex` or `POST /verify/runs`;
+those two endpoints now require authentication. External/Swagger consumers of
+`/verify/*` must send a bearer token. No inventory of those consumers exists
+in this repository — treat that as an operational follow-up before advertising
+the gated contract as a breaking API change.
+
+**POST /projects/reindex (P1 #15): keep-and-harden.** The endpoint stays. It is
+the only HTTP path that can rebuild the project search index without cluster
+access. It remains disabled by default (`PROJECT_REINDEX_TOKEN` unset → 503)
+and compares the bearer token with `secrets.compare_digest` on UTF-8 bytes.
+
+### Rate Limiting
+
+All values are **non-secret** and belong in each overlay's `api.env` ConfigMap. The limiter
+(`biosim_server/common/ratelimit.py`) is **per-pod, not global** -- `api` runs 3 replicas
+(`kustomize/base/api.yaml:8`) and there is no Redis or shared cache in this stack. Each pod
+enforces the configured number independently; the effective global ceiling is up to
+`replica_count` (currently 3) times the configured per-pod value if traffic distributes
+evenly. To target a global ceiling `G`, configure the per-pod value as `G / 3`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RATE_LIMIT_ENABLED` | `true` | Kill-switch. Set `false` to disable rate limiting entirely without a code change -- an incident lever, mirroring `AUTH_REQUIRED`. |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Fixed-window size in seconds. |
+| `RATE_LIMIT_AUTHENTICATED_PER_WINDOW` | `30` | Per-pod requests per window for a caller identified by a verified token's `sub`. |
+| `RATE_LIMIT_ANONYMOUS_PER_WINDOW` | `5` | Per-pod requests per window for a caller identified only by client IP. |
+
+Protects `POST /verify/omex`, `POST /verify/runs`, and `POST /simulations/run` -- the three
+endpoints that start a Temporal workflow. All three share ONE budget per caller identity, not
+three separate ones.
+
+**Failure mode on exhaustion:** `429 Too Many Requests` with a `Retry-After` header naming
+the number of seconds until the current window rolls over.
+
+Anonymous callers are keyed on client IP. `X-Forwarded-For` is trusted only when
+the ASGI peer is a private/loopback/link-local address (the ingress → `api`
+Service hop). A caller who reaches the process directly cannot spoof the quota
+by sending `X-Forwarded-For`. **REQUIRES EXTERNAL ACTION:** confirm the
+cluster's ingress-nginx ConfigMap has not set `use-forwarded-headers: "true"`
+(the default is `false`, which generates `X-Forwarded-For` from the TCP peer
+and does not pass through a client-supplied copy). This repo's Ingress objects
+do not override that.
 
 ## Testing
 
@@ -327,17 +380,36 @@ Backend release steps (run from repo root unless noted):
    > layer at `backend-X.Y.Z` (e.g. for the `biosim-local` overlay on Apple
    > silicon), build it locally instead: `bash kustomize/scripts/build_and_push.sh backend X.Y.Z`
    > (multi-arch). Or keep `biosim-local` pinned to an older multi-arch tag.
-4. **Apply to cluster** (example for biosim-gke) once images are published:
+
+4. **Verify the rendered configuration before applying.** `strategy: Recreate`
+   (`kustomize/base/api.yaml`) terminates the old `api` pod before starting the new one, so
+   a bad ConfigMap is a full API outage from the moment `kubectl apply` returns — there is
+   no rolling-update safety margin. Since P0 #5 an incomplete Auth0 configuration also makes
+   the pod refuse to start, which is the intended behaviour but is not something to discover
+   in production.
+
+   Run the checklist in `kustomize/README-config.md` → "Before you apply", or at minimum:
+
+   ```bash
+   kubectl kustomize kustomize/overlays/<cluster> \
+     | grep -E 'AUTH0_DOMAIN|AUTH0_AUDIENCE|AUTH_REQUIRED'
+   ```
+
+   Confirm both Auth0 values are present, that `AUTH0_DOMAIN` is a bare hostname with no
+   scheme or trailing slash, and that `AUTH_REQUIRED` is absent or `true` for any
+   production-tier cluster.
+
+5. **Apply to cluster** (example for biosim-gke) once images are published:
    ```bash
    export KUBECONFIG=<path-to-kubeconfig>
    cd kustomize/overlays/biosim-gke
    kubectl kustomize . | kubectl apply -f -
    ```
-5. **Verify**:
+6. **Verify**:
    ```bash
    kubectl get pods -n biosim-gke
    ```
-6. **Verify authentication end to end** (required after any deploy that touches auth
+7. **Verify authentication end to end** (required after any deploy that touches auth
    configuration, and after any change to the Auth0 tenant or its Post-Login Action):
 
    ```bash

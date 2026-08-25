@@ -10,15 +10,19 @@ tests/rbac_demo/test_keycloak_integration.py.
 """
 
 import asyncio
-from typing import Any, Iterator
-
+import base64
+import json
+import time
 import pytest
+from typing import Any
+
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
 from biosim_server.common.auth import auth0 as auth0_module
 from biosim_server.common.auth.auth0 import get_current_user, get_optional_user
-from biosim_server.config import get_settings
+from biosim_server.config import Auth0Settings
+from tests.fixtures.auth_seam import install_auth_seam
 from tests.fixtures.jwks_fixtures import (
     AUDIENCE,
     ISSUER,
@@ -34,26 +38,16 @@ KEY_A = make_key("key-a")
 KEY_B = make_key("key-b")
 
 @pytest.fixture(autouse=True)
-def _clean_jwks_cache() -> Iterator[None]:
-    """Every test starts with an empty cache, no armed backoff, no cooldown."""
-    auth0_module._reset_jwks_cache()
-    yield
-    auth0_module._reset_jwks_cache()
+def _auth_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fresh Auth0 settings + JWKS cache for every test (#24)."""
+    install_auth_seam(monkeypatch)
+
 
 @pytest.fixture
-def auth_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    Points the token verifier at the local test issuer/audience.
+def auth_settings(_auth_seam: None) -> None:
+    """Kept so existing tests can request isolation without mutating globals."""
+    return None
 
-    Mirrors tests/fixtures/keycloak/client.py: get_settings() is lru_cache'd,
-    so there is no injection seam and the singleton's fields are monkeypatched
-    in place (reverted at teardown).
-    """
-    settings = get_settings().auth0
-    monkeypatch.setattr(settings, "domain", "")
-    monkeypatch.setattr(settings, "issuer", ISSUER)
-    monkeypatch.setattr(settings, "jwks_uri", "https://idp.invalid/.well-known/jwks.json")
-    monkeypatch.setattr(settings, "audience", AUDIENCE)
 
 def _install(
     monkeypatch: pytest.MonkeyPatch, endpoint: FakeJwksEndpoint, clock: FakeClock
@@ -88,6 +82,104 @@ async def test_successful_fetch_validates_token(
 
     assert user.sub == "auth0|alice"
     assert endpoint.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sub", "detail"),
+    [(None, "Invalid token"), ("", "Invalid token"), (42, "Invalid claims")],
+    ids=["missing", "empty", "non-string"],
+)
+async def test_missing_or_invalid_subject_is_rejected(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch, sub: str | int | None, detail: str
+) -> None:
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user(_creds(KEY_A.token(sub=sub)))
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expires_in", "expected_status"), [(-30, 200), (-120, 401)],
+    ids=["within-leeway", "past-leeway"],
+)
+async def test_expiration_clock_skew_boundary(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch, expires_in: int, expected_status: int
+) -> None:
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    if expected_status == 200:
+        assert (await get_current_user(_creds(KEY_A.token(expires_in=expires_in)))).sub
+    else:
+        with pytest.raises(HTTPException) as exc_info:
+            await get_current_user(_creds(KEY_A.token(expires_in=expires_in)))
+        assert exc_info.value.status_code == expected_status
+        assert exc_info.value.detail == "Token expired"
+
+
+@pytest.mark.asyncio
+async def test_not_before_within_clock_skew_is_accepted(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    user = await get_current_user(
+        _creds(KEY_A.token(extra_claims={"nbf": int(time.time()) + 30}))
+    )
+    assert user.sub == "auth0|test-user"
+
+
+EMAIL_VERIFIED_CLAIM = "https://api.biosimulations.org/email_verified"
+
+
+@pytest.mark.asyncio
+async def test_namespaced_email_verified_claim_populates_the_user(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    user = await get_current_user(
+        _creds(KEY_A.token(extra_claims={EMAIL_VERIFIED_CLAIM: True}))
+    )
+    assert user.email_verified is True
+
+
+@pytest.mark.asyncio
+async def test_absent_email_verified_claim_defaults_false(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    user = await get_current_user(_creds(KEY_A.token()))
+    assert user.email_verified is False
+
+
+@pytest.mark.asyncio
+async def test_namespaced_email_verified_false_does_not_fall_through(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A namespaced claim present-and-False must not fall through to a plain
+    email_verified: true on the same token."""
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    user = await get_current_user(
+        _creds(
+            KEY_A.token(
+                extra_claims={EMAIL_VERIFIED_CLAIM: False, "email_verified": True}
+            )
+        )
+    )
+    assert user.email_verified is False
 
 @pytest.mark.asyncio
 async def test_cached_keys_are_reused_within_the_ttl(
@@ -160,7 +252,7 @@ async def test_malformed_jwks_body_is_a_failure_not_a_poisoned_cache(
         await get_current_user(_creds(KEY_A.token()))
 
     assert exc_info.value.status_code == 503
-    assert auth0_module._jwks_cache["keys"] is None
+    assert auth0_module.get_jwks_cache().keys is None
 
 @pytest.mark.asyncio
 async def test_failing_idp_is_probed_at_most_once_per_backoff_window(
@@ -350,10 +442,123 @@ async def test_optional_user_propagates_503_but_swallows_401(
 
 @pytest.mark.asyncio
 async def test_optional_user_returns_none_for_a_bad_token(
-    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """401-class faults keep degrading to anonymous, exactly as before."""
     endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
     _install(monkeypatch, endpoint, FakeClock())
 
-    assert await get_optional_user(_creds("not-a-jwt")) is None
+    with caplog.at_level("INFO"):
+        assert await get_optional_user(_creds("not-a-jwt")) is None
+    assert any(
+        getattr(record, "auth_outcome", None) == "anonymous_downgrade"
+        for record in caplog.records
+    )
+
+# --------------------------------------------------------------------------
+# P1 #14 -- the algorithm allowlist is a constant, not environment-overridable
+# --------------------------------------------------------------------------
+
+def test_auth0settings_has_no_algorithms_field() -> None:
+    """
+    The allowlist must not be a Settings field at all -- there must be
+    nothing for an ALGORITHMS environment variable to bind to.
+    """
+    assert "algorithms" not in Auth0Settings.model_fields
+
+def test_algorithms_env_var_has_no_effect_on_the_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A stray ALGORITHMS env var -- the exact scenario TODO #14 flags -- must be
+    inert. Before this change, pydantic-settings' case-insensitive, unaliased
+    field binding would have let this silently override the allowlist; there
+    is now no field for it to bind to, so the constant is the only source of
+    truth regardless of what the environment says.
+    """
+    monkeypatch.setenv("ALGORITHMS", '["none", "HS256"]')
+    settings = Auth0Settings(
+        _env_file=None, AUTH0_DOMAIN="tenant.us.auth0.com", AUTH0_AUDIENCE="aud"
+    )  # type: ignore[call-arg]
+    assert not hasattr(settings, "algorithms")
+    assert auth0_module._ALLOWED_ALGORITHMS == ("RS256",)
+
+def _unsigned_none_token(claims: dict[str, Any]) -> str:
+    """
+    Hand-build a classic alg:none forged token.
+
+    python-jose's own jwt.encode() refuses to produce one -- confirmed against
+    this repo's installed python-jose (3.5.0): `jwt.encode({...}, key="",
+    algorithm="none")` raises `jose.exceptions.JWSError: Algorithm none not
+    supported`. That refusal is itself a small extra defence, but it means the
+    forgery this test needs has to be assembled by hand, exactly as a real
+    attacker constructing one from scratch would.
+    """
+
+    def _b64(obj: dict[str, Any]) -> str:
+        raw = json.dumps(obj, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+    header = _b64({"alg": "none", "typ": "JWT"})
+    payload = _b64(claims)
+    return f"{header}.{payload}."
+
+@pytest.mark.asyncio
+async def test_alg_none_forged_token_is_rejected(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The classic algorithm-confusion forgery: a claims payload that would
+    pass every downstream check, signed with nothing at all."""
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    forged = _unsigned_none_token(
+        {
+            "sub": "auth0|attacker",
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "exp": int(time.time()) + 3600,
+
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user(_creds(forged))
+    assert exc_info.value.status_code == 401
+
+@pytest.mark.asyncio
+async def test_hs256_signed_token_is_rejected_even_with_valid_claims(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Cross-algorithm confusion: an HS256 token, correctly self-consistent
+    (signed with SOME secret, valid claims), still fails because RS256 is the
+    only algorithm jwt.decode is told to accept.
+
+    Confirmed against this repo's python-jose: decoding an HS256 token while
+    passing algorithms=["RS256"] raises `jose.exceptions.JWTError: The
+    specified alg value is not allowed`, which get_current_user's blanket
+    `except Exception` (auth0.py:313-314) maps to 401 "Invalid token".
+    """
+
+    from jose import jwt as jose_jwt  # type: ignore[import-untyped]
+    
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    hs256_token = jose_jwt.encode(
+        {
+            "sub": "auth0|attacker",
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "exp": int(time.time()) +3600,
+        },
+        key="whatever-an-attacker-guesses-or-finds-public",
+        algorithm="HS256",
+        headers={"kid": KEY_A.kid},
+    )
+    
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user(_creds(hs256_token))
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Invalid token"

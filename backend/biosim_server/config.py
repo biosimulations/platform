@@ -29,7 +29,11 @@ class Auth0Settings(BaseSettings):
     # malformed configuration (see _validate_auth0_configuration in api/main.py).
     # Set false only to run deliberately without an identity provider.
     required: bool = Field(default=True, alias="AUTH_REQUIRED")
-    algorithms: list[str] = ["RS256"]
+    # NOTE: there is deliberately no `algorithms` field here (P1 #14). It was a
+    # bare, unaliased field, which under env_prefix="" bound to a stray
+    # ALGORITHMS environment variable -- see common/auth/auth0.py's
+    # _ALLOWED_ALGORITHMS, a hardcoded module constant, for the replacement
+    # and the full rationale.
     # get_current_user derives the expected JWT issuer and JWKS URL from
     # `domain` using Auth0's own convention ("https://{domain}/" and
     # "https://{domain}/.well-known/jwks.json") when these are left blank.
@@ -60,6 +64,14 @@ class Auth0Settings(BaseSettings):
     # OIDC providers that do put it on the access token, e.g. the Keycloak
     # realm used in tests).
     email_claim: str = Field(default="https://api.biosimulations.org/email", alias="AUTH0_EMAIL_CLAIM")
+    # Same story as email_claim: Auth0 access tokens don't carry email_verified
+    # by default, so the Post-Login Action stamps it as a namespaced claim
+    # (auth0/actions/post-login.js). Authorization treats a missing claim as
+    # unverified (fail closed) -- see get_current_user and
+    # roles.require_owner_or_admin.
+    email_verified_claim: str = Field(
+        default="https://api.biosimulations.org/email_verified", alias="AUTH0_EMAIL_VERIFIED_CLAIM"
+    )
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore", populate_by_name=True)
 
@@ -108,10 +120,39 @@ class Auth0Settings(BaseSettings):
             errors.append(
                 f"AUTH0_DOMAIN does not look like a hostname: {self.domain!r}"
             )
-        if not self.algorithms:
-            errors.append("the JWT algorithm allowlist resolved to an empty list")
         return errors
 
+class RateLimitSettings(BaseSettings):
+    """
+    Per-pod rate limiting for workflow-starting endpoints (TODO P1 #10).
+
+    PER-POD, NOT GLOBAL: `api` runs 3 replicas (kustomize/base/api.yaml:8) and
+    this limiter (common/ratelimit.py) keeps its counters in a single
+    process's memory -- there is no Redis or other shared datastore in this
+    stack today. If traffic distributes evenly across all 3 pods, a caller
+    can achieve up to 3x the configured per-pod number before every pod has
+    independently started rejecting it. To target a specific GLOBAL ceiling
+    G, configure authenticated_per_window / anonymous_per_window as
+    G / replica_count (currently G / 3). A precise, cluster-wide limit needs
+    a Mongo- or Redis-backed shared counter -- named as explicit P2/P3 future
+    work, not built here.
+    """
+
+    # Operational kill-switch, mirroring AUTH_REQUIRED's role as an incident
+    # lever (Auth0Settings.required, above). Set false to disable rate
+    # limiting entirely without a code change -- e.g. if the limiter itself
+    # is misbehaving during an incident.
+    enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
+    window_seconds: int = Field(default=60, alias="RATE_LIMIT_WINDOW_SECONDS")
+    # Materially higher than the anonymous quota -- authenticating should be
+    # worth something. Defaults are starting points to tune from observed
+    # traffic (see the tutorial's Operational Considerations), not a
+    # precision-engineered ceiling. Both are PER-POD; see the class
+    # docstring for the replica-count arithmetic.
+    authenticated_per_window: int = Field(default=30, alias="RATE_LIMIT_AUTHENTICATED_PER_WINDOW")
+    anonymous_per_window: int = Field(default=5, alias="RATE_LIMIT_ANONYMOUS_PER_WINDOW")
+
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore", populate_by_name=True)
 
 class Settings(BaseSettings):
     storage_backend: STORAGE_BACKEND = "gcs"
@@ -146,6 +187,7 @@ class Settings(BaseSettings):
     # reading the biosimulations collections above; we own its $text index. The
     # "Platform" prefix keeps it clearly ours, not a biosimulations collection.
     mongodb_collection_project_search: str = "PlatformProjectSearch"
+    ratelimit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     # $text searchable fields -> relevance weights (higher = ranks stronger).
     # Each field must exist on the search document: title/abstract/description are
     # text; keywords/taxa are label arrays (Mongo text-indexes them element-wise).
@@ -170,6 +212,12 @@ class Settings(BaseSettings):
     # `python -m biosim_server.projects.reindex_cli`. Set a token only to enable
     # ad-hoc HTTP-triggered reindexing.
     project_reindex_token: str = ""
+    # #20: mount the /api/v1/demo/* RBAC teaching router only when explicitly
+    # enabled. Default false so any cluster that says nothing gets the safe
+    # behaviour -- the demo endpoints 404 and are absent from the OpenAPI schema
+    # in production. Explicit alias on the P1 #14 precedent (a bare, generically
+    # named env binding is the hazard that removed the algorithms field).
+    enable_rbac_demo: bool = Field(default=False, alias="ENABLE_RBAC_DEMO")
     # Legacy pre-2022 materialized summary; dead/abandoned (nothing writes it).
     # Kept only for reference — the API assembles from Projects + Metadata live.
     mongodb_collection_project_summary: str = "projectSummary"

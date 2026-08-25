@@ -28,7 +28,14 @@ from biosim_server.simulations.models import (
 from biosim_server.simulations.workflow import SimulationRunWorkflow, SimulationRunWorkflowInput
 
 from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user, get_optional_user
-from biosim_server.common.auth.roles import ADMIN_ROLE, PUBLISHER_ROLE, require_owner_or_admin, require_roles
+from biosim_server.common.auth.roles import (
+    ADMIN_ROLE,
+    PUBLISHER_ROLE,
+    is_ownerless,
+    require_owner_or_admin,
+    require_roles,
+)
+from biosim_server.common.ratelimit import workflow_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +46,17 @@ router = APIRouter(prefix="/simulations", tags=["Simulations"])
     "/run",
     response_model=ConglomerateStatus,
     operation_id="run-simulations",
-    dependencies=[Depends(get_temporal_client), Depends(get_biosim_service), Depends(get_omex_database_service)],
+    dependencies=[Depends(get_temporal_client), Depends(get_biosim_service), Depends(get_omex_database_service), Depends(workflow_rate_limit)],
     summary="Run simulations for an OMEX archive across selected simulators",
 )
 async def run_simulations(
     request: RunSimulationRequest,
     user: AuthenticatedUser | None = Depends(get_optional_user),
 ) -> ConglomerateStatus:
+    # P1 #9 Option B: anonymous submission stays allowed. The frontend does
+    # not attach a bearer token today; requiring auth here would break the
+    # UI. Rate limiting (workflow_rate_limit / P1 #10) is the load-bearing
+    # control. Recorded in backend/CLAUDE.md → Authentication.
     # Look up OMEX file by omex_id (which is the file_hash_md5)
     omex_database = get_omex_database_service()
     if omex_database is None:
@@ -102,22 +113,31 @@ async def run_simulations(
     if runs_db is not None:
         for job_id, sim in zip(job_ids, simulator_versions):
             try:
-                await runs_db.insert_simulation_run(SimulationRunRecord(
-                    run_id=job_id,
-                    processing_id=workflow_id,
-                    name=request.name,
-                    simulator=sim.id,
-                    simulator_version=sim.version,
-                    simulator_digest=sim.image_digest,
-                    cache_buster=cache_buster,
-                    # Trust the verified token's email over the client-supplied field
-                    # when the caller is authenticated -- request.email_address is
-                    # otherwise spoofable and would undermine ownership checks (e.g.
-                    # delete_simulation_run) downstream. Anonymous submissions keep
-                    # using the request body field unchanged.
-                    email=(user.email if user is not None and user.email else request.email_address),
-                    status="CREATED",
-                ))
+                await runs_db.insert_simulation_run(
+                    SimulationRunRecord(
+                        run_id=job_id,
+                        processing_id=workflow_id,
+                        name=request.name,
+                        simulator=sim.id,
+                        simulator_version=sim.version,
+                        simulator_digest=sim.image_digest,
+                        cache_buster=cache_buster,
+                        # Trust the verified token's email over the client-supplied field
+                        # when the caller is authenticated -- request.email_address is
+                        # otherwise spoofable and would undermine ownership checks (e.g.
+                        # delete_simulation_run) downstream. Anonymous submissions keep
+                        # using the request body field unchanged.
+                        email=(
+                            user.email
+                            if user is not None and user.email
+                            else request.email_address
+                        ),
+                        # sub is never client-suppliable -- it comes only from a verified
+                        # token, unlike email_address above. None for anonymous
+                        owner_sub=(user.sub if user is not None else None),
+                        status="CREATED",
+                    )
+                )
             except Exception as e:
                 logger.error(f"Failed to persist simulation run record {job_id}: {e}", exc_info=e)
     else:
@@ -174,7 +194,7 @@ async def list_simulation_runs(
     wants_email_scope = request.type == "user" or any(f.id == "email" for f in request.filters)
     if wants_email_scope:
         if user is None:
-            raise HTTPException(status_code=401, detail="Authentication required to filter runs by email")
+            raise _missing_bearer("Authentication required to filter runs by email")
         if ADMIN_ROLE not in user.roles:
             # Non-admins may only self-scope, and only via an exact-match email
             # filter -- contains/starts_with/is_any would turn "filter by my own
@@ -276,7 +296,10 @@ async def get_simulation_status_explicit(processing_id: str) -> ConglomerateStat
     operation_id="get-simulation-results",
     summary="Get the result-dataset catalog for each job in a simulation run",
 )
-async def get_simulation_results(processing_id: str) -> SimulationRunResults:
+async def get_simulation_results(
+    processing_id: str,
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> SimulationRunResults:
     runs_db = get_simulation_run_database_service()
     if runs_db is None:
         raise HTTPException(status_code=503, detail="Simulation run database service not available")
@@ -287,6 +310,7 @@ async def get_simulation_results(processing_id: str) -> SimulationRunResults:
     records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
     if not records:
         raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+    _authorize_run_read(user, records, action="view results for")
 
     jobs: list[JobResult] = []
     for record in records:
@@ -307,7 +331,10 @@ async def get_simulation_results(processing_id: str) -> SimulationRunResults:
     operation_id="get-simulation-logs",
     summary="Get simulator logs for each job in a simulation run",
 )
-async def get_simulation_logs(processing_id: str) -> SimulationRunLogs:
+async def get_simulation_logs(
+    processing_id: str,
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> SimulationRunLogs:
     runs_db = get_simulation_run_database_service()
     if runs_db is None:
         raise HTTPException(status_code=503, detail="Simulation run database service not available")
@@ -318,6 +345,7 @@ async def get_simulation_logs(processing_id: str) -> SimulationRunLogs:
     records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
     if not records:
         raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+    _authorize_run_read(user, records, action="view logs for")
 
     jobs: list[JobLogs] = []
     for record in records:
@@ -349,7 +377,7 @@ async def cancel_simulation_run(
     records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
     if not records:
         raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
-    require_owner_or_admin(user, (record.email for record in records), action="cancel")
+    require_owner_or_admin(user, records, action="cancel")
 
     temporal_client = get_temporal_client()
     if temporal_client is None:
@@ -393,7 +421,7 @@ async def delete_simulation_run(
     if not records:
         raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
 
-    require_owner_or_admin(user, (record.email for record in records), action="delete")
+    require_owner_or_admin(user, records, action="delete")
 
     await runs_db.delete_simulation_runs_by_processing_id(processing_id)
     return Response(status_code=204)
@@ -407,6 +435,46 @@ _DISPLAY_TO_JOB_STATUS: dict[str, str] = {
     "FAILED": "failure",
     "CANCELLED": "cancelled",
 }
+
+
+def _missing_bearer(detail: str) -> HTTPException:
+    """401 for a missing token on an otherwise-optional-auth path.
+
+    Mirrors common.auth.auth0._unauthorized's RFC 6750 challenge so every
+    401 from this router carries WWW-Authenticate, not only those raised
+    inside get_current_user.
+    """
+    return HTTPException(
+        status_code=401,
+        detail=detail,
+        headers={
+            "WWW-Authenticate": (
+                'Bearer realm="api", error="invalid_request", '
+                'error_description="Missing bearer token"'
+            )
+        },
+    )
+
+
+def _authorize_run_read(
+    user: AuthenticatedUser | None,
+    records: list[SimulationRunRecord],
+    *,
+    action: str,
+) -> None:
+    """P1 #11: genuinely anonymous runs stay publicly readable; owned runs do not.
+
+    An ownerless record has neither owner_sub nor email. If every record in
+    the set is ownerless, anyone holding the processing_id may read results
+    or logs. Otherwise the caller must be the owner or an admin -- 401 when
+    there is no token, 403 when there is a token that does not own the run.
+    GET /{id} and /status are deliberately left open.
+    """
+    if all(is_ownerless(record) for record in records):
+        return
+    if user is None:
+        raise _missing_bearer(f"Authentication required to {action} this simulation run")
+    require_owner_or_admin(user, records, action=action)
 
 
 def _conglomerate_status_from_records(

@@ -7,6 +7,7 @@ so paging through slim results is independent of the heavier facet computation
 
 import json
 import logging
+import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import ValidationError
@@ -29,11 +30,36 @@ def require_reindex_token(authorization: str | None = Header(default=None)) -> N
 
     Disabled by default: with no token configured the endpoint returns 503, so
     it can't be triggered over the public ingress. The routine rebuild runs as an
-    in-cluster CronJob (direct Mongo), not through this endpoint."""
+    in-cluster CronJob (direct Mongo), not through this endpoint.
+
+    Uses secrets.compare_digest for a constant-time comparison (TODO P1 #15).
+    compare_digest requires both arguments to be the same type (str/str or
+    bytes/bytes) and, for str, ASCII only -- Starlette decodes header bytes
+    as latin-1, so a non-ASCII Authorization value would otherwise raise
+    TypeError and surface as an unhandled 500. Encode both sides to UTF-8
+    before comparing. The `authorization is None` check MUST run first: a
+    missing header is the common unauthenticated probe and must stay a
+    clean 401, not a TypeError.
+
+    Keep-and-harden (P1 #15): this endpoint stays. It is the only HTTP
+    path that can rebuild the project search index without cluster access;
+    disabling it when PROJECT_REINDEX_TOKEN is unset is the public-ingress
+    control. Deleting it would force every rebuild through the CronJob.
+    """
     token = get_settings().project_reindex_token
     if not token:
         raise HTTPException(status_code=503, detail="reindex endpoint disabled (no token configured)")
-    if authorization != f"Bearer {token}":
+    expected = f"Bearer {token}"
+    if authorization is None:
+        raise HTTPException(status_code=401, detail="invalid or missing reindex token")
+    try:
+        matches = secrets.compare_digest(
+            authorization.encode("utf-8", "surrogateescape"),
+            expected.encode("utf-8"),
+        )
+    except (TypeError, ValueError):
+        matches = False
+    if not matches:
         raise HTTPException(status_code=401, detail="invalid or missing reindex token")
 
 

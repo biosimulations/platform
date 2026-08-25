@@ -18,6 +18,10 @@ from biosim_server.biosim_verify import CompareSettings
 from biosim_server.compatibility import compatibility_router
 from biosim_server.simulations import simulations_router
 from biosim_server.projects.router import router as projects_router
+from biosim_server.common.auth import AuthenticatedUser, get_current_user
+from biosim_server.common.auth.auth0 import JwksCache, get_jwks_cache
+from biosim_server.common.auth.discovery import warm_discovery_cache
+from biosim_server.common.ratelimit import workflow_rate_limit
 from biosim_server.rbac_demo.router import router as rbac_demo_router
 from biosim_server.users.router import router as users_router
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
@@ -153,6 +157,11 @@ def _validate_auth0_configuration() -> None:
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     #_warn_if_auth0_misconfigured()
     _validate_auth0_configuration()
+    # #16: best-effort OIDC discovery warm. Deliberately after the (local,
+    # side-effect-free) configuration gate and wrapped so it can never fail
+    # startup -- a pod that cannot reach the discovery endpoint at boot still
+    # starts and serves tokens via the convention-derived URLs.
+    await warm_discovery_cache(get_settings().auth0)
     await init_standalone()
     yield
     await shutdown_standalone()
@@ -173,7 +182,21 @@ app.include_router(compatibility_router)
 app.include_router(simulations_router)
 app.include_router(projects_router)
 app.include_router(users_router)
-app.include_router(rbac_demo_router)
+
+
+def register_demo_router(app: FastAPI, *, enabled: bool) -> None:
+    """Mount the /api/v1/demo/* RBAC teaching router only when explicitly enabled.
+
+    #20: the demo router is a worked example, not production API surface. Left
+    unmounted (the default), its paths return 404 and it is absent from
+    /openapi.json. The Keycloak integration suite enables it via
+    ENABLE_RBAC_DEMO in the test environment.
+    """
+    if enabled:
+        app.include_router(rbac_demo_router)
+
+
+register_demo_router(app, enabled=get_settings().enable_rbac_demo)
 
 
 # -- endpoint logic -- #
@@ -199,7 +222,10 @@ def health() -> dict[str, str]:
 
 
 @app.get("/ready", include_in_schema=False)
-async def ready(response: Response) -> dict[str, object]:
+async def ready(
+    response: Response,
+    jwks_cache: JwksCache = Depends(get_jwks_cache),
+) -> dict[str, object]:
     checks: dict[str, bool] = {}
 
     mongo_client = get_mongo_client()
@@ -217,7 +243,13 @@ async def ready(response: Response) -> dict[str, object]:
 
     ok = all(checks.values())
     response.status_code = 200 if ok else 503
-    return {"status": "ready" if ok else "not ready", "checks": checks}
+    # #19c: auth (JWKS cache) health is reported as NON-GATING information --
+    # it is deliberately kept out of `checks`, so `ok` stays computed from
+    # MongoDB + Temporal only. A warm-cache Auth0 outage therefore never makes a
+    # pod unready (it is still validating tokens), and this call makes no
+    # outbound Auth0 request. Decision D-5: inform, do not gate.
+    info: dict[str, object] = {"auth": jwks_cache.status()}
+    return {"status": "ready" if ok else "not ready", "checks": checks, "info": info}
 
 
 @app.get("/docs", include_in_schema=False)
@@ -236,10 +268,11 @@ async def custom_swagger_ui_html() -> HTMLResponse:
     response_model=VerifyWorkflowOutput,
     operation_id="verify-omex",
     tags=["Verification"],
-    dependencies=[Depends(get_temporal_client), Depends(get_file_service), Depends(get_local_cache_dir), Depends(get_omex_database_service)],
+    dependencies=[Depends(get_temporal_client), Depends(get_file_service), Depends(get_local_cache_dir), Depends(get_omex_database_service), Depends(workflow_rate_limit)],
     summary="Request verification report for OMEX/COMBINE archive across simulators")
 async def verify_omex(
         uploaded_file: UploadFile = File(..., description="OMEX/COMBINE archive containing a deterministic SBML model"),
+        user: AuthenticatedUser = Depends(get_current_user),
         workflow_id_prefix: str = Query(default="omex-verification-", description="Prefix for the workflow id."),
         simulators: list[str] = Query(default=["amici", "copasi", "pysces", "tellurium", "vcell"],
                                       description="List of simulators 'name' or 'name:version' to compare."),
@@ -347,9 +380,10 @@ async def get_verify_output(workflow_id: str) -> VerifyWorkflowOutput:
     response_model=VerifyWorkflowOutput,
     operation_id="verify-runs",
     tags=["Verification"],
-    dependencies=[Depends(get_temporal_client)],
+    dependencies=[Depends(get_temporal_client), Depends(workflow_rate_limit)],
     summary="Request verification report for biosimulation runs by run IDs")
 async def verify_runs(
+        user: AuthenticatedUser = Depends(get_current_user),
         workflow_id_prefix: str = Query(default="runs-verification-", description="Prefix for the workflow id."),
         biosimulations_run_ids: list[str] = Query(default=["67817a2e1f52f47f628af971","67817a2eba5a3f02b9f2938d"],
                                                   description="List of biosimulations run IDs to compare."),

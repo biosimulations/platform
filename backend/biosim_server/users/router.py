@@ -30,10 +30,10 @@ async def _build_profile(user: AuthenticatedUser) -> UserProfile:
             auth0_user = await get_auth0_user(user.sub)
             profile.name = auth0_user.get("name")
             profile.email_verified = auth0_user.get("email_verified")
-        except Exception as e:
+        except Exception:
             # Best-effort enrichment -- a flaky Management API call shouldn't
             # break reading your own JWT-derived identity.
-            logger.warning(f"Failed to enrich profile for {user.sub} from Auth0 Management API: {e}")
+            logger.warning("Failed to enrich profile from Auth0 Management API")
     return profile
 
 
@@ -66,13 +66,12 @@ async def update_me(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> UserProfile:
     _require_management_api()
-    updates = request.model_dump(exclude_unset=True)
-    if not updates:
+    if not request.model_fields_set:
         return await _build_profile(user)
     try:
-        auth0_user = await update_auth0_user(user.sub, **updates)
-    except Exception as e:
-        logger.error(f"Failed to update Auth0 user {user.sub}: {e}", exc_info=e)
+        auth0_user = await update_auth0_user(user.sub, name=request.name)
+    except Exception:
+        logger.exception("Failed to update profile through Auth0 Management API")
         raise HTTPException(status_code=502, detail="Failed to update profile via Auth0 Management API")
     return UserProfile(
         id=user.sub,
@@ -93,7 +92,7 @@ async def delete_me(user: AuthenticatedUser = Depends(get_current_user)) -> Resp
     _require_management_api()
     try:
         await delete_auth0_user(user.sub)
-    except Exception as e:
-        logger.error(f"Failed to delete Auth0 user {user.sub}: {e}", exc_info=e)
+    except Exception:
+        logger.exception("Failed to delete account through Auth0 Management API")
         raise HTTPException(status_code=502, detail="Failed to delete account via Auth0 Management API")
     return Response(status_code=204)

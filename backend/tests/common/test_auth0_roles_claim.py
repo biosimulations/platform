@@ -11,16 +11,13 @@ Hermetic: local RSA keys and a fake JWKS endpoint from tests/fixtures/jwks_fixtu
 no container, no network.
 """
 
-from typing import Iterator
-
 import pytest
+from fastapi.security import HTTPAuthorizationCredentials
 
 from biosim_server.common.auth import auth0 as auth0_module
 from biosim_server.common.auth.auth0 import get_current_user
-from biosim_server.config import get_settings
+from tests.fixtures.auth_seam import install_auth_seam, make_auth0_settings
 from tests.fixtures.jwks_fixtures import (
-    AUDIENCE,
-    ISSUER,
     FakeClock,
     FakeJwksEndpoint,
     jwks_document,
@@ -30,29 +27,19 @@ from tests.fixtures.jwks_fixtures import (
 ROLES_CLAIM = "https://api.biosimulations.org/roles"
 KEY = make_key("kid-roles")
 
-@pytest.fixture(autouse=True)
-def _clean_state() -> Iterator[None]:
-    auth0_module._reset_jwks_cache()
-    yield
-    auth0_module._reset_jwks_cache()
 
 @pytest.fixture
 def verifier(monkeypatch: pytest.MonkeyPatch) -> None:
     """Points token verification at a local key set and the default roles claim."""
-    settings = get_settings().auth0
-    monkeypatch.setattr(settings, "domain", "")
-    monkeypatch.setattr(settings, "issuer", ISSUER)
-    monkeypatch.setattr(settings, "jwks_uri", "https://idp.invalid/.well-known/jwks.json")
-    monkeypatch.setattr(settings, "audience", AUDIENCE)
-    monkeypatch.setattr(settings, "roles_claim", ROLES_CLAIM)
+    settings = make_auth0_settings(roles_claim=ROLES_CLAIM)
+    install_auth_seam(monkeypatch, settings=settings)
 
     document = jwks_document(KEY)
     endpoint = FakeJwksEndpoint(responses=[lambda: document])
-    monkeypatch.setattr(auth0_module.httpx, "AsyncClient", endpoint.client_factory())
+    monkeypatch.setattr("biosim_server.common.auth.auth0.httpx.AsyncClient", endpoint.client_factory())
     monkeypatch.setattr(auth0_module, "time", FakeClock())
 
-def _creds(token: str) -> object:
-    from fastapi.security import HTTPAuthorizationCredentials
+def _creds(token: str) -> HTTPAuthorizationCredentials:
     return HTTPAuthorizationCredentials(
         scheme="Bearer", credentials=token
     )

@@ -100,6 +100,7 @@ async def test_get_output_not_found(omex_verify_workflow_input: OmexVerifyWorkfl
 @pytest.mark.integration
 @pytest.mark.skipif(len(get_settings().storage_gcs_credentials_file) == 0,
                     reason="gcs_credentials.json file not supplied")
+@pytest.mark.usefixtures("authenticated_user")
 @pytest.mark.asyncio
 async def test_omex_verify_and_get_output(omex_verify_workflow_input: OmexVerifyWorkflowInput,
                                          omex_verify_workflow_output: VerifyWorkflowOutput,
@@ -144,6 +145,7 @@ async def test_omex_verify_and_get_output(omex_verify_workflow_input: OmexVerify
 
 @pytest.mark.skipif(len(get_settings().storage_gcs_credentials_file) == 0,
                     reason="gcs_credentials.json file not supplied")
+@pytest.mark.usefixtures("authenticated_user")
 @pytest.mark.asyncio
 async def test_runs_verify_and_get_output(runs_verify_workflow_input: RunsVerifyWorkflowInput,
                                          runs_verify_workflow_output: VerifyWorkflowOutput,
@@ -185,6 +187,7 @@ async def test_runs_verify_and_get_output(runs_verify_workflow_input: RunsVerify
 
 @pytest.mark.skipif(len(get_settings().storage_gcs_credentials_file) == 0,
                     reason="gcs_credentials.json file not supplied")
+@pytest.mark.usefixtures("authenticated_user")
 @pytest.mark.asyncio
 async def test_runs_verify_not_found(runs_verify_workflow_input: RunsVerifyWorkflowInput,
                                          runs_verify_workflow_output: VerifyWorkflowOutput,
@@ -223,6 +226,25 @@ async def test_runs_verify_not_found(runs_verify_workflow_input: RunsVerifyWorkf
         assert output.workflow_status == VerifyWorkflowStatus.RUN_ID_NOT_FOUND
         assert output.workflow_error in [ "Simulation run with id bad_run_id_1 not found.",
                                           "Simulation run with id bad_run_id_2 not found."]
+
+@pytest.mark.asyncio
+async def test_verify_omex_requires_authentication() -> None:
+    """POST /verify/omex with no bearer token is rejected 401 before the handler runs."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
+        response = await test_client.post(
+            "/verify/omex",
+            files={"uploaded_file": ("empty.omex", b"", "application/zip")},
+        )
+        assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_verify_runs_requires_authentication() -> None:
+    """POST /verify/runs with no bearer token is rejected 401 before the handler runs."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
+        response = await test_client.post("/verify/runs")
+        assert response.status_code == 401
+
 
 @pytest.mark.asyncio
 async def test_demopublic() -> None:

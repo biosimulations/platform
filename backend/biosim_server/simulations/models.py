@@ -88,6 +88,12 @@ class SimulationRunRecord(BaseModel):
     env_vars: list[str] = Field(default_factory=list)
     purpose: str = ""
     email: str | None = None
+    # The verified Auth0 `sub` of the authenticated submitter, or None for a
+    # legacy record (predates this field) or a genuinely anonymous
+    # submission. The primary ownership key -- see
+    # common.auth.roles.require_owner_or_admin. `email` is retained for
+    # display and as the legacy fallback path.
+    owner_sub: str | None = None
     status: RunDisplayStatus = "CREATED"
     runtime: int = 0
     project_size: int = 0

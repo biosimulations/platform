@@ -88,6 +88,52 @@ def test_patch_me_updates_name(
     assert resp.json()["name"] == "New Name"
 
 
+@patch("biosim_server.users.router.get_auth0_user")
+@patch("biosim_server.users.router.update_auth0_user")
+@patch("biosim_server.users.router.management_api_configured", return_value=True)
+def test_patch_me_with_no_fields_makes_no_auth0_update_call(
+    _mock_configured: AsyncMock,
+    mock_update: AsyncMock,
+    mock_get: AsyncMock,
+    authenticated_user: AuthenticatedUser,
+) -> None:
+    # #22c: a PATCH that sets no permitted field must not call the Management
+    # API's update endpoint at all -- it returns the current profile unchanged.
+    mock_get.return_value = {"name": "Existing", "email_verified": True}
+    resp = client.patch("/api/v1/me", json={})
+    assert resp.status_code == 200
+    mock_update.assert_not_awaited()
+    assert resp.json()["id"] == authenticated_user.sub
+
+
+@patch("biosim_server.users.router.get_auth0_user")
+@patch("biosim_server.users.router.update_auth0_user")
+@patch("biosim_server.users.router.management_api_configured", return_value=True)
+def test_patch_me_ignores_arbitrary_fields_and_only_forwards_name(
+    _mock_configured: AsyncMock,
+    mock_update: AsyncMock,
+    mock_get: AsyncMock,
+    authenticated_user: AuthenticatedUser,
+) -> None:
+    # #22c: an unreviewed field in the request body (here `email`, an
+    # authentication-relevant Auth0 attribute) must never reach the Management
+    # API. UpdateUserProfileRequest ignores unknown fields, and the router
+    # forwards only the explicit `name` keyword, so the arbitrary field is
+    # structurally incapable of mutating the Auth0 user record.
+    mock_update.return_value = {"name": "New Name"}
+    mock_get.return_value = {"name": "New Name", "email_verified": True}
+    resp = client.patch(
+        "/api/v1/me",
+        json={"name": "New Name", "email": "attacker@evil.test", "email_verified": True, "roles": ["admin"]},
+    )
+    assert resp.status_code == 200
+    # Only `name` is forwarded; no email/email_verified/roles keyword reaches Auth0.
+    mock_update.assert_awaited_once_with(authenticated_user.sub, name="New Name")
+    call = mock_update.await_args
+    assert call is not None
+    assert set(call.kwargs) == {"name"}
+
+
 def test_delete_me_requires_authentication() -> None:
     resp = client.delete("/api/v1/me")
     assert resp.status_code == 401

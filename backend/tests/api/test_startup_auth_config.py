@@ -94,10 +94,6 @@ def test_malformed_hostname_is_rejected(bad_domain: str) -> None:
     errors = _settings(AUTH0_DOMAIN=bad_domain).configuration_errors()
     assert any("does not look like a hostname" in e for e in errors)
 
-def test_empty_algorithm_allowlist_is_reported() -> None:
-    errors = _settings(algorithms=[]).configuration_errors()
-    assert any("algorithm allowlist" in e for e in errors)
-
 # --------------------------------------------------------------------------
 # The gate itself
 # --------------------------------------------------------------------------

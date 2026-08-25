@@ -5,6 +5,7 @@ __pycache__/
 .idea
 .vscode
 .cursor
+.junie
 
 # C extensions
 *.so

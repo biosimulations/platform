@@ -19,10 +19,8 @@ from httpx import ASGITransport, AsyncClient
 from biosim_server.api.main import app
 from biosim_server.common.auth import auth0 as auth0_module
 
-from biosim_server.config import get_settings
+from tests.fixtures.auth_seam import clear_auth_overrides, install_auth_seam
 from tests.fixtures.jwks_fixtures import (
-    AUDIENCE,
-    ISSUER,
     FakeClock,
     FakeJwksEndpoint,
     connect_error,
@@ -41,20 +39,18 @@ PROTECTED_URL = "/api/v1/demo/private/me"
 KEY = make_key("kid-http")
 
 @pytest.fixture(autouse=True)
-def _clean_jwks_cache() -> Iterator[None]:
-    auth0_module._reset_jwks_cache()
+def _auth_seam(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Fresh Auth0 settings + JWKS cache via FastAPI overrides (#24)."""
+    install_auth_seam(monkeypatch, app=app)
     yield
-    auth0_module._reset_jwks_cache()
+    clear_auth_overrides(app)
+
 
 @pytest.fixture
-def auth_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = get_settings().auth0
-    monkeypatch.setattr(settings, "domain", "")
-    monkeypatch.setattr(settings, "issuer", ISSUER)
-    monkeypatch.setattr(settings, "jwks_uri", "https://idp.invalid/.well-known/jwks.json")
-    monkeypatch.setattr(settings, "audience", AUDIENCE)
+def auth_settings(_auth_seam: None) -> None:
+    """Kept so existing tests can request isolation without mutating globals."""
+    return None
+
 
 def _install(
     monkeypatch: pytest.MonkeyPatch, endpoint: FakeJwksEndpoint, clock: FakeClock
@@ -173,11 +169,27 @@ async def test_expired_token_is_401_not_503(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         response = await c.get(
             PROTECTED_URL,
-            headers={"Authorization": f"Bearer {KEY.token(expires_in=-60)}"},
+            headers={"Authorization": f"Bearer {KEY.token(expires_in=-120)}"},
         )
     
     assert response.status_code == 401
     assert response.json() == {"detail": "Token expired"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sub", [None, ""], ids=["missing", "empty"])
+async def test_missing_or_empty_subject_is_401_not_500(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch, sub: str | None
+) -> None:
+    _install(monkeypatch, FakeJwksEndpoint(responses=[lambda: jwks_document(KEY)]), FakeClock())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        response = await c.get(
+            PROTECTED_URL, headers={"Authorization": f"Bearer {KEY.token(sub=sub)}"}
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid token"}
 
 @pytest.mark.asyncio
 async def test_wrong_audience_is_401(
@@ -270,3 +282,155 @@ async def test_no_jwks_failure_mode_produces_a_500(
 
     assert response.status_code != 500
     assert response.status_code in (401, 503)
+
+# --------------------------------------------------------------------------
+# P1 #13 -- every 401 carries a WWW-Authenticate: Bearer challenge
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_missing_token_carries_www_authenticate_invalid_request() -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        response = await c.get(PROTECTED_URL)
+
+    assert response.status_code == 401
+    challenge = response.headers["www-authenticate"]
+    assert challenge.startswith("Bearer ")
+    assert 'realm="api"' in challenge
+    assert 'error="invalid_request"' in challenge
+
+
+@pytest.mark.asyncio
+async def test_malformed_token_carries_www_authenticate_invalid_request(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    endpoint = FakeJwksEndpoint(responses=[lambda: jwks_document(KEY)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        response = await c.get(
+            PROTECTED_URL, headers={"Authorization": "Bearer not-a-jwt"}
+        )
+
+    assert response.status_code == 401
+    assert 'error="invalid_request"' in response.headers["www-authenticate"]
+    assert endpoint.call_count == 0  # rejected before any JWKS fetch, unchanged from before
+
+
+@pytest.mark.asyncio
+async def test_unknown_signing_key_carries_www_authenticate_invalid_token(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = make_key("kid-not-published-www-auth")
+    document = jwks_document(KEY)
+    _install(monkeypatch, FakeJwksEndpoint(responses=[lambda: document]), FakeClock())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        response = await c.get(
+            PROTECTED_URL, headers={"Authorization": f"Bearer {other.token()}"}
+        )
+
+    assert response.status_code == 401
+    assert 'error="invalid_token"' in response.headers["www-authenticate"]
+
+
+@pytest.mark.asyncio
+async def test_wrong_audience_carries_www_authenticate_invalid_token(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = jwks_document(KEY)
+    _install(monkeypatch, FakeJwksEndpoint(responses=[lambda: document]), FakeClock())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        response = await c.get(
+            PROTECTED_URL,
+            headers={
+                "Authorization": f"Bearer {KEY.token(audience='https://somewhere.else')}"
+            },
+        )
+
+    assert response.status_code == 401
+    assert 'error="invalid_token"' in response.headers["www-authenticate"]
+
+
+@pytest.mark.asyncio
+async def test_expired_token_www_authenticate_is_distinguishable_from_invalid(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The point of #13, proven directly: a client can tell "refresh and retry"
+    (expired) apart from "log in again" (everything else) by reading
+    error_description alone -- no JSON body parsing required.
+    """
+    document = jwks_document(KEY)
+    _install(monkeypatch, FakeJwksEndpoint(responses=[lambda: document]), FakeClock())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        expired = await c.get(
+            PROTECTED_URL,
+            headers={"Authorization": f"Bearer {KEY.token(expires_in=-120)}"},
+        )
+        invalid = await c.get(
+            PROTECTED_URL,
+            headers={
+                "Authorization": f"Bearer {KEY.token(audience='https://somewhere.else')}"
+            },
+        )
+
+    expired_challenge = expired.headers["www-authenticate"]
+    invalid_challenge = invalid.headers["www-authenticate"]
+
+    assert 'error="invalid_token"' in expired_challenge  # same error= as the other case
+    assert 'error="invalid_token"' in invalid_challenge  # -- RFC 6750 has no expired_token
+    assert "expired" in expired_challenge.lower()         # distinguished by description
+    assert "expired" not in invalid_challenge.lower()
+
+
+@pytest.mark.asyncio
+async def test_idp_outage_503_does_not_carry_www_authenticate(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    _jwks_unavailable()'s 503 is a distinct RFC concern (Retry-After, RFC 9110
+    §10.2.3) from a bearer-auth challenge (WWW-Authenticate, RFC 6750 -- only
+    meaningful on a 401). This tutorial must not add WWW-Authenticate to the
+    503 path: a client that reads it as "re-authenticate" instead of "retry
+    later" would do exactly the wrong thing during an IdP outage.
+    """
+    _install(monkeypatch, FakeJwksEndpoint(responses=[connect_error]), FakeClock())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        response = await c.get(
+            PROTECTED_URL, headers={"Authorization": f"Bearer {KEY.token()}"}
+        )
+
+    assert response.status_code == 503
+    assert "www-authenticate" not in response.headers
+    assert response.headers["retry-after"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_www_authenticate_never_contains_the_token_or_the_kid(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    By design, not by injection attempt: _unauthorized()'s detail and
+    error_description arguments are always static string literals written in
+    auth0.py, never an f-string over request data. This test confirms the
+    observable consequence -- the header contains neither the (attacker-
+    controlled) kid nor any fragment of the submitted token -- as a guard
+    against a future edit accidentally interpolating either.
+    """
+    other = make_key("kid-should-never-appear-in-a-header")
+    document = jwks_document(KEY)
+    _install(monkeypatch, FakeJwksEndpoint(responses=[lambda: document]), FakeClock())
+
+    token = other.token()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        response = await c.get(
+            PROTECTED_URL, headers={"Authorization": f"Bearer {token}"}
+        )
+
+    challenge = response.headers["www-authenticate"]
+    assert other.kid not in challenge
+    assert token[:20] not in challenge

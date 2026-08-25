@@ -279,6 +279,7 @@ def test_run_simulations_trusts_authenticated_email_over_request_body(
     assert response.status_code == 200
     inserted_record = runs_db.insert_simulation_run.call_args.args[0]
     assert inserted_record.email == user.email
+    assert inserted_record.owner_sub == user.sub
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
@@ -312,6 +313,36 @@ def test_run_simulations_anonymous_still_uses_request_body_email(
     assert response.status_code == 200
     inserted_record = runs_db.insert_simulation_run.call_args.args[0]
     assert inserted_record.email == request["email_address"]
+    assert inserted_record.owner_sub is None
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_allows_anonymous_callers(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+) -> None:
+    """P1 #9 Option B: POST /simulations/run stays reachable without a bearer token.
+
+    Recorded in backend/CLAUDE.md → Authentication. Rate limiting (P1 #10)
+    is the load-bearing control for this decision.
+    """
+    omex_db = AsyncMock()
+    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    temporal_client.start_workflow.return_value = AsyncMock(id="sim-run-test")
+    mock_get_temporal.return_value = temporal_client
+
+    response = TestClient(app).post("/simulations/run", json=_make_request())
+    assert response.status_code == 200
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
@@ -449,6 +480,8 @@ def _make_run_record(
     status: str = "SUCCEEDED",
     simulator: str = "copasi",
     biosimulations_run_id: str | None = "biosim-abc",
+    email: str | None = "user@example.com",
+    owner_sub: str | None = None,
 ) -> object:
     """Build a SimulationRunRecord for the fallback / hybrid-merge tests."""
     from datetime import datetime, timezone
@@ -464,7 +497,8 @@ def _make_run_record(
         simulator_version="4.34.251",
         simulator_digest="sha256:abc",
         cache_buster="0",
-        email="user@example.com",
+        email=email,
+        owner_sub=owner_sub,
         status=status,  # type: ignore[arg-type]
         biosimulations_run_id=biosimulations_run_id,
         submitted=when,
@@ -613,8 +647,18 @@ def test_get_simulation_results(mock_get_runs_db: MagicMock, mock_get_biosim: Ma
 
     runs_db = AsyncMock()
     runs_db.get_simulation_runs_by_processing_id.return_value = [
-        _make_run_record("job-1", processing_id="sim-run-r", biosimulations_run_id="biosim-1"),
-        _make_run_record("job-2", processing_id="sim-run-r", biosimulations_run_id=None),
+        _make_run_record(
+            "job-1",
+            processing_id="sim-run-r",
+            biosimulations_run_id="biosim-1",
+            email=None,
+        ),
+        _make_run_record(
+            "job-2",
+            processing_id="sim-run-r",
+            biosimulations_run_id=None,
+            email=None,
+        ),
     ]
     mock_get_runs_db.return_value = runs_db
 
@@ -653,7 +697,12 @@ def test_get_simulation_results_not_found(mock_get_runs_db: MagicMock, mock_get_
 def test_get_simulation_logs(mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock) -> None:
     runs_db = AsyncMock()
     runs_db.get_simulation_runs_by_processing_id.return_value = [
-        _make_run_record("job-1", processing_id="sim-run-l", biosimulations_run_id="biosim-1"),
+        _make_run_record(
+            "job-1",
+            processing_id="sim-run-l",
+            biosimulations_run_id="biosim-1",
+            email=None,
+        ),
     ]
     mock_get_runs_db.return_value = runs_db
 
@@ -666,6 +715,105 @@ def test_get_simulation_logs(mock_get_runs_db: MagicMock, mock_get_biosim: Magic
     body = response.json()
     assert body["jobs"][0]["logs"] == {"stdout": "hello"}
     biosim_service.get_sim_run_logs.assert_awaited_once_with("biosim-1")
+
+
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_get_simulation_results_anonymous_cannot_read_owned_run(
+    mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock
+) -> None:
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record(
+            "job-1",
+            processing_id="sim-run-r",
+            owner_sub="auth0|owner",
+            email="owner@example.com",
+        ),
+    ]
+    mock_get_runs_db.return_value = runs_db
+    mock_get_biosim.return_value = AsyncMock()
+
+    response = TestClient(app).get("/simulations/sim-run-r/results")
+    assert response.status_code == 401
+    assert "WWW-Authenticate" in response.headers
+
+
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_get_simulation_results_owner_can_read(
+    mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock
+) -> None:
+    user = make_authenticated_user(sub="auth0|owner")
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        runs_db = AsyncMock()
+        runs_db.get_simulation_runs_by_processing_id.return_value = [
+            _make_run_record(
+                "job-1",
+                processing_id="sim-run-r",
+                owner_sub=user.sub,
+                email=user.email,
+                biosimulations_run_id=None,
+            ),
+        ]
+        mock_get_runs_db.return_value = runs_db
+        mock_get_biosim.return_value = AsyncMock()
+
+        response = TestClient(app).get("/simulations/sim-run-r/results")
+        assert response.status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+
+
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_get_simulation_logs_non_owner_forbidden(
+    mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock
+) -> None:
+    user = make_authenticated_user(sub="auth0|other")
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        runs_db = AsyncMock()
+        runs_db.get_simulation_runs_by_processing_id.return_value = [
+            _make_run_record(
+                "job-1",
+                processing_id="sim-run-l",
+                owner_sub="auth0|owner",
+                email="owner@example.com",
+            ),
+        ]
+        mock_get_runs_db.return_value = runs_db
+        mock_get_biosim.return_value = AsyncMock()
+
+        response = TestClient(app).get("/simulations/sim-run-l/logs")
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_get_simulation_status_remains_public(mock_get_temporal: MagicMock) -> None:
+    """P1 #11 leaves GET /{id} and /status open -- a processing_id is not a secret."""
+    from biosim_server.simulations.models import ConglomerateStatus, SimulationJobStatus
+
+    temporal_client = MagicMock()
+    workflow_handle = AsyncMock()
+    workflow_handle.query.return_value = ConglomerateStatus(
+        processing_id="sim-run-public",
+        jobs=[
+            SimulationJobStatus(
+                job_id="job-1", simulator_id="copasi", version="4.34.251", status="processing"
+            )
+        ],
+    )
+    temporal_client.get_workflow_handle.return_value = workflow_handle
+    mock_get_temporal.return_value = temporal_client
+
+    status_response = TestClient(app).get("/simulations/sim-run-public/status")
+    assert status_response.status_code == 200
+    id_response = TestClient(app).get("/simulations/sim-run-public")
+    assert id_response.status_code == 200
 
 
 # --------------------------- /cancel ---------------------------
@@ -718,6 +866,7 @@ def test_cancel_simulation_run_success(
         "job-1", processing_id="sim-run-c", status="CREATED"
     )
     record.email = authenticated_user.email  # type: ignore[attr-defined]
+    record.owner_sub = authenticated_user.sub  # type: ignore[attr-defined]
 
     updated_record = record.model_copy(update={"status": "CANCELLED"})
 
@@ -771,6 +920,66 @@ def test_cancel_simulation_run_success_as_admin_non_owner(
         workflow_handle.cancel.assert_awaited_once()
         body = response.json()
         assert body["jobs"][0]["status"] == "cancelled"
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_cancel_legacy_run_succeeds_with_verified_email(
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock
+) -> None:
+    """P1 #8: a verified-email token may still own a pre-owner_sub (legacy) run."""
+    from biosim_server.simulations.models import SimulationRunRecord
+
+    user = make_authenticated_user(email="legacy-owner@example.com", email_verified=True)
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        record: SimulationRunRecord = _make_run_record(  # type: ignore[assignment]
+            "job-1",
+            processing_id="sim-run-legacy",
+            status="CREATED",
+            email=user.email,
+            owner_sub=None,
+        )
+        updated_record = record.model_copy(update={"status": "CANCELLED"})
+        runs_db = AsyncMock()
+        runs_db.get_simulation_runs_by_processing_id.side_effect = [[record], [updated_record]]
+        mock_get_runs_db.return_value = runs_db
+
+        temporal_client = MagicMock()
+        workflow_handle = AsyncMock()
+        temporal_client.get_workflow_handle.return_value = workflow_handle
+        mock_get_temporal.return_value = temporal_client
+
+        response = TestClient(app).post("/simulations/sim-run-legacy/cancel")
+        assert response.status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_cancel_legacy_run_forbidden_without_verified_email(
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock
+) -> None:
+    """Same email, unverified -- must not grant ownership of a legacy run."""
+    user = make_authenticated_user(email="legacy-owner@example.com", email_verified=False)
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        record = _make_run_record(
+            "job-1",
+            processing_id="sim-run-legacy",
+            status="CREATED",
+            email=user.email,
+            owner_sub=None,
+        )
+        runs_db = AsyncMock()
+        runs_db.get_simulation_runs_by_processing_id.return_value = [record]
+        mock_get_runs_db.return_value = runs_db
+
+        response = TestClient(app).post("/simulations/sim-run-legacy/cancel")
+        assert response.status_code == 403
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -855,6 +1064,7 @@ def test_delete_simulation_run_success_as_publisher_owner(mock_get_runs_db: Magi
         runs_db = AsyncMock()
         record = _make_run_record("job-1", processing_id="sim-run-d")
         record.email = user.email  # type: ignore[attr-defined]
+        record.owner_sub = user.sub  # type: ignore[attr-defined]
         runs_db.get_simulation_runs_by_processing_id.return_value = [record]
         mock_get_runs_db.return_value = runs_db
 

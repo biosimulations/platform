@@ -31,19 +31,20 @@ class TestKey:
     def token(
         self,
         *,
-        sub: str = "auth0|test-user",
+        sub: Any = "auth0|test-user",
         issuer: str = ISSUER,
         audience: str = AUDIENCE,
         expires_in: int = 3600,
         extra_claims: dict[str, Any] | None = None,
     ) -> str:
         claims: dict[str, Any] = {
-            "sub": sub,
             "iss": issuer,
             "aud": audience,
             "iat": int(time.time()),
             "exp": int(time.time()) + expires_in,
         }
+        if sub is not None:
+            claims["sub"] = sub
         if extra_claims:
             claims.update(extra_claims)
         return str(
