@@ -247,6 +247,85 @@ async def test_verify_runs_requires_authentication() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_verify_requires_authentication() -> None:
+    """GET /verify/{id} with no bearer token is 401 -- closes anonymous IDOR."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
+        response = await test_client.get("/verify/omex-verification-does-not-exist")
+        assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_verify_rejects_non_owner() -> None:
+    """GET /verify/{id} with owner_sub set: a different authenticated user is 403."""
+    from biosim_server.biosim_verify import CompareSettings
+
+    output = VerifyWorkflowOutput(
+        workflow_id="omex-verification-owned",
+        compare_settings=CompareSettings(
+            user_description="t",
+            include_outputs=False,
+            rel_tol=0.0001,
+            abs_tol_min=0.001,
+            abs_tol_scale=0.00001,
+        ),
+        workflow_status=VerifyWorkflowStatus.COMPLETED,
+        timestamp="2024-01-01T00:00:00Z",
+        owner_sub="auth0|owner",
+    )
+    handle = MagicMock()
+    handle.query = AsyncMock(return_value=output)
+    temporal = MagicMock()
+    temporal.get_workflow_handle.return_value = handle
+
+    user = AuthenticatedUser(sub="auth0|stranger", email="stranger@example.com")
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
+                response = await test_client.get("/verify/omex-verification-owned")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_verify_legacy_ownerless_allows_any_authenticated_user() -> None:
+    """In-flight workflows with no owner_sub remain readable by any logged-in caller."""
+    from biosim_server.biosim_verify import CompareSettings
+
+    output = VerifyWorkflowOutput(
+        workflow_id="omex-verification-legacy",
+        compare_settings=CompareSettings(
+            user_description="t",
+            include_outputs=False,
+            rel_tol=0.0001,
+            abs_tol_min=0.001,
+            abs_tol_scale=0.00001,
+        ),
+        workflow_status=VerifyWorkflowStatus.COMPLETED,
+        timestamp="2024-01-01T00:00:00Z",
+        owner_sub=None,
+    )
+    handle = MagicMock()
+    handle.query = AsyncMock(return_value=output)
+    temporal = MagicMock()
+    temporal.get_workflow_handle.return_value = handle
+
+    user = AuthenticatedUser(sub="auth0|anyone", email="anyone@example.com")
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
+                response = await test_client.get("/verify/omex-verification-legacy")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert response.status_code == 200
+    assert response.json()["workflow_id"] == "omex-verification-legacy"
+
+
+@pytest.mark.asyncio
 async def test_demopublic() -> None:
     """GET /api/v1/demo/public needs no auth dependency at all -- reachable with
     no Authorization header and no dependency_overrides in play."""

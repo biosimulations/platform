@@ -18,6 +18,7 @@ from biosim_server.biosim_verify.models import GenerateStatisticsActivityOutput,
 class RunsVerifyWorkflowInput(BaseModel):
     biosimulations_run_ids: list[str]
     compare_settings: CompareSettings
+    owner_sub: str | None = None
 
 
 @workflow.defn
@@ -31,7 +32,8 @@ class RunsVerifyWorkflow:
         # assert verify_input.workflow_id == workflow.info().workflow_id
         self.verify_output = VerifyWorkflowOutput(workflow_id=workflow.info().workflow_id,
             compare_settings=verify_input.compare_settings, workflow_run_id=workflow.info().run_id,
-            workflow_status=VerifyWorkflowStatus.IN_PROGRESS, timestamp=str(workflow.now()))
+            workflow_status=VerifyWorkflowStatus.IN_PROGRESS, timestamp=str(workflow.now()),
+            owner_sub=verify_input.owner_sub)
 
     @workflow.query(name="get_output")
     def get_runs_sim_workflow_output(self) -> VerifyWorkflowOutput:
@@ -63,7 +65,7 @@ class RunsVerifyWorkflow:
                 self.verify_output = VerifyWorkflowOutput(workflow_id=workflow.info().workflow_id,
                     compare_settings=verify_input.compare_settings, workflow_run_id=workflow.info().run_id,
                     workflow_status=status, timestamp=str(workflow.now()),
-                    workflow_error=error_message)
+                    workflow_error=error_message, owner_sub=verify_input.owner_sub)
                 return self.verify_output
             else:
                 simulator_workflow_runs.append(output.biosim_workflow_run)

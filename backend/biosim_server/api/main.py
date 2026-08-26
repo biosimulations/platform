@@ -21,6 +21,7 @@ from biosim_server.projects.router import router as projects_router
 from biosim_server.common.auth import AuthenticatedUser, get_current_user
 from biosim_server.common.auth.auth0 import JwksCache, get_jwks_cache
 from biosim_server.common.auth.discovery import warm_discovery_cache
+from biosim_server.common.auth.roles import require_owner_or_admin
 from biosim_server.common.ratelimit import workflow_rate_limit
 from biosim_server.rbac_demo.router import router as rbac_demo_router
 from biosim_server.users.router import router as users_router
@@ -322,7 +323,8 @@ async def verify_omex(
                                        rel_tol=rel_tol, abs_tol_min=abs_tol_min, abs_tol_scale=abs_tol_scale,
                                        observables=observables)
     omex_verify_workflow_input = OmexVerifyWorkflowInput(omex_file=omex_file, requested_simulators=simulator_versions,
-                                                         compare_settings=compare_settings, cache_buster=cache_buster)
+                                                         compare_settings=compare_settings, cache_buster=cache_buster,
+                                                         owner_sub=user.sub)
 
     # ---- invoke workflow ---- #
     logger.info(f"starting workflow for {omex_file}")
@@ -343,9 +345,23 @@ async def verify_omex(
         workflow_status=VerifyWorkflowStatus.PENDING,
         timestamp=str(datetime.now(UTC)),
         workflow_id=workflow_id,
-        workflow_run_id=workflow_handle.run_id
+        workflow_run_id=workflow_handle.run_id,
+        owner_sub=user.sub
     )
     return omex_verify_workflow_output
+
+
+class _VerifyOwnership:
+    """Adapter so ``require_owner_or_admin`` can check a verify workflow.
+
+    Email is never persisted on the verify payload; ownership is ``owner_sub``
+    only. Legacy in-flight workflows with ``owner_sub is None`` skip this check
+    and allow any authenticated caller.
+    """
+
+    def __init__(self, owner_sub: str | None) -> None:
+        self.owner_sub = owner_sub
+        self.email: str | None = None
 
 
 @app.get(
@@ -356,7 +372,10 @@ async def verify_omex(
     tags=["Verification"],
     dependencies=[Depends(get_temporal_client)],
     summary='Retrieve verification report for OMEX/COMBINE archive')
-async def get_verify_output(workflow_id: str) -> VerifyWorkflowOutput:
+async def get_verify_output(
+        workflow_id: str,
+        user: AuthenticatedUser = Depends(get_current_user),
+) -> VerifyWorkflowOutput:
     logger.info(f"in get /verify/{workflow_id}")
 
     try:
@@ -368,7 +387,15 @@ async def get_verify_output(workflow_id: str) -> VerifyWorkflowOutput:
         workflow_output: VerifyWorkflowOutput = await workflow_handle.query("get_output",
                                                                                 result_type=VerifyWorkflowOutput,
                                                                                 rpc_timeout=timedelta(seconds=60))
+        if workflow_output.owner_sub is not None:
+            require_owner_or_admin(
+                user,
+                [_VerifyOwnership(workflow_output.owner_sub)],
+                action="read",
+            )
         return workflow_output
+    except HTTPException:
+        raise
     except Exception as e2:
         exc_message = str(e2)
         msg = f"error retrieving verification job output with id: {workflow_id}: {exc_message}"
@@ -404,7 +431,7 @@ async def verify_runs(
                                        rel_tol=rel_tol, abs_tol_min=abs_tol_min, abs_tol_scale=abs_tol_scale,
                                        observables=observables)
     runs_verify_workflow_input = RunsVerifyWorkflowInput(biosimulations_run_ids=biosimulations_run_ids,
-                                                         compare_settings=compare_settings)
+                                                         compare_settings=compare_settings, owner_sub=user.sub)
 
     # ---- invoke workflow ---- #
     logger.info(f"starting verify workflow for biosim run IDs {biosimulations_run_ids}")
@@ -425,7 +452,8 @@ async def verify_runs(
         workflow_status=VerifyWorkflowStatus.PENDING,
         timestamp=str(datetime.now(UTC)),
         workflow_id=workflow_id,
-        workflow_run_id=workflow_handle.run_id
+        workflow_run_id=workflow_handle.run_id,
+        owner_sub=user.sub
     )
     return runs_verify_workflow_output
 

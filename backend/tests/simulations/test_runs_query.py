@@ -16,7 +16,7 @@ from pymongo import ASCENDING, DESCENDING
 from biosim_server.api.main import app
 from biosim_server.common.auth import AuthenticatedUser, get_optional_user
 from biosim_server.simulations import SimulationRunDatabaseServiceMongo, SimulationRunRecord
-from biosim_server.simulations.database import build_mongo_query, resolve_sort
+from biosim_server.simulations.database import InvalidDateFilterError, build_mongo_query, resolve_sort
 from biosim_server.simulations.models import (
     ListSimulationRunsRequest,
     TableFilter,
@@ -35,6 +35,7 @@ def _record(
     cache_buster: str = "0",
     submitted: datetime | None = None,
     biosimulations_run_id: str | None = None,
+    owner_sub: str | None = None,
 ) -> SimulationRunRecord:
     when = submitted or datetime(2024, 1, 1, tzinfo=timezone.utc)
     return SimulationRunRecord(
@@ -50,6 +51,7 @@ def _record(
         submitted=when,
         updated=when,
         biosimulations_run_id=biosimulations_run_id,
+        owner_sub=owner_sub,
     )
 
 
@@ -63,6 +65,21 @@ def test_build_query_all_no_filters() -> None:
 def test_build_query_user_scope() -> None:
     req = ListSimulationRunsRequest(type="user", user="a@b.com")
     assert build_mongo_query(req) == {"email": "a@b.com"}
+
+
+def test_build_query_user_scope_owner_sub() -> None:
+    req = ListSimulationRunsRequest(type="user", owner_sub="auth0|abc")
+    assert build_mongo_query(req) == {"owner_sub": "auth0|abc"}
+
+
+def test_build_query_user_scope_owner_sub_and_legacy_email() -> None:
+    req = ListSimulationRunsRequest(type="user", owner_sub="auth0|abc", user="a@b.com")
+    assert build_mongo_query(req) == {
+        "$or": [
+            {"owner_sub": "auth0|abc"},
+            {"owner_sub": None, "email": "a@b.com"},
+        ]
+    }
 
 
 def test_build_query_user_scope_lowercases_email() -> None:
@@ -114,8 +131,27 @@ def test_resolve_sort_explicit() -> None:
     assert resolve_sort(TableSort(id="name", direction="asc")) == ("name", ASCENDING)
     # createdAt aliases onto submitted
     assert resolve_sort(TableSort(id="createdAt", direction="desc")) == ("submitted", DESCENDING)
+    assert resolve_sort(TableSort(id="biosimulationsRunId", direction="asc")) == (
+        "biosimulations_run_id",
+        ASCENDING,
+    )
     # unknown field falls back to default
     assert resolve_sort(TableSort(id="bogus", direction="asc")) == ("submitted", DESCENDING)
+
+
+def test_build_query_biosimulations_run_id() -> None:
+    req = ListSimulationRunsRequest(
+        filters=[TableFilter(id="biosimulationsRunId", operator="equal", value="6a3d5603015a4d8b0bf24b74")]
+    )
+    assert build_mongo_query(req)["biosimulations_run_id"] == "6a3d5603015a4d8b0bf24b74"
+
+
+def test_build_query_invalid_date_raises() -> None:
+    req = ListSimulationRunsRequest(
+        filters=[TableFilter(id="createdAt", operator="after", value={"year": 2024, "month": 1, "day": 1})]
+    )
+    with pytest.raises(InvalidDateFilterError):
+        build_mongo_query(req)
 
 
 # --------------------------- Mongo-backed service ---------------------------
@@ -163,6 +199,22 @@ async def test_db_user_scope_filter(
     )
     assert total == 1
     assert records[0].run_id == "a"
+
+
+@pytest.mark.asyncio
+async def test_db_owner_sub_scope_includes_legacy_email_rows(
+    simulation_run_database_service_mongo: SimulationRunDatabaseServiceMongo,
+) -> None:
+    svc = simulation_run_database_service_mongo
+    await svc.insert_simulation_run(_record("owned", email="me@x.com", owner_sub="auth0|me"))
+    await svc.insert_simulation_run(_record("legacy", email="me@x.com", owner_sub=None))
+    await svc.insert_simulation_run(_record("other", email="other@x.com", owner_sub="auth0|other"))
+
+    records, total = await svc.query_simulation_runs(
+        ListSimulationRunsRequest(type="user", owner_sub="auth0|me", user="me@x.com")
+    )
+    assert total == 2
+    assert {r.run_id for r in records} == {"owned", "legacy"}
 
 
 @pytest.mark.asyncio
@@ -232,7 +284,9 @@ def test_endpoint_user_type_scoped_to_caller_ignores_body_user(mock_get_runs_db:
     runs_db.query_simulation_runs.return_value = ([], 0)
     mock_get_runs_db.return_value = runs_db
 
-    user = AuthenticatedUser(sub="auth0|test-user-id", email="user@example.com")
+    user = AuthenticatedUser(
+        sub="auth0|test-user-id", email="user@example.com", email_verified=True
+    )
     app.dependency_overrides[get_optional_user] = lambda: user
     try:
         client = TestClient(app)
@@ -243,6 +297,7 @@ def test_endpoint_user_type_scoped_to_caller_ignores_body_user(mock_get_runs_db:
 
     assert resp.status_code == 200
     sent_request = runs_db.query_simulation_runs.call_args[0][0]
+    assert sent_request.owner_sub == user.sub
     assert sent_request.user == user.email
     assert sent_request.user != "someone-else@example.com"
 
@@ -280,3 +335,5 @@ def test_endpoint_success_shape(mock_get_runs_db: MagicMock, authenticated_user:
     assert run["simulatorDigest"] == "sha256:abc"
     assert run["envVars"] == []
     assert run["submitted"].endswith("Z")
+    # Public listing redacts email even when the persisted record has one.
+    assert run["email"] is None

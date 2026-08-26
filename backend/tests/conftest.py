@@ -86,15 +86,15 @@ from tests.fixtures.keycloak.client import (  # noqa: F401
 @pytest.fixture(autouse=True)
 def _reset_ratelimit_buckets_between_tests() -> Iterator[None]:
     """
-    Session-wide isolation for the workflow rate limiter (TODO P1 #10).
+    Session-wide isolation for the in-process rate limiter.
 
     common/ratelimit.py keeps its counters in a module-level dict, keyed by
-    caller identity. Every test that drives a workflow-starting endpoint
-    through TestClient (e.g. /simulations/run, /verify/omex, /verify/runs)
-    does so as the same anonymous "testclient" IP identity -- without a
-    reset, those counters accumulate across the whole test session and an
-    unrelated later test can trip the real 429 once the default
-    anonymous_per_window quota is exhausted.
+    caller identity. Every test that drives a rate-limited endpoint
+    through TestClient (e.g. /simulations/run, /verify/omex, /verify/runs,
+    /compatibility/check) does so as the same anonymous "testclient" IP
+    identity -- without a reset, those counters accumulate across the whole
+    test session and an unrelated later test can trip the real 429 once the
+    default anonymous_per_window quota is exhausted.
     """
     _reset_rate_limit_state()
     yield

@@ -140,7 +140,7 @@ class SimulationRun(BaseModel):
     updated: str
 
     @classmethod
-    def from_record(cls, record: SimulationRunRecord) -> "SimulationRun":
+    def from_record(cls, record: SimulationRunRecord, *, include_email: bool = False) -> "SimulationRun":
         return cls(
             id=record.run_id,
             biosimulations_run_id=record.biosimulations_run_id,
@@ -153,7 +153,7 @@ class SimulationRun(BaseModel):
             max_time=record.max_time,
             env_vars=record.env_vars,
             purpose=record.purpose,
-            email=record.email,
+            email=record.email if include_email else None,
             status=record.status,
             runtime=record.runtime,
             project_size=record.project_size,
@@ -183,8 +183,8 @@ class TableFilter(BaseModel):
 class TablePagination(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    page: int = 1
-    per_page: int = Field(default=20, alias="perPage")
+    page: int = Field(default=1, ge=1)
+    per_page: int = Field(default=20, alias="perPage", ge=1, le=100)
     total: int | None = Field(default=None, alias="_total")
 
 
@@ -193,6 +193,9 @@ class ListSimulationRunsRequest(BaseModel):
 
     type: Literal["all", "user"] = "all"
     user: str | None = None
+    # Set by the listing handler from a verified token. A client-supplied
+    # value is ignored (the handler overwrites it before querying).
+    owner_sub: str | None = None
     sort: TableSort | None = None
     filters: list[TableFilter] = Field(default_factory=list)
     pagination: TablePagination = Field(default_factory=TablePagination)

@@ -12,6 +12,7 @@ from biosim_server.dependencies import (
     get_omex_database_service,
     get_simulation_run_database_service,
 )
+from biosim_server.simulations.database import InvalidDateFilterError
 from biosim_server.simulations.models import (
     RunSimulationRequest,
     ConglomerateStatus,
@@ -31,6 +32,7 @@ from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user,
 from biosim_server.common.auth.roles import (
     ADMIN_ROLE,
     PUBLISHER_ROLE,
+    is_owner,
     is_ownerless,
     require_owner_or_admin,
     require_roles,
@@ -185,6 +187,10 @@ async def list_simulation_runs(
     request: ListSimulationRunsRequest,
     user: AuthenticatedUser | None = Depends(get_optional_user),
 ) -> ListSimulationRunsResponse:
+    # Never trust a client-supplied owner_sub -- it is not a filter the caller
+    # may choose; the handler stamps it from a verified token below.
+    request.owner_sub = None
+
     # Any email-based scoping of the listing -- "type": "user" or a "filters"
     # entry on the "email" field -- requires a verified identity. Without this,
     # an anonymous or authenticated-as-someone-else caller could read another
@@ -196,11 +202,13 @@ async def list_simulation_runs(
         if user is None:
             raise _missing_bearer("Authentication required to filter runs by email")
         if ADMIN_ROLE not in user.roles:
-            # Non-admins may only self-scope, and only via an exact-match email
-            # filter -- contains/starts_with/is_any would turn "filter by my own
-            # email" into an email-harvesting probe.
+            # Non-admins self-scope by owner_sub (primary). Legacy rows with
+            # no owner_sub are included only via a verified-email match.
+            # contains/starts_with/is_any on email would turn "filter by my
+            # own email" into an email-harvesting probe.
             if request.type == "user":
-                request.user = user.email
+                request.owner_sub = user.sub
+                request.user = user.email if user.email_verified and user.email else None
             for table_filter in request.filters:
                 if table_filter.id != "email":
                     continue
@@ -211,13 +219,31 @@ async def list_simulation_runs(
         elif request.type == "user" and not request.user:
             raise HTTPException(status_code=400, detail="user (email) is required when type is 'user'")
 
+    if request.type == "user" and user is not None and ADMIN_ROLE not in user.roles:
+        if not request.owner_sub:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot list your runs without a verified identity",
+            )
+
     runs_db = get_simulation_run_database_service()
     if runs_db is None:
         raise HTTPException(status_code=503, detail="Simulation run database service not available")
 
-    records, total = await runs_db.query_simulation_runs(request)
+    try:
+        records, total = await runs_db.query_simulation_runs(request)
+    except InvalidDateFilterError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    is_admin = user is not None and ADMIN_ROLE in user.roles
     return ListSimulationRunsResponse(
-        runs=[SimulationRun.from_record(record) for record in records],
+        runs=[
+            SimulationRun.from_record(
+                record,
+                include_email=is_admin or (user is not None and is_owner(user, record)),
+            )
+            for record in records
+        ],
         pagination=request.pagination.model_copy(update={"total": total}),
     )
 

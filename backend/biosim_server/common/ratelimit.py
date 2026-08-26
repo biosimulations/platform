@@ -1,5 +1,6 @@
 """
-In-process rate limiting for workflow-starting endpoints (TODO P1 #10).
+In-process rate limiting for workflow-starting endpoints (TODO P1 #10) and
+POST /compatibility/check (separate budget).
 
 Protects POST /verify/omex, POST /verify/runs, and POST /simulations/run -- the
 three endpoints that start a Temporal workflow and, downstream, submit a job to
@@ -7,6 +8,10 @@ biosimulations.org. All three share ONE logical rate budget ("workflow starts"),
 not three separate ones -- a caller denied on one endpoint could otherwise
 recover the same throughput by round-robining across the other two, which
 would not actually protect the shared resources these endpoints compete for.
+
+POST /compatibility/check uses ``compatibility_rate_limit`` with the same
+per-pod window and authenticated/anonymous ceilings but a ``compat:`` key
+prefix, so the run wizard cannot starve simulation starts.
 
 Design, and why it is intentionally small (see the tutorial's Section 9 Step 2
 for the full rationale):
@@ -179,6 +184,32 @@ def _check_and_increment(
         retry_after = max(1, int(window_start + window_seconds - now) + 1)
         return int(bucket["count"]) <= limit, retry_after
 
+def _enforce_rate_limit(
+        request: Request,
+        user: AuthenticatedUser | None,
+        *,
+        key_prefix: str | None = None,
+) -> None:
+    settings = get_settings().ratelimit
+    if not settings.enabled:
+        return
+    ident, authenticated = client_identity(user, request)
+    key = f"{key_prefix}:{ident}" if key_prefix else ident
+    limit = settings.authenticated_per_window if authenticated else settings.anonymous_per_window
+    allowed, retry_after = _check_and_increment(key, limit, settings.window_seconds, time.time())
+    if not allowed:
+        # The key itself (a `sub` or an IP) is never logged -- consistent
+        # with auth0.py's discipline of never logging raw claims or token
+        # material. The identity *class* is enough to distinguish an
+        # authenticated-caller quota problem from an anonymous one.
+        logger.warning(
+            "Rate limit exceeded for %s caller; retry_after=%ds",
+            "authenticated" if authenticated else "anonymous",
+            retry_after,
+        )
+        raise _rate_limited(retry_after)
+
+
 def workflow_rate_limit(
         request: Request,
         user: AuthenticatedUser | None = Depends(get_optional_user),
@@ -200,20 +231,18 @@ def workflow_rate_limit(
     how many dependencies request it -- adding this rate limiter does not add
     a second JWKS round-trip.
     """
-    settings = get_settings().ratelimit
-    if not settings.enabled:
-        return
-    key, authenticated = client_identity(user, request)
-    limit = settings.authenticated_per_window if authenticated else settings.anonymous_per_window
-    allowed, retry_after = _check_and_increment(key, limit, settings.window_seconds, time.time())
-    if not allowed:
-        # The key itself (a `sub` or an IP) is never logged -- consistent
-        # with auth0.py's discipline of never logging raw claims or token
-        # material. The identity *class* is enough to distinguish an
-        # authenticated-caller quota problem from an anonymous one.
-        logger.warning(
-            "Rate limit exceeded for %s caller; retry_after=%ds",
-            "authenticated" if authenticated else "anonymous",
-            retry_after,
-        )
-        raise _rate_limited(retry_after)
+    _enforce_rate_limit(request, user)
+
+
+def compatibility_rate_limit(
+        request: Request,
+        user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> None:
+    """
+    FastAPI dependency: enforce the compatibility-check budget.
+
+    Separate from ``workflow_rate_limit`` so the run wizard cannot starve
+    simulation starts (and vice versa). Uses the same per-pod window and
+    authenticated/anonymous ceilings, keyed as ``compat:<identity>``.
+    """
+    _enforce_rate_limit(request, user, key_prefix="compat")

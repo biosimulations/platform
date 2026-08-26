@@ -137,13 +137,13 @@ backend/
 
 | Endpoint | Method | Purpose |
 | --- | --- | --- |
-| `/compatibility/check` | POST | Check OMEX archive compatibility with simulators |
+| `/compatibility/check` | POST | Check OMEX archive compatibility with simulators (public; rate-limited; `archive_url` SSRF-restricted) |
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
-| `/simulations/runs` | POST | List simulation runs (owner-scoped, paginated, sortable, filterable) |
+| `/simulations/runs` | POST | List simulation runs (`type=all` public with email redacted; `type=user` scoped to `owner_sub`) |
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
-| `/verify/omex` | POST | Verify OMEX file across simulators |
-| `/verify/{workflow_id}` | GET | Get verification results |
-| `/verify/runs` | POST | Compare existing biosimulation runs |
+| `/verify/omex` | POST | Verify OMEX file across simulators (authenticated; persists `owner_sub`) |
+| `/verify/{workflow_id}` | GET | Get verification results (authenticated; owner-or-admin when `owner_sub` is set) |
+| `/verify/runs` | POST | Compare existing biosimulation runs (authenticated; persists `owner_sub`) |
 | `/version` | GET | Get API version |
 | `/docs` | GET | Swagger UI |
 
@@ -279,10 +279,14 @@ attaches tokens. This is an explicit product decision, not an omission.
 Revisit when the frontend sends bearer tokens (that is the gate for Option A).
 
 The frontend does **not** call `POST /verify/omex` or `POST /verify/runs`;
-those two endpoints now require authentication. External/Swagger consumers of
-`/verify/*` must send a bearer token. No inventory of those consumers exists
-in this repository — treat that as an operational follow-up before advertising
-the gated contract as a breaking API change.
+those two endpoints require authentication. **`GET /verify/{workflow_id}`
+also requires an access token** (breaking change for anonymous Swagger/poll
+clients). When the workflow payload includes `owner_sub` (set from the
+starter's token on POST), GET is owner-or-admin; in-flight Temporal histories
+with `owner_sub` unset remain readable by any authenticated caller. External
+consumers of `/verify/*` must send a bearer token. No inventory of those
+consumers exists in this repository — treat that as an operational follow-up
+before advertising the gated contract as a breaking API change.
 
 **Which token to send:** the Platform API is an OAuth resource server and
 accepts **access tokens** only. Do not send an OIDC ID token in
@@ -312,6 +316,10 @@ evenly. To target a global ceiling `G`, configure the per-pod value as `G / 3`.
 Protects `POST /verify/omex`, `POST /verify/runs`, and `POST /simulations/run` -- the three
 endpoints that start a Temporal workflow. All three share ONE budget per caller identity, not
 three separate ones.
+
+`POST /compatibility/check` stays unauthenticated (run wizard) but is rate-limited with a
+**separate** `compat:` bucket so it cannot starve workflow starts. `archive_url` is restricted
+to http/https hosts that resolve to public addresses (SSRF).
 
 **Failure mode on exhaustion:** `429 Too Many Requests` with a `Retry-After` header naming
 the number of seconds until the current window rolls over.

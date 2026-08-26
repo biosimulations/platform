@@ -2,29 +2,41 @@
 > Add support for showing a simulation run's project (if it belongs to one), so that a column can be filtered on and displayed.
 > Project names would then need to be sortable and filterable like everything else.
 
-> **Status (updated 2026-06-05): backend complete; frontend wire-up in progress on a
-> separate branch.** `POST /simulations/runs` is live in `backend/biosim_server/simulations/`
-> — owner-scope (`type: all|user` + `user` email), pagination, sorting, filtering — returning
-> `{ runs: SimulationRun[], pagination: { page, perPage, _total } }`. Run records are
-> persisted (collection `BiosimSimulationRuns`) on `POST /simulations/run` and updated to
-> `SUCCEEDED`/`FAILED` by `SimulationRunWorkflow`. Backend convergence work covered PR #48
-> through PR #53 (see `simulation-runs-convergence-plan.md`).
+> **Status (updated 2026-08-25): listing API is live and consumed by the
+> frontend Browse Simulations page** (`frontend/app/pages/simulations/index.vue`
+> → `POST /simulations/runs`). Older notes below that mention mock `setTimeout`
+> data or “real auth is not wired” are stale.
+>
+> `POST /simulations/runs` lives in `backend/biosim_server/simulations/` and
+> returns `{ runs: SimulationRun[], pagination: { page, perPage, _total } }`.
+> Run records are persisted (collection `BiosimSimulationRuns`) on
+> `POST /simulations/run` and updated to `SUCCEEDED`/`FAILED` by
+> `SimulationRunWorkflow`.
+>
+> **Auth / listing contract:**
+> - `type: all` is public. `email` is redacted unless the caller is the owner
+>   or an admin.
+> - `type: user` requires an access token. Non-admins are scoped to token
+>   `sub` (`owner_sub`); a verified-email match is only a fallback for legacy
+>   rows that have no `owner_sub`. Client-supplied `user` / `owner_sub` in the
+>   body are not trusted for non-admins.
+> - `perPage` is capped at 100.
+> - Sort/filter allowlist includes `biosimulationsRunId`. Date filter values
+>   must be ISO-8601 strings (or datetime); other shapes return 400.
+>
+> **Identifier trinity** (do not conflate these):
+> - `id` — platform per-simulator `run_id` (uuid4 hex)
+> - `biosimulationsRunId` — biosimulations.org ObjectId (legacy detail/export)
+> - `processingId` / path `{id}` on `GET /simulations/{id}` — Temporal workflow id
 >
 > **Deferred** (no source yet — returned as zero/empty): `cpus`, `memory`, `maxTime`,
-> `envVars`, `purpose`, `runtime`, `projectSize`, `resultsSize`. PR1 enriched
-> `BiosimSimulationRun` parsing so these are present on every saved `BiosimulatorWorkflowRun`;
-> PR3 (planned) will join them into the listing. Real auth is not wired — owner-scoping
-> trusts the supplied email.
+> `envVars`, `purpose`, `runtime`, `projectSize`, `resultsSize`.
 >
-> **Frontend follow-up status:** `frontend/app/pages/simulations/index.vue` on `main`
-> still renders hardcoded mock data via `setTimeout`. Harrison's branch
-> **`origin/feature/runs-page`** has a partial wire-up (calls `POST /simulations/runs`
-> with the right body shape; has a matching `frontend/app/models/filtering.ts`). The branch
-> is 18 commits behind `main` and has one response-shape bug — `fetched_data.value =
-> await $fetch(...)` assigns the whole response object to a `SimulationRun[]`-typed ref,
-> but the backend returns `{ runs, pagination }`. Fix is `fetched_data.value = response.runs`
-> with pagination tracked separately. Landing path (rebase vs surgical extraction) is a
-> coordination call; see memory `project_frontend_runs_branch`.
+> **Frontend:** Browse Simulations listing is wired to this API. Run
+> detail/delete/export/viz still use the legacy `api.biosimulations.org` API,
+> keyed by `biosimulationsRunId`. The SPA does not yet attach Auth0 access
+> tokens; “My Runs” and owned-run mutations need that separately. Existing
+> UI-created rows stay `owner_sub = NULL` until a backfill is approved.
 
 ## To-Do:
 

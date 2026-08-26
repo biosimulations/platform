@@ -186,15 +186,23 @@ return 401.
 
 | Endpoint | Authn | Authz | Claims that matter |
 | --- | --- | --- | --- |
+| `GET /`, `/version`, `/health`, `/ready`, `/docs` | none | public | n/a |
+| `POST /compatibility/check` | none (run wizard) | rate-limited (`compat:` bucket); `archive_url` http/https + public DNS only | n/a |
+| `POST /simulations/run` | `get_optional_user` | anonymous allowed; token `sub` stored as owner when present | `sub` if a valid access token is sent |
+| `POST /simulations/runs` | `get_optional_user` | `type=all` public (email redacted unless caller is owner or admin). `type=user` requires a token; non-admins are scoped to `owner_sub` (legacy rows via verified email). Email filters: self exact-match unless admin. `perPage` max 100. | `sub`; verified namespaced email only as legacy fallback |
+| `GET /simulations/{id}`, `GET /simulations/{id}/status` | none | public (poll anonymous runs). Response `id` is internal `run_id`; `biosimulationsRunId` is the legacy ObjectId; path `{id}` is `processing_id` | n/a |
+| `GET /simulations/{id}/results`, `/logs` | `get_optional_user` | ownerless records public; otherwise owner or admin | `sub` / verified email vs `owner_sub` |
+| `POST /simulations/{id}/cancel` | `get_current_user` | owner or admin | `sub` / verified email vs `owner_sub` |
+| `DELETE /api/v1/simulations/{id}` | `get_current_user` | `require_roles(admin, publisher)` then `require_owner_or_admin` | roles, then `sub` / verified email vs `owner_sub` |
+| `POST /verify/omex`, `POST /verify/runs` | `get_current_user` | any valid access token; `sub` persisted as `owner_sub` on the workflow | `sub` |
+| `GET /verify/{workflow_id}` | `get_current_user` | owner-or-admin when `owner_sub` is set; any authenticated caller for legacy payloads with `owner_sub` unset. **Breaking:** anonymous pollers receive 401. | `sub` |
+| `GET /projects`, `GET /projects/stats` | none | public published search | n/a |
+| `POST /projects/reindex` | shared secret, **not** Auth0 | `PROJECT_REINDEX_TOKEN` | n/a |
 | `GET /api/v1/me` | `get_current_user` | any valid access token | `sub`, namespaced email (display) |
 | `PATCH` / `DELETE /api/v1/me` | `get_current_user` | same, plus Management API configured | `sub` (Management API user id) |
 | `GET /api/v1/demo/private/me` | `get_current_user` | any valid access token | email or `sub` (gated by `ENABLE_RBAC_DEMO`) |
 | `GET /api/v1/demo/private/animal` | `get_current_user` | `require_roles(admin, publisher, user)` | namespaced **roles** |
 | `GET /api/v1/demo/private/permission` | `get_current_user` | `require_permissions("demo:read")` | **permissions** / `scope` |
-| `DELETE /api/v1/simulations/{id}` | `get_current_user` | `require_roles(admin, publisher)` then `require_owner_or_admin` | roles, then `sub` / verified email vs `owner_sub` |
-| `POST /simulations/run` | `get_optional_user` | anonymous allowed; token `sub` stored as owner when present | `sub` if a valid access token is sent |
-| `POST /verify/omex`, `POST /verify/runs` | `get_current_user` | any valid access token | `sub` |
-| `POST /projects/reindex` | shared secret, **not** Auth0 | `PROJECT_REINDEX_TOKEN` | n/a |
 
 Ownership (`require_owner_or_admin`): `admin` role bypasses; otherwise `user.sub` must
 equal `record.owner_sub`. Only if `owner_sub` is missing (legacy rows) does a

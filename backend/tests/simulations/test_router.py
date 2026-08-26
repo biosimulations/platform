@@ -1269,13 +1269,14 @@ def test_list_simulation_runs_email_filter_admin_arbitrary_value_allowed(mock_ge
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_list_simulation_runs_user_type_authenticated_overrides_request_email(mock_get_runs_db: MagicMock) -> None:
     """Authenticated caller, type "user", with a spoofed `user` email in the body: the
-    verified token email wins, so an authenticated caller can't read someone else's runs
-    by lying about the `user` field."""
+    verified token identity wins, so an authenticated caller can't read someone else's
+    runs by lying about the `user` field. Scope is owner_sub plus a verified-email
+    fallback for legacy rows."""
     runs_db = AsyncMock()
     runs_db.query_simulation_runs.return_value = ([], 0)
     mock_get_runs_db.return_value = runs_db
 
-    user = make_authenticated_user(email="real-caller@example.com")
+    user = make_authenticated_user(email="real-caller@example.com", email_verified=True)
     app.dependency_overrides[get_optional_user] = lambda: user
     try:
         response = TestClient(app).post(
@@ -1288,4 +1289,133 @@ def test_list_simulation_runs_user_type_authenticated_overrides_request_email(mo
 
     assert response.status_code == 200
     sent_request = runs_db.query_simulation_runs.call_args.args[0]
+    assert sent_request.owner_sub == user.sub
     assert sent_request.user == "real-caller@example.com"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_user_type_non_admin_without_email_scopes_to_owner_sub(
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """P0: non-admin type=user with no email claim must not fail-open to {}.
+
+    AuthenticatedUser always has a non-empty sub, so the query is owner_sub
+    scoped (200) rather than returning every run.
+    """
+    runs_db = AsyncMock()
+    runs_db.query_simulation_runs.return_value = ([], 0)
+    mock_get_runs_db.return_value = runs_db
+
+    user = make_authenticated_user(email=None, roles=["user"])
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        response = TestClient(app).post(
+            "/simulations/runs",
+            json={"type": "user", "filters": [], "pagination": {"page": 1, "perPage": 20}},
+        )
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+
+    assert response.status_code == 200
+    sent_request = runs_db.query_simulation_runs.call_args.args[0]
+    assert sent_request.owner_sub == user.sub
+    assert sent_request.user is None
+    assert sent_request.type == "user"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_redacts_email_for_anonymous(mock_get_runs_db: MagicMock) -> None:
+    runs_db = AsyncMock()
+    runs_db.query_simulation_runs.return_value = (
+        [_make_run_record("a", processing_id="sim-run-a", email="secret@example.com")],
+        1,
+    )
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).post(
+        "/simulations/runs",
+        json={"type": "all", "filters": [], "pagination": {"page": 1, "perPage": 20}},
+    )
+    assert response.status_code == 200
+    assert response.json()["runs"][0]["email"] is None
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_includes_email_for_owner(mock_get_runs_db: MagicMock) -> None:
+    runs_db = AsyncMock()
+    user = make_authenticated_user(email="owner@example.com", email_verified=True)
+    runs_db.query_simulation_runs.return_value = (
+        [_make_run_record("a", processing_id="sim-run-a", email="owner@example.com", owner_sub=user.sub)],
+        1,
+    )
+    mock_get_runs_db.return_value = runs_db
+
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        response = TestClient(app).post(
+            "/simulations/runs",
+            json={"type": "all", "filters": [], "pagination": {"page": 1, "perPage": 20}},
+        )
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+
+    assert response.status_code == 200
+    assert response.json()["runs"][0]["email"] == "owner@example.com"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_includes_email_for_admin(mock_get_runs_db: MagicMock) -> None:
+    runs_db = AsyncMock()
+    runs_db.query_simulation_runs.return_value = (
+        [_make_run_record("a", processing_id="sim-run-a", email="secret@example.com")],
+        1,
+    )
+    mock_get_runs_db.return_value = runs_db
+
+    user = make_authenticated_user(email="admin@example.com", roles=["admin"])
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        response = TestClient(app).post(
+            "/simulations/runs",
+            json={"type": "all", "filters": [], "pagination": {"page": 1, "perPage": 20}},
+        )
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+
+    assert response.status_code == 200
+    assert response.json()["runs"][0]["email"] == "secret@example.com"
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_per_page_over_cap_422(mock_get_runs_db: MagicMock) -> None:
+    response = TestClient(app).post(
+        "/simulations/runs",
+        json={"type": "all", "filters": [], "pagination": {"page": 1, "perPage": 101}},
+    )
+    assert response.status_code == 422
+    mock_get_runs_db.assert_not_called()
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_list_simulation_runs_invalid_date_filter_400(mock_get_runs_db: MagicMock) -> None:
+    from biosim_server.simulations.database import build_mongo_query
+    from biosim_server.simulations.models import ListSimulationRunsRequest
+
+    runs_db = AsyncMock()
+
+    async def _query(request: ListSimulationRunsRequest) -> tuple[list[object], int]:
+        build_mongo_query(request)
+        return [], 0
+
+    runs_db.query_simulation_runs.side_effect = _query
+    mock_get_runs_db.return_value = runs_db
+
+    response = TestClient(app).post(
+        "/simulations/runs",
+        json={
+            "type": "all",
+            "filters": [{"id": "createdAt", "operator": "after", "value": {"year": 2024}}],
+            "pagination": {"page": 1, "perPage": 20}},
+    )
+    assert response.status_code == 400
+    assert "ISO-8601" in response.json()["detail"]

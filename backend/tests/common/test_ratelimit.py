@@ -245,3 +245,24 @@ class TestConcurrency:
         assert denied == 30
         bucket = next(iter(ratelimit_module._rate_limit_buckets.values()))
         assert int(bucket["count"]) == 80
+
+
+class TestCompatibilityQuotaIsIndependent:
+    def test_compat_bucket_does_not_share_workflow_budget(self) -> None:
+        settings = get_settings().ratelimit
+        settings.anonymous_per_window = 1
+        settings.window_seconds = 60
+        request = _make_request()
+
+        ratelimit_module.workflow_rate_limit(request=request, user=None)
+        with pytest.raises(HTTPException) as exc_info:
+            ratelimit_module.workflow_rate_limit(request=request, user=None)
+        assert exc_info.value.status_code == 429
+
+        # Compatibility checks use a separate key prefix, so exhausting the
+        # workflow budget must not deny the run wizard.
+        ratelimit_module.compatibility_rate_limit(request=request, user=None)
+
+        with pytest.raises(HTTPException) as exc_info:
+            ratelimit_module.compatibility_rate_limit(request=request, user=None)
+        assert exc_info.value.status_code == 429
