@@ -41,24 +41,32 @@ _FILTERABLE_FIELDS: dict[str, str] = {
     "submitted": "submitted",
     "updated": "updated",
     "runtime": "runtime",
+    "biosimulationsRunId": "biosimulations_run_id",
+    "biosimulations_run_id": "biosimulations_run_id",
 }
 
 _DATE_FIELDS = {"submitted", "updated"}
+
+
+class InvalidDateFilterError(ValueError):
+    """Raised when a date filter value is not an ISO-8601 string or datetime."""
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _coerce_date(value: Any) -> Any:
+def _coerce_date(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, str):
         try:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return value
-    return value
+        except ValueError as exc:
+            raise InvalidDateFilterError(
+                "Date filter values must be ISO-8601 strings"
+            ) from exc
+    raise InvalidDateFilterError("Date filter values must be ISO-8601 strings")
 
 
 def _filter_clause(db_field: str, operator: str | None, value: Any) -> Any | None:
@@ -70,13 +78,10 @@ def _filter_clause(db_field: str, operator: str | None, value: Any) -> Any | Non
     if value is None and op != "is_any":
         return None
     if op in ("equal", "is"):
-        return value
+        return _coerce_date(value) if is_date else value
     if op == "on" and is_date:
-        start = _coerce_date(value)
-        if isinstance(start, datetime):
-            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-            return {"$gte": start, "$lt": start + timedelta(days=1)}
-        return value
+        start = _coerce_date(value).replace(hour=0, minute=0, second=0, microsecond=0)
+        return {"$gte": start, "$lt": start + timedelta(days=1)}
     if op == "is_any":
         values = value if isinstance(value, list) else [value]
         return {"$in": values}
@@ -93,11 +98,43 @@ def _filter_clause(db_field: str, operator: str | None, value: Any) -> Any | Non
     return None
 
 
-def build_mongo_query(request: ListSimulationRunsRequest) -> dict[str, Any]:
+def _visible_to_caller(caller_sub: str | None) -> dict[str, Any]:
+    """Mongo clause: public (including missing/null visibility) plus the caller's private rows."""
+    public: dict[str, Any] = {"visibility": {"$in": [None, "public"]}}
+    if caller_sub is None:
+        return public
+    return {
+        "$or": [
+            public,
+            {"visibility": "private", "owner_sub": caller_sub},
+        ]
+    }
+
+
+def build_mongo_query(
+    request: ListSimulationRunsRequest, *, caller_sub: str | None = None
+) -> dict[str, Any]:
     """Build the Mongo filter for a runs listing request (owner scope + filters)."""
     query: dict[str, Any] = {}
-    if request.type == "user" and request.user:
-        query["email"] = request.user.strip().lower()
+    if request.type == "user":
+        email = request.user.strip().lower() if request.user else None
+        if request.owner_sub and email:
+            # Non-admin self-scope: primary key is owner_sub; verified email
+            # is only a fallback for legacy rows written before owner_sub.
+            # `visibility: None` (matches missing or null in Mongo) restricts
+            # the fallback to genuinely legacy rows -- newly written anonymous
+            # rows carry an explicit "public" visibility and must not be
+            # claimable as "mine" through a matching email.
+            query["$or"] = [
+                {"owner_sub": request.owner_sub},
+                {"owner_sub": None, "email": email, "visibility": None},
+            ]
+        elif request.owner_sub:
+            query["owner_sub"] = request.owner_sub
+        elif email:
+            # Admin (or any caller who only supplied an email): match every
+            # row with that address, including those that also have owner_sub.
+            query["email"] = email
     for table_filter in request.filters:
         if not table_filter.id:
             continue
@@ -115,7 +152,10 @@ def build_mongo_query(request: ListSimulationRunsRequest) -> dict[str, Any]:
             existing.update(clause)
         else:
             query[db_field] = clause
-    return query
+    visibility = _visible_to_caller(caller_sub)
+    if not query:
+        return visibility
+    return {"$and": [query, visibility]}
 
 
 def resolve_sort(sort: TableSort | None) -> tuple[str, int]:
@@ -146,7 +186,7 @@ class SimulationRunDatabaseService(ABC):
 
     @abstractmethod
     async def query_simulation_runs(
-        self, request: ListSimulationRunsRequest
+        self, request: ListSimulationRunsRequest, *, caller_sub: str | None = None
     ) -> tuple[list[SimulationRunRecord], int]:
         """Return a page of matching records and the total match count."""
         pass
@@ -219,9 +259,9 @@ class SimulationRunDatabaseServiceMongo(SimulationRunDatabaseService):
 
     @override
     async def query_simulation_runs(
-        self, request: ListSimulationRunsRequest
+        self, request: ListSimulationRunsRequest, *, caller_sub: str | None = None
     ) -> tuple[list[SimulationRunRecord], int]:
-        query = build_mongo_query(request)
+        query = build_mongo_query(request, caller_sub=caller_sub)
         sort_field, direction = resolve_sort(request.sort)
         total: int = await self._runs_col.count_documents(query)
 
@@ -272,6 +312,13 @@ class SimulationRunDatabaseServiceMongo(SimulationRunDatabaseService):
         # also the natural primary key for a SimulationRunRecord.
         await self._runs_col.create_index("processing_id")
         await self._runs_col.create_index("run_id", unique=True)
+        # Listing: default sort is submitted DESC; type=user scopes on owner_sub
+        # with a legacy email fallback; status/name/simulator filters are common.
+        await self._runs_col.create_index([("submitted", DESCENDING)])
+        await self._runs_col.create_index("owner_sub")
+        await self._runs_col.create_index("email")
+        await self._runs_col.create_index("status")
+        await self._runs_col.create_index("biosimulations_run_id")
 
     @override
     async def close(self) -> None:

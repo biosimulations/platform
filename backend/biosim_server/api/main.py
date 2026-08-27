@@ -18,6 +18,11 @@ from biosim_server.biosim_verify import CompareSettings
 from biosim_server.compatibility import compatibility_router
 from biosim_server.simulations import simulations_router
 from biosim_server.projects.router import router as projects_router
+from biosim_server.common.auth import AuthenticatedUser, get_current_user
+from biosim_server.common.auth.auth0 import JwksCache, get_jwks_cache
+from biosim_server.common.auth.discovery import warm_discovery_cache
+from biosim_server.common.auth.roles import require_owner_or_admin
+from biosim_server.common.ratelimit import workflow_rate_limit
 from biosim_server.rbac_demo.router import router as rbac_demo_router
 from biosim_server.users.router import router as users_router
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
@@ -94,7 +99,7 @@ APP_SERVERS: list[dict[str, str]] = [
 
 router = APIRouter()
 
-
+"""
 def _warn_if_auth0_misconfigured() -> None:
     auth0 = get_settings().auth0
     if not auth0.domain or not auth0.audience:
@@ -102,11 +107,63 @@ def _warn_if_auth0_misconfigured() -> None:
             "AUTH0_DOMAIN/AUTH0_AUDIENCE not set -- all endpoints behind get_current_user/"
             "get_optional_user will reject every bearer token with 401."
         )
+"""
 
+def _validate_auth0_configuration() -> None:
+    """
+    Startup gate: refuse to serve traffic with an unusable Auth0 configuration.
+
+    Replaces _warn_if_auth0_misconfigured(), which both under-reacted (the pod
+    started anyway, reported healthy, and failed every authenticated request)
+    and misdescribed the failure -- it promised a 401, which has never been
+    what happens.
+
+    Raising here propagates out of `lifespan`, so uvicorn exits non-zero and
+    Kubernetes shows CrashLoopBackOff with the reason in `kubectl logs`. That
+    is the loudest signal available, and a cluster that cannot authenticate
+    anyone should be using it.
+    """
+    auth0 = get_settings().auth0
+    errors = auth0.configuration_errors()
+
+    if not auth0.required:
+        if errors:
+            logger.warning(
+                "AUTH_REQUIRED=false: starting with an incomplete Auth0 configuration "
+                "(%s). Every endpoint behind get_current_user/get_optional_user will "
+                "return 503 (Authentication temporarily unavailable); no request will "
+                "be authenticated in this deployment.",
+                "; ".join(errors),
+            )
+        else:
+            logger.warning(
+                "AUTH_REQUIRED=false: Auth0 startup validation skipped, though the "
+                "configuration looks complete."
+            )
+        return
+    if errors:
+        raise RuntimeError(
+            "Auth0 configuration is incomplete or invalid; refusing to start. "
+            + "; ".join(errors)
+            + ". Fix this cluster's kustomize/config/<cluster>/api.env, or set "
+            "AUTH_REQUIRED=false to run this deployment without authentication."
+        )
+    logger.info(
+        "Auth0 configuration validated: issuer=%s audience=%s trusted_issuers=%d",
+        auth0.issuer_url() if not auth0.has_explicit_trusted_issuers() else "(explicit map)",
+        auth0.audience if not auth0.has_explicit_trusted_issuers() else "(per-issuer)",
+        len(auth0.trusted_issuer_map()),
+    )
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    _warn_if_auth0_misconfigured()
+    #_warn_if_auth0_misconfigured()
+    _validate_auth0_configuration()
+    # #16: best-effort OIDC discovery warm. Deliberately after the (local,
+    # side-effect-free) configuration gate and wrapped so it can never fail
+    # startup -- a pod that cannot reach the discovery endpoint at boot still
+    # starts and serves tokens via the convention-derived URLs.
+    await warm_discovery_cache(get_settings().auth0)
     await init_standalone()
     yield
     await shutdown_standalone()
@@ -127,7 +184,21 @@ app.include_router(compatibility_router)
 app.include_router(simulations_router)
 app.include_router(projects_router)
 app.include_router(users_router)
-app.include_router(rbac_demo_router)
+
+
+def register_demo_router(app: FastAPI, *, enabled: bool) -> None:
+    """Mount the /api/v1/demo/* RBAC teaching router only when explicitly enabled.
+
+    #20: the demo router is a worked example, not production API surface. Left
+    unmounted (the default), its paths return 404 and it is absent from
+    /openapi.json. The Keycloak integration suite enables it via
+    ENABLE_RBAC_DEMO in the test environment.
+    """
+    if enabled:
+        app.include_router(rbac_demo_router)
+
+
+register_demo_router(app, enabled=get_settings().enable_rbac_demo)
 
 
 # -- endpoint logic -- #
@@ -153,7 +224,10 @@ def health() -> dict[str, str]:
 
 
 @app.get("/ready", include_in_schema=False)
-async def ready(response: Response) -> dict[str, object]:
+async def ready(
+    response: Response,
+    jwks_cache: JwksCache = Depends(get_jwks_cache),
+) -> dict[str, object]:
     checks: dict[str, bool] = {}
 
     mongo_client = get_mongo_client()
@@ -171,7 +245,13 @@ async def ready(response: Response) -> dict[str, object]:
 
     ok = all(checks.values())
     response.status_code = 200 if ok else 503
-    return {"status": "ready" if ok else "not ready", "checks": checks}
+    # #19c: auth (JWKS cache) health is reported as NON-GATING information --
+    # it is deliberately kept out of `checks`, so `ok` stays computed from
+    # MongoDB + Temporal only. A warm-cache Auth0 outage therefore never makes a
+    # pod unready (it is still validating tokens), and this call makes no
+    # outbound Auth0 request. Decision D-5: inform, do not gate.
+    info: dict[str, object] = {"auth": jwks_cache.status()}
+    return {"status": "ready" if ok else "not ready", "checks": checks, "info": info}
 
 
 @app.get("/docs", include_in_schema=False)
@@ -190,10 +270,11 @@ async def custom_swagger_ui_html() -> HTMLResponse:
     response_model=VerifyWorkflowOutput,
     operation_id="verify-omex",
     tags=["Verification"],
-    dependencies=[Depends(get_temporal_client), Depends(get_file_service), Depends(get_local_cache_dir), Depends(get_omex_database_service)],
+    dependencies=[Depends(get_temporal_client), Depends(get_file_service), Depends(get_local_cache_dir), Depends(get_omex_database_service), Depends(workflow_rate_limit)],
     summary="Request verification report for OMEX/COMBINE archive across simulators")
 async def verify_omex(
         uploaded_file: UploadFile = File(..., description="OMEX/COMBINE archive containing a deterministic SBML model"),
+        user: AuthenticatedUser = Depends(get_current_user),
         workflow_id_prefix: str = Query(default="omex-verification-", description="Prefix for the workflow id."),
         simulators: list[str] = Query(default=["amici", "copasi", "pysces", "tellurium", "vcell"],
                                       description="List of simulators 'name' or 'name:version' to compare."),
@@ -213,7 +294,7 @@ async def verify_omex(
     omex_database = get_omex_database_service()
     assert omex_database is not None
     omex_file: OmexFile = await get_cached_omex_file_from_upload(file_service=file_service, omex_database=omex_database,
-                                                                 uploaded_file=uploaded_file)
+                                                                 uploaded_file=uploaded_file, owner=user.sub)
 
     # ---- create workflow input ---- #
     simulator_versions: list[BiosimulatorVersion] = []
@@ -242,10 +323,18 @@ async def verify_omex(
                                        rel_tol=rel_tol, abs_tol_min=abs_tol_min, abs_tol_scale=abs_tol_scale,
                                        observables=observables)
     omex_verify_workflow_input = OmexVerifyWorkflowInput(omex_file=omex_file, requested_simulators=simulator_versions,
-                                                         compare_settings=compare_settings, cache_buster=cache_buster)
+                                                         compare_settings=compare_settings, cache_buster=cache_buster,
+                                                         owner_sub=user.sub)
 
     # ---- invoke workflow ---- #
-    logger.info(f"starting workflow for {omex_file}")
+    # Log only non-sensitive correlation fields -- never the whole OmexFile
+    # (its repr would carry the owner's raw Auth0 subject).
+    logger.info(
+        "starting verify workflow %s for OMEX hash %s (visibility=%s)",
+        workflow_id,
+        omex_file.file_hash_md5,
+        omex_file.visibility,
+    )
     temporal_client = get_temporal_client()
     assert temporal_client is not None
     workflow_handle = await temporal_client.start_workflow(
@@ -263,9 +352,23 @@ async def verify_omex(
         workflow_status=VerifyWorkflowStatus.PENDING,
         timestamp=str(datetime.now(UTC)),
         workflow_id=workflow_id,
-        workflow_run_id=workflow_handle.run_id
+        workflow_run_id=workflow_handle.run_id,
+        owner_sub=user.sub
     )
     return omex_verify_workflow_output
+
+
+class _VerifyOwnership:
+    """Adapter so ``require_owner_or_admin`` can check a verify workflow.
+
+    Email is never persisted on the verify payload; ownership is ``owner_sub``
+    only. Legacy in-flight workflows with ``owner_sub is None`` skip this check
+    and allow any authenticated caller.
+    """
+
+    def __init__(self, owner_sub: str | None) -> None:
+        self.owner_sub = owner_sub
+        self.email: str | None = None
 
 
 @app.get(
@@ -276,7 +379,10 @@ async def verify_omex(
     tags=["Verification"],
     dependencies=[Depends(get_temporal_client)],
     summary='Retrieve verification report for OMEX/COMBINE archive')
-async def get_verify_output(workflow_id: str) -> VerifyWorkflowOutput:
+async def get_verify_output(
+        workflow_id: str,
+        user: AuthenticatedUser = Depends(get_current_user),
+) -> VerifyWorkflowOutput:
     logger.info(f"in get /verify/{workflow_id}")
 
     try:
@@ -288,7 +394,15 @@ async def get_verify_output(workflow_id: str) -> VerifyWorkflowOutput:
         workflow_output: VerifyWorkflowOutput = await workflow_handle.query("get_output",
                                                                                 result_type=VerifyWorkflowOutput,
                                                                                 rpc_timeout=timedelta(seconds=60))
+        if workflow_output.owner_sub is not None:
+            require_owner_or_admin(
+                user,
+                [_VerifyOwnership(workflow_output.owner_sub)],
+                action="read",
+            )
         return workflow_output
+    except HTTPException:
+        raise
     except Exception as e2:
         exc_message = str(e2)
         msg = f"error retrieving verification job output with id: {workflow_id}: {exc_message}"
@@ -301,9 +415,10 @@ async def get_verify_output(workflow_id: str) -> VerifyWorkflowOutput:
     response_model=VerifyWorkflowOutput,
     operation_id="verify-runs",
     tags=["Verification"],
-    dependencies=[Depends(get_temporal_client)],
+    dependencies=[Depends(get_temporal_client), Depends(workflow_rate_limit)],
     summary="Request verification report for biosimulation runs by run IDs")
 async def verify_runs(
+        user: AuthenticatedUser = Depends(get_current_user),
         workflow_id_prefix: str = Query(default="runs-verification-", description="Prefix for the workflow id."),
         biosimulations_run_ids: list[str] = Query(default=["67817a2e1f52f47f628af971","67817a2eba5a3f02b9f2938d"],
                                                   description="List of biosimulations run IDs to compare."),
@@ -323,7 +438,7 @@ async def verify_runs(
                                        rel_tol=rel_tol, abs_tol_min=abs_tol_min, abs_tol_scale=abs_tol_scale,
                                        observables=observables)
     runs_verify_workflow_input = RunsVerifyWorkflowInput(biosimulations_run_ids=biosimulations_run_ids,
-                                                         compare_settings=compare_settings)
+                                                         compare_settings=compare_settings, owner_sub=user.sub)
 
     # ---- invoke workflow ---- #
     logger.info(f"starting verify workflow for biosim run IDs {biosimulations_run_ids}")
@@ -344,7 +459,8 @@ async def verify_runs(
         workflow_status=VerifyWorkflowStatus.PENDING,
         timestamp=str(datetime.now(UTC)),
         workflow_id=workflow_id,
-        workflow_run_id=workflow_handle.run_id
+        workflow_run_id=workflow_handle.run_id,
+        owner_sub=user.sub
     )
     return runs_verify_workflow_output
 
