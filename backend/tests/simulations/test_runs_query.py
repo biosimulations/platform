@@ -7,6 +7,7 @@ Covers three layers:
 """
 
 from datetime import datetime, timezone
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -36,6 +37,8 @@ def _record(
     submitted: datetime | None = None,
     biosimulations_run_id: str | None = None,
     owner_sub: str | None = None,
+    owner: str | None = None,
+    visibility: Literal["public", "private"] | None = None,
 ) -> SimulationRunRecord:
     when = submitted or datetime(2024, 1, 1, tzinfo=timezone.utc)
     return SimulationRunRecord(
@@ -52,46 +55,119 @@ def _record(
         updated=when,
         biosimulations_run_id=biosimulations_run_id,
         owner_sub=owner_sub,
+        owner=owner if owner is not None else owner_sub,
+        visibility=visibility,
     )
+
+
+_PUBLIC_VISIBILITY: dict[str, Any] = {"visibility": {"$in": [None, "public"]}}
+
+
+def _with_visibility(
+    query: dict[str, Any], *, caller_sub: str | None = None
+) -> dict[str, Any]:
+    visibility: dict[str, Any] = (
+        _PUBLIC_VISIBILITY
+        if caller_sub is None
+        else {
+            "$or": [
+                _PUBLIC_VISIBILITY,
+                {"visibility": "private", "owner_sub": caller_sub},
+            ]
+        }
+    )
+    if not query:
+        return visibility
+    return {"$and": [query, visibility]}
 
 
 # --------------------------- query translation ---------------------------
 
 def test_build_query_all_no_filters() -> None:
     req = ListSimulationRunsRequest(type="all")
-    assert build_mongo_query(req) == {}
+    assert build_mongo_query(req) == _PUBLIC_VISIBILITY
+
+
+def test_build_query_all_includes_caller_private_rows() -> None:
+    req = ListSimulationRunsRequest(type="all")
+    assert build_mongo_query(req, caller_sub="auth0|me") == _with_visibility(
+        {}, caller_sub="auth0|me"
+    )
+
+
+def test_simulation_run_owner_is_optional_for_legacy_records() -> None:
+    common = {
+        "run_id": "legacy",
+        "processing_id": "sim-run-legacy",
+        "name": "Legacy run",
+        "simulator": "copasi",
+        "simulator_version": "1.0.0",
+        "submitted": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "updated": datetime(2024, 1, 1, tzinfo=timezone.utc),
+    }
+    omitted = SimulationRunRecord.model_validate(common)
+    assert omitted.owner is None
+    assert omitted.owner_sub is None
+    assert omitted.visibility is None
+    null_owner = SimulationRunRecord.model_validate({**common, "owner": None, "owner_sub": None})
+    assert null_owner.owner is None
+    assert null_owner.owner_sub is None
+    assert SimulationRunRecord.model_validate({**common, "visibility": None}).visibility is None
+    assert SimulationRunRecord.model_validate({**common, "visibility": "public"}).visibility == "public"
+    assert SimulationRunRecord.model_validate({**common, "visibility": "private"}).visibility == "private"
+
+
+def test_simulation_run_new_write_stamps_owner_fields_together() -> None:
+    record = SimulationRunRecord(
+        run_id="new",
+        processing_id="sim-run-new",
+        name="Owned run",
+        simulator="copasi",
+        simulator_version="1.0.0",
+        owner_sub="auth0|alice",
+        owner="auth0|alice",
+        visibility="private",
+    )
+    assert record.owner == record.owner_sub == "auth0|alice"
+    assert record.visibility == "private"
 
 
 def test_build_query_user_scope() -> None:
     req = ListSimulationRunsRequest(type="user", user="a@b.com")
-    assert build_mongo_query(req) == {"email": "a@b.com"}
+    assert build_mongo_query(req) == _with_visibility({"email": "a@b.com"})
 
 
 def test_build_query_user_scope_owner_sub() -> None:
     req = ListSimulationRunsRequest(type="user", owner_sub="auth0|abc")
-    assert build_mongo_query(req) == {"owner_sub": "auth0|abc"}
+    assert build_mongo_query(req) == _with_visibility({"owner_sub": "auth0|abc"})
 
 
 def test_build_query_user_scope_owner_sub_and_legacy_email() -> None:
+    # The verified-email fallback is restricted to genuinely legacy rows:
+    # owner_sub null AND visibility null/missing. A newly written anonymous
+    # row (explicit visibility "public") must not be claimable as "mine"
+    # through a matching email.
     req = ListSimulationRunsRequest(type="user", owner_sub="auth0|abc", user="a@b.com")
-    assert build_mongo_query(req) == {
-        "$or": [
-            {"owner_sub": "auth0|abc"},
-            {"owner_sub": None, "email": "a@b.com"},
-        ]
-    }
+    assert build_mongo_query(req) == _with_visibility(
+        {
+            "$or": [
+                {"owner_sub": "auth0|abc"},
+                {"owner_sub": None, "email": "a@b.com", "visibility": None},
+            ]
+        }
+    )
 
 
 def test_build_query_user_scope_lowercases_email() -> None:
     req = ListSimulationRunsRequest(type="user", user="Foo@Bar.COM")
-    assert build_mongo_query(req) == {"email": "foo@bar.com"}
+    assert build_mongo_query(req) == _with_visibility({"email": "foo@bar.com"})
 
 
 def test_build_query_email_filter_lowercases_value() -> None:
     req = ListSimulationRunsRequest(
         filters=[TableFilter(id="email", operator="equal", value="Foo@Bar.COM")]
     )
-    assert build_mongo_query(req)["email"] == "foo@bar.com"
+    assert build_mongo_query(req) == _with_visibility({"email": "foo@bar.com"})
 
 
 def test_build_query_contains_filter() -> None:
@@ -99,7 +175,7 @@ def test_build_query_contains_filter() -> None:
         filters=[TableFilter(id="simulator", operator="contains", value="cop")]
     )
     query = build_mongo_query(req)
-    assert query["simulator"] == {"$regex": "cop", "$options": "i"}
+    assert query == _with_visibility({"simulator": {"$regex": "cop", "$options": "i"}})
 
 
 def test_build_query_field_alias_and_allowlist() -> None:
@@ -111,16 +187,17 @@ def test_build_query_field_alias_and_allowlist() -> None:
         ]
     )
     query = build_mongo_query(req)
-    assert "submitted" in query
-    assert query["submitted"]["$gt"] == datetime(2024, 1, 1, tzinfo=timezone.utc)
-    assert "not_a_field" not in query
+    inner = query["$and"][0]
+    assert "submitted" in inner
+    assert inner["submitted"]["$gt"] == datetime(2024, 1, 1, tzinfo=timezone.utc)
+    assert "not_a_field" not in inner
 
 
 def test_build_query_is_any() -> None:
     req = ListSimulationRunsRequest(
         filters=[TableFilter(id="status", operator="is_any", value=["SUCCEEDED", "FAILED"])]
     )
-    assert build_mongo_query(req)["status"] == {"$in": ["SUCCEEDED", "FAILED"]}
+    assert build_mongo_query(req) == _with_visibility({"status": {"$in": ["SUCCEEDED", "FAILED"]}})
 
 
 def test_resolve_sort_default_is_newest_first() -> None:
@@ -143,7 +220,9 @@ def test_build_query_biosimulations_run_id() -> None:
     req = ListSimulationRunsRequest(
         filters=[TableFilter(id="biosimulationsRunId", operator="equal", value="6a3d5603015a4d8b0bf24b74")]
     )
-    assert build_mongo_query(req)["biosimulations_run_id"] == "6a3d5603015a4d8b0bf24b74"
+    assert build_mongo_query(req) == _with_visibility(
+        {"biosimulations_run_id": "6a3d5603015a4d8b0bf24b74"}
+    )
 
 
 def test_build_query_invalid_date_raises() -> None:
@@ -215,6 +294,39 @@ async def test_db_owner_sub_scope_includes_legacy_email_rows(
     )
     assert total == 2
     assert {r.run_id for r in records} == {"owned", "legacy"}
+
+
+@pytest.mark.asyncio
+async def test_db_query_hides_others_private_runs(
+    simulation_run_database_service_mongo: SimulationRunDatabaseServiceMongo,
+) -> None:
+    svc = simulation_run_database_service_mongo
+    await svc.insert_simulation_run(_record("pub", visibility="public", owner_sub=None))
+    await svc.insert_simulation_run(
+        _record("mine", visibility="private", owner_sub="auth0|me")
+    )
+    await svc.insert_simulation_run(
+        _record("theirs", visibility="private", owner_sub="auth0|other")
+    )
+    await svc.insert_simulation_run(_record("legacy", visibility=None, owner_sub=None))
+
+    anon, anon_total = await svc.query_simulation_runs(
+        ListSimulationRunsRequest(type="all"), caller_sub=None
+    )
+    assert anon_total == 2
+    assert {r.run_id for r in anon} == {"pub", "legacy"}
+
+    mine, mine_total = await svc.query_simulation_runs(
+        ListSimulationRunsRequest(type="all"), caller_sub="auth0|me"
+    )
+    assert mine_total == 3
+    assert {r.run_id for r in mine} == {"pub", "legacy", "mine"}
+
+    admin, admin_total = await svc.query_simulation_runs(
+        ListSimulationRunsRequest(type="all"), caller_sub="auth0|admin"
+    )
+    assert admin_total == 2
+    assert {r.run_id for r in admin} == {"pub", "legacy"}
 
 
 @pytest.mark.asyncio

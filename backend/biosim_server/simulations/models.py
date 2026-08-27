@@ -26,6 +26,16 @@ class RunSimulationRequest(BaseModel):
             "a unique value to force fresh biosimulations.org runs."
         ),
     )
+    visibility: Literal["public", "private"] | None = Field(
+        default=None,
+        description=(
+            "Requested run visibility. Authenticated callers: omitted defaults to "
+            "private; 'public' or 'private' is honored (the run is always owned by "
+            "the caller). Anonymous submissions are always public -- a requested "
+            "'private' is forced to public because no identity exists to grant "
+            "access to."
+        ),
+    )
 
 
 class SimulationJobStatus(BaseModel):
@@ -94,6 +104,13 @@ class SimulationRunRecord(BaseModel):
     # common.auth.roles.require_owner_or_admin. `email` is retained for
     # display and as the legacy fallback path.
     owner_sub: str | None = None
+    # Named ownership field for new records.  ``owner_sub`` remains populated
+    # for compatibility with the existing owner-scoping implementation.
+    owner: str | None = None
+    # Binary public/private. Missing or null on legacy documents is treated as
+    # public by authorization. Never client-supplied; derived from whether the
+    # creator presented a verified token.
+    visibility: Literal["public", "private"] | None = None
     status: RunDisplayStatus = "CREATED"
     runtime: int = 0
     project_size: int = 0

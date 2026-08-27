@@ -14,6 +14,7 @@ import base64
 import json
 import time
 import pytest
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import HTTPException
@@ -21,6 +22,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from biosim_server.common.auth import auth0 as auth0_module
 from biosim_server.common.auth.auth0 import get_current_user, get_optional_user
+from biosim_server.common.auth.roles import is_owner
 from biosim_server.config import Auth0Settings
 from tests.fixtures.auth_seam import install_auth_seam
 from tests.fixtures.jwks_fixtures import (
@@ -161,6 +163,92 @@ async def test_absent_email_verified_claim_defaults_false(
 
     user = await get_current_user(_creds(KEY_A.token()))
     assert user.email_verified is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    ["true", "false", 1, 0, [True], {"verified": True}, None],
+    ids=["str-true", "str-false", "one", "zero", "list", "object", "null"],
+)
+async def test_malformed_namespaced_email_verified_values_are_unverified(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch, value: Any
+) -> None:
+    """Only the JSON boolean ``true`` verifies. Truthy-but-non-boolean values
+    ("true", 1, [true], {...}) stamped by a broken Action must fail closed."""
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    user = await get_current_user(
+        _creds(KEY_A.token(extra_claims={EMAIL_VERIFIED_CLAIM: value}))
+    )
+    assert user.email_verified is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    ["true", 1, [True], {"verified": True}],
+    ids=["str-true", "one", "list", "object"],
+)
+async def test_malformed_plain_email_verified_values_are_unverified(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch, value: Any
+) -> None:
+    """The plain OIDC ``email_verified`` fallback is held to the same strict
+    boolean rule as the namespaced claim."""
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    user = await get_current_user(
+        _creds(KEY_A.token(extra_claims={"email_verified": value}))
+    )
+    assert user.email_verified is False
+
+
+@pytest.mark.asyncio
+async def test_namespaced_email_verified_null_does_not_fall_through(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A namespaced claim that is PRESENT with a null value must not fall
+    through to a plain email_verified: true on the same token."""
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    user = await get_current_user(
+        _creds(
+            KEY_A.token(
+                extra_claims={EMAIL_VERIFIED_CLAIM: None, "email_verified": True}
+            )
+        )
+    )
+    assert user.email_verified is False
+
+
+@pytest.mark.asyncio
+async def test_malformed_email_verified_claim_cannot_satisfy_ownership(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: a signed token whose email_verified claim is the STRING
+    "true" yields a user whose verified-email fallback can never own a legacy
+    record, even with a matching email."""
+    endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    user = await get_current_user(
+        _creds(
+            KEY_A.token(
+                extra_claims={
+                    EMAIL_VERIFIED_CLAIM: "true",
+                    "https://api.biosimulations.org/email": "victim@example.com",
+                }
+            )
+        )
+    )
+    assert user.email == "victim@example.com"
+    assert user.email_verified is False
+
+    legacy = SimpleNamespace(owner_sub=None, email="victim@example.com")
+    assert not is_owner(user, legacy)
 
 
 @pytest.mark.asyncio
@@ -426,7 +514,7 @@ async def test_unknown_kid_during_an_outage_does_not_bypass_the_backoff(
 # --------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_optional_user_propagates_503_but_swallows_401(
+async def test_optional_user_propagates_503_and_does_not_touch_idp_without_token(
     auth_settings: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An IdP outage must not silently downgrade a token-bearing caller to anonymous."""
@@ -441,19 +529,39 @@ async def test_optional_user_propagates_503_but_swallows_401(
     assert await get_optional_user(None) is None
 
 @pytest.mark.asyncio
-async def test_optional_user_returns_none_for_a_bad_token(
-    auth_settings: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+async def test_optional_user_rejects_a_bad_token(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """401-class faults keep degrading to anonymous, exactly as before."""
+    """A present-but-invalid token is 401, never anonymous."""
     endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
     _install(monkeypatch, endpoint, FakeClock())
 
-    with caplog.at_level("INFO"):
-        assert await get_optional_user(_creds("not-a-jwt")) is None
-    assert any(
-        getattr(record, "auth_outcome", None) == "anonymous_downgrade"
-        for record in caplog.records
+    with pytest.raises(HTTPException) as exc_info:
+        await get_optional_user(_creds("not-a-jwt"))
+    assert exc_info.value.status_code == 401
+    assert getattr(exc_info.value, "auth_reason", None) == "malformed"
+
+
+@pytest.mark.asyncio
+async def test_optional_user_supplied_but_unparseable_header_is_401() -> None:
+    """A supplied Authorization header from which HTTPBearer could extract no
+    Bearer credential (unsupported scheme, empty Bearer, bare scheme) is a
+    malformed authentication attempt -- 401, never anonymous."""
+    with pytest.raises(HTTPException) as exc_info:
+        await get_optional_user(None, authorization="Basic dXNlcjpwYXNz")
+
+    assert exc_info.value.status_code == 401
+    assert (
+        getattr(exc_info.value, "auth_reason", None) == "invalid_authorization_header"
     )
+    challenge = (exc_info.value.headers or {})["WWW-Authenticate"]
+    assert 'error="invalid_request"' in challenge
+
+
+@pytest.mark.asyncio
+async def test_optional_user_absent_header_is_anonymous() -> None:
+    """Only a completely absent Authorization header is anonymous."""
+    assert await get_optional_user(None, authorization=None) is None
 
 # --------------------------------------------------------------------------
 # P1 #14 -- the algorithm allowlist is a constant, not environment-overridable

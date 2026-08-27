@@ -76,6 +76,9 @@ API at all (D-1, product) and the production tenant (D-7). Retry/backoff ships
 regardless — it hardens the calls that already exist behind the 503-when-
 unconfigured gate.
 
+R6/R7 publish, project-create, and `site-admin` blockers are recorded in
+`backend/docs/auth0-r6-r7-decisions.md`. They are not guessed here.
+
 **Tests:** `tests/common/test_auth0_management_retry.py` (8 cases via
 `httpx.MockTransport`, no network, `asyncio.sleep` stubbed) + the existing
 `tests/users/test_router.py` mapping tests.

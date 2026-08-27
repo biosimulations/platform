@@ -4,6 +4,7 @@ from io import StringIO
 
 import pytest
 import httpx
+from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
 from biosim_server.common.auth import auth0 as auth0_module
@@ -144,12 +145,12 @@ async def test_each_denial_emits_its_bounded_reason_and_leaks_nothing(
 
 
 @pytest.mark.asyncio
-async def test_optional_auth_downgrade_preserves_specific_reason(
+async def test_optional_auth_invalid_token_is_denied_not_anonymous(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#19b: an invalid token on an optional-auth endpoint records the specific
-    bounded reason (`expired`), not a generic `invalid_token`, and downgrades to
-    anonymous without leaking the token."""
+    """A present-but-expired token on an optional-auth path is 401 with the
+    bounded reason (`expired`), never treated as anonymous, and does not leak
+    the token into the log."""
     served = make_key("served-key")
     raw_sub = "auth0|private-subject"
     token = served.token(sub=raw_sub, expires_in=-120)
@@ -160,15 +161,17 @@ async def test_optional_auth_downgrade_preserves_specific_reason(
 
     stream, handler = _capture_auth_logs()
     try:
-        result = await get_optional_user(
-            HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
-        )
+        with pytest.raises(HTTPException) as exc_info:
+            await get_optional_user(
+                HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+            )
     finally:
         _remove_handler(handler)
 
-    assert result is None  # behaviour unchanged: caller treated as anonymous
+    assert exc_info.value.status_code == 401
+    assert getattr(exc_info.value, "auth_reason", None) == "expired"
     rendered = stream.getvalue()
-    assert '"auth_outcome":"anonymous_downgrade"' in rendered
+    assert '"auth_outcome":"denied"' in rendered
     assert '"auth_reason":"expired"' in rendered
     assert token not in rendered
 
@@ -176,7 +179,7 @@ async def test_optional_auth_downgrade_preserves_specific_reason(
 @pytest.mark.asyncio
 async def test_no_token_optional_auth_emits_no_event(monkeypatch: pytest.MonkeyPatch) -> None:
     """A genuinely anonymous request (no bearer token) produces no auth event --
-    silence distinguishes it from the invalid-token downgrade above."""
+    silence distinguishes it from a present-but-invalid token, which is denied."""
     stream, handler = _capture_auth_logs()
     try:
         result = await get_optional_user(None)

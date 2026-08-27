@@ -187,14 +187,14 @@ return 401.
 | Endpoint | Authn | Authz | Claims that matter |
 | --- | --- | --- | --- |
 | `GET /`, `/version`, `/health`, `/ready`, `/docs` | none | public | n/a |
-| `POST /compatibility/check` | none (run wizard) | rate-limited (`compat:` bucket); `archive_url` http/https + public DNS only | n/a |
-| `POST /simulations/run` | `get_optional_user` | anonymous allowed; token `sub` stored as owner when present | `sub` if a valid access token is sent |
-| `POST /simulations/runs` | `get_optional_user` | `type=all` public (email redacted unless caller is owner or admin). `type=user` requires a token; non-admins are scoped to `owner_sub` (legacy rows via verified email). Email filters: self exact-match unless admin. `perPage` max 100. | `sub`; verified namespaced email only as legacy fallback |
-| `GET /simulations/{id}`, `GET /simulations/{id}/status` | none | public (poll anonymous runs). Response `id` is internal `run_id`; `biosimulationsRunId` is the legacy ObjectId; path `{id}` is `processing_id` | n/a |
-| `GET /simulations/{id}/results`, `/logs` | `get_optional_user` | ownerless records public; otherwise owner or admin | `sub` / verified email vs `owner_sub` |
-| `POST /simulations/{id}/cancel` | `get_current_user` | owner or admin | `sub` / verified email vs `owner_sub` |
-| `DELETE /api/v1/simulations/{id}` | `get_current_user` | `require_roles(admin, publisher)` then `require_owner_or_admin` | roles, then `sub` / verified email vs `owner_sub` |
-| `POST /verify/omex`, `POST /verify/runs` | `get_current_user` | any valid access token; `sub` persisted as `owner_sub` on the workflow | `sub` |
+| `POST /compatibility/check` | none (run wizard; explicit anonymous product exception) | rate-limited (`compat:` bucket); `archive_url` http/https + public DNS only. Creates a **public** OMEX row (`owner` null, `visibility=public`). | n/a |
+| `POST /simulations/run` | `get_optional_user` | anonymous allowed (P1 #9 Option B). Present-but-invalid tokens are **401**, not anonymous. Authenticated create is private/`owner=sub`; anonymous (including with `email_address`) is public. Private OMEX is owner-only before Temporal starts. | `sub` if a valid access token is sent |
+| `POST /simulations/runs` | `get_optional_user` | Lists **public** rows (missing/`null`/`public` visibility) plus the caller's own private rows. `type=all` does not leak others' private runs; admin has no listing bypass. Email redacted unless caller is owner or admin. `type=user` requires a token; non-admins are scoped to `owner_sub` (legacy rows via verified email). Email filters: self exact-match unless admin. `perPage` max 100. | `sub`; verified namespaced email only as legacy fallback |
+| `GET /simulations/{id}`, `GET /simulations/{id}/status` | `get_optional_user` | Mongo policy is loaded **before** Temporal. Public/legacy runs remain pollable anonymously. Private runs are owner-only (401 missing token / 403 non-owner, including admin non-owner). Response `id` is internal `run_id`; `biosimulationsRunId` is the legacy ObjectId; path `{id}` is `processing_id`. | `sub` vs `owner_sub` |
+| `GET /simulations/{id}/results`, `/logs` | `get_optional_user` | `authorize_resource_access`: public/legacy readable; private owner-only. **No admin bypass** on private. | `sub` vs `owner_sub` |
+| `POST /simulations/{id}/cancel` | `get_current_user` | Private: owner-only (no admin bypass). Public: `require_owner_or_admin` (admin may cancel a public run). | `sub` / verified email vs `owner_sub` |
+| `DELETE /simulations/{id}` | `get_current_user` | `require_roles(admin, publisher)` first, then the same mutation rule as cancel: private is owner-only (admin non-owner **denied**). | roles, then `sub` / verified email vs `owner_sub` |
+| `POST /verify/omex`, `POST /verify/runs` | `get_current_user` | any valid access token; OMEX verify stamps `owner=sub` and `visibility=private`. Query-param `owner=` is ignored. | `sub` |
 | `GET /verify/{workflow_id}` | `get_current_user` | owner-or-admin when `owner_sub` is set; any authenticated caller for legacy payloads with `owner_sub` unset. **Breaking:** anonymous pollers receive 401. | `sub` |
 | `GET /projects`, `GET /projects/stats` | none | public published search | n/a |
 | `POST /projects/reindex` | shared secret, **not** Auth0 | `PROJECT_REINDEX_TOKEN` | n/a |
@@ -204,9 +204,29 @@ return 401.
 | `GET /api/v1/demo/private/animal` | `get_current_user` | `require_roles(admin, publisher, user)` | namespaced **roles** |
 | `GET /api/v1/demo/private/permission` | `get_current_user` | `require_permissions("demo:read")` | **permissions** / `scope` |
 
+`POST /Publish` does **not** exist in this repository. There is no project-create or promotion writer. Those routes are not wrapped and are not invented here.
+
 Ownership (`require_owner_or_admin`): `admin` role bypasses; otherwise `user.sub` must
 equal `record.owner_sub`. Only if `owner_sub` is missing (legacy rows) does a
 **verified** email match count. An unverified email never grants ownership.
+
+Visibility-aware access (`authorize_resource_access` in `common/auth/roles.py`): missing
+or `null` `visibility` is **public**. Private records require the exact owner.
+**No admin bypass.** Empty record sets fail closed. This is the R4 primitive used on
+OMEX use, both status aliases, results, logs, and as the first step of cancel/delete.
+
+### New-endpoint convention (R5)
+
+Genuinely new routes use `Depends(get_current_user)` unless an **explicit product
+exception** is recorded. Existing exceptions:
+
+- `POST /simulations/run` — anonymous create remains allowed (P1 #9 Option B); invalid tokens still 401.
+- `POST /compatibility/check` — anonymous run-wizard.
+- `GET /projects`, `GET /projects/stats` — public published search.
+- `GET /`, `/version`, `/health`, `/ready`, `/docs` — infra / docs.
+
+No decorative Auth0 wrapper is applied to any legacy route. No legacy-endpoint
+migration list has been selected; until one is, wrap nothing.
 
 ### Request example (role-protected)
 

@@ -5,7 +5,7 @@ import time
 from typing import Annotated, Any
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt  # type: ignore[import-untyped]
 from jose.exceptions import ExpiredSignatureError, JWTClaimsError  # type: ignore[import-untyped]
@@ -453,9 +453,9 @@ def _unauthorized(
             )
         },
     )
-    # Carry the bounded, developer-authored reason on the exception so an
-    # optional-auth downgrade (get_optional_user) can record the specific
-    # reason it caught rather than a generic one. This is the same fixed
+    # Carry the bounded, developer-authored reason on the exception so
+    # callers (and tests) can distinguish expired / malformed / unknown_kid
+    # without parsing the human-readable detail. This is the same fixed
     # vocabulary the "denied" event above uses -- never a token or claim value.
     exc.auth_reason = reason  # type: ignore[attr-defined]
     return exc
@@ -708,12 +708,19 @@ async def get_current_user(
     # also put it on the access token). Absent entirely -> False, fail closed
     # -- an IdP or Action that hasn't been updated yet must not silently
     # treat an unverified (or unsigned-as-verified) email as proof of
-    # ownership. A namespaced claim present-and-False must not fall through
-    # to a plain email_verified: true.
-    raw_email_verified = payload.get(settings.email_verified_claim)
-    if raw_email_verified is None:
-        raw_email_verified = payload.get("email_verified", False)
-    email_verified = bool(raw_email_verified)
+    # ownership. A namespaced claim that is PRESENT (with any value,
+    # including null or a malformed one) must not fall through to a plain
+    # email_verified: true on the same token.
+    if settings.email_verified_claim in payload:
+        raw_email_verified: Any = payload[settings.email_verified_claim]
+    else:
+        raw_email_verified = payload.get("email_verified")
+    # Strict boolean check, never Python truthiness: only the JSON boolean
+    # `true` verifies the email. Strings ("true", "false"), numbers (1),
+    # lists, objects, and null are all unverified -- a misconfigured or
+    # compromised Action stamping a malformed value must fail closed, not
+    # accidentally satisfy the verified-email ownership fallback.
+    email_verified = raw_email_verified is True
     # Auth0 normally always provides a string subject, but it is an identity
     # key in Platform data.  A signed token without a usable value is still an
     # invalid token, never an application error (or a non-string owner id).
@@ -732,32 +739,36 @@ async def get_optional_user(
     ] = None,
     settings: Annotated[Auth0Settings | None, Depends(get_auth0_settings)] = None,
     jwks_cache: Annotated[JwksCache | None, Depends(get_jwks_cache)] = None,
+    authorization: Annotated[str | None, Header(include_in_schema=False)] = None,
 ) -> AuthenticatedUser | None:
-    """Like get_current_user, but degrades to None instead of raising -- for endpoints
-    that stay open to anonymous callers while still trusting a token when one is given.
+    """Like get_current_user, but returns None when no credentials are present.
+
+    Endpoints that stay open to anonymous callers still trust a token when one
+    is given. A present-but-invalid token is rejected (401/403), never treated
+    as anonymous -- otherwise a malformed or expired token would create a
+    public resource on an optional-auth creation path. An Auth0 outage (503)
+    is likewise not downgraded to anonymous.
+
+    Anonymous means the Authorization header is completely absent. A header
+    that IS supplied but that HTTPBearer could not extract a non-empty Bearer
+    credential from (empty ``Bearer``, an unsupported scheme such as ``Basic``,
+    a bare scheme with no token) is a malformed authentication attempt and is
+    rejected with the standardized 401 -- it must never be downgraded to
+    anonymous access. The raw ``authorization`` header is inspected only to
+    make that absent-vs-malformed distinction; token validation itself stays
+    entirely inside get_current_user.
     """
     if credentials is None:
-        # No token at all: a genuinely anonymous caller. Note that this path
-        # never touches the identity provider, so anonymous access keeps
-        # working normally during an Auth0 outage.
-        return None
-    try:
-        return await get_current_user(
-            credentials, settings=settings, jwks_cache=jwks_cache
+        if authorization is None:
+            # No Authorization header at all: a genuinely anonymous caller.
+            # This path never touches the identity provider, so anonymous
+            # access keeps working normally during an Auth0 outage.
+            return None
+        raise _unauthorized(
+            "Invalid authorization header",
+            error="invalid_request",
+            reason="invalid_authorization_header",
         )
-    except HTTPException as e:
-        if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
-            # An infrastructure failure must not silently downgrade an
-            # authenticated caller to anonymous -- that would change the
-            # authorization outcome (ownership checks, role gates) based on
-            # an Auth0 outage. Propagate it as the 503 it is.
-            raise
-        # Preserve the specific bounded reason set by _unauthorized() (expired,
-        # unknown_kid, malformed, invalid_claims, invalid_audience,
-        # untrusted_issuer, missing_sub, ...) rather than
-        # collapsing every optional-auth downgrade to a generic "invalid_token".
-        reason = getattr(e, "auth_reason", "invalid_token")
-        _log_auth_event("anonymous_downgrade", reason)
-        # 401s stay swallowed: a bad or expired token on an optional-auth
-        # endpoint is still just "not authenticated".
-        return None
+    return await get_current_user(
+        credentials, settings=settings, jwks_cache=jwks_cache
+    )

@@ -128,6 +128,113 @@ async def test_optional_auth_endpoint_also_returns_503(
     assert response.headers["retry-after"] == "10"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path,payload",
+    [
+        ("/simulations/run", {"omex_id": "does-not-matter", "simulators": []}),
+        (
+            "/simulations/runs",
+            {"type": "all", "filters": [], "pagination": {"page": 1, "perPage": 20}},
+        ),
+    ],
+)
+async def test_optional_auth_malformed_token_is_401_not_anonymous(
+    path: str,
+    payload: dict[str, Any],
+    auth_settings: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A present-but-invalid token on an optional-auth creation/list path is
+    401. Treating it as anonymous would create or list public resources for a
+    caller who intended to be authenticated."""
+    endpoint = FakeJwksEndpoint(responses=[lambda: jwks_document(KEY)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        response = await c.post(
+            path,
+            json=payload,
+            headers={"Authorization": "Bearer not-a-jwt"},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Malformed token"}
+    assert "retry-after" not in response.headers
+    assert endpoint.call_count == 0
+
+
+# --------------------------------------------------------------------------
+# Task 1: a supplied-but-malformed Authorization header on an OPTIONAL-auth
+# path is a 401, never silently downgraded to anonymous. Only a completely
+# absent header is anonymous.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "header_value",
+    [
+        "Basic dXNlcjpwYXNz",  # unsupported scheme
+        "Bearer",              # bare scheme, no token
+        "Bearer ",             # empty Bearer credential
+        "Bearer    ",          # whitespace-only Bearer credential
+        "not-a-scheme",        # no scheme at all
+        "",                    # header present with an empty value
+    ],
+    ids=[
+        "basic-scheme",
+        "bare-bearer",
+        "empty-bearer",
+        "whitespace-bearer",
+        "schemeless-garbage",
+        "empty-header-value",
+    ],
+)
+async def test_optional_auth_malformed_authorization_header_is_401_not_anonymous(
+    header_value: str,
+    auth_settings: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any supplied-but-invalid Authorization header form on an optional-auth
+    path must be rejected with the standardized 401 -- treating it as
+    anonymous would let a garbled authentication attempt create or read
+    public resources. None of these forms may reach the identity provider."""
+    endpoint = FakeJwksEndpoint(responses=[lambda: jwks_document(KEY)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        response = await c.post(
+            "/simulations/runs",
+            json={"type": "all", "filters": [], "pagination": {"page": 1, "perPage": 20}},
+            headers={"Authorization": header_value},
+        )
+
+    assert response.status_code == 401
+    challenge = response.headers["www-authenticate"]
+    assert challenge.startswith("Bearer ")
+    assert 'error="invalid_request"' in challenge
+    assert "retry-after" not in response.headers
+    assert endpoint.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_required_auth_unsupported_scheme_is_401(
+    auth_settings: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A required-auth path also rejects a non-Bearer scheme with 401."""
+    endpoint = FakeJwksEndpoint(responses=[lambda: jwks_document(KEY)])
+    _install(monkeypatch, endpoint, FakeClock())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        response = await c.get(
+            PROTECTED_URL, headers={"Authorization": "Basic dXNlcjpwYXNz"}
+        )
+
+    assert response.status_code == 401
+    assert endpoint.call_count == 0
+
+
 # --------------------------------------------------------------------------
 # 401: token faults -- must NOT gain a Retry-After
 # --------------------------------------------------------------------------

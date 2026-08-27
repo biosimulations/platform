@@ -98,7 +98,22 @@ def _filter_clause(db_field: str, operator: str | None, value: Any) -> Any | Non
     return None
 
 
-def build_mongo_query(request: ListSimulationRunsRequest) -> dict[str, Any]:
+def _visible_to_caller(caller_sub: str | None) -> dict[str, Any]:
+    """Mongo clause: public (including missing/null visibility) plus the caller's private rows."""
+    public: dict[str, Any] = {"visibility": {"$in": [None, "public"]}}
+    if caller_sub is None:
+        return public
+    return {
+        "$or": [
+            public,
+            {"visibility": "private", "owner_sub": caller_sub},
+        ]
+    }
+
+
+def build_mongo_query(
+    request: ListSimulationRunsRequest, *, caller_sub: str | None = None
+) -> dict[str, Any]:
     """Build the Mongo filter for a runs listing request (owner scope + filters)."""
     query: dict[str, Any] = {}
     if request.type == "user":
@@ -106,9 +121,13 @@ def build_mongo_query(request: ListSimulationRunsRequest) -> dict[str, Any]:
         if request.owner_sub and email:
             # Non-admin self-scope: primary key is owner_sub; verified email
             # is only a fallback for legacy rows written before owner_sub.
+            # `visibility: None` (matches missing or null in Mongo) restricts
+            # the fallback to genuinely legacy rows -- newly written anonymous
+            # rows carry an explicit "public" visibility and must not be
+            # claimable as "mine" through a matching email.
             query["$or"] = [
                 {"owner_sub": request.owner_sub},
-                {"owner_sub": None, "email": email},
+                {"owner_sub": None, "email": email, "visibility": None},
             ]
         elif request.owner_sub:
             query["owner_sub"] = request.owner_sub
@@ -133,7 +152,10 @@ def build_mongo_query(request: ListSimulationRunsRequest) -> dict[str, Any]:
             existing.update(clause)
         else:
             query[db_field] = clause
-    return query
+    visibility = _visible_to_caller(caller_sub)
+    if not query:
+        return visibility
+    return {"$and": [query, visibility]}
 
 
 def resolve_sort(sort: TableSort | None) -> tuple[str, int]:
@@ -164,7 +186,7 @@ class SimulationRunDatabaseService(ABC):
 
     @abstractmethod
     async def query_simulation_runs(
-        self, request: ListSimulationRunsRequest
+        self, request: ListSimulationRunsRequest, *, caller_sub: str | None = None
     ) -> tuple[list[SimulationRunRecord], int]:
         """Return a page of matching records and the total match count."""
         pass
@@ -237,9 +259,9 @@ class SimulationRunDatabaseServiceMongo(SimulationRunDatabaseService):
 
     @override
     async def query_simulation_runs(
-        self, request: ListSimulationRunsRequest
+        self, request: ListSimulationRunsRequest, *, caller_sub: str | None = None
     ) -> tuple[list[SimulationRunRecord], int]:
-        query = build_mongo_query(request)
+        query = build_mongo_query(request, caller_sub=caller_sub)
         sort_field, direction = resolve_sort(request.sort)
         total: int = await self._runs_col.count_documents(query)
 

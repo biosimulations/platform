@@ -294,7 +294,7 @@ async def verify_omex(
     omex_database = get_omex_database_service()
     assert omex_database is not None
     omex_file: OmexFile = await get_cached_omex_file_from_upload(file_service=file_service, omex_database=omex_database,
-                                                                 uploaded_file=uploaded_file)
+                                                                 uploaded_file=uploaded_file, owner=user.sub)
 
     # ---- create workflow input ---- #
     simulator_versions: list[BiosimulatorVersion] = []
@@ -327,7 +327,14 @@ async def verify_omex(
                                                          owner_sub=user.sub)
 
     # ---- invoke workflow ---- #
-    logger.info(f"starting workflow for {omex_file}")
+    # Log only non-sensitive correlation fields -- never the whole OmexFile
+    # (its repr would carry the owner's raw Auth0 subject).
+    logger.info(
+        "starting verify workflow %s for OMEX hash %s (visibility=%s)",
+        workflow_id,
+        omex_file.file_hash_md5,
+        omex_file.visibility,
+    )
     temporal_client = get_temporal_client()
     assert temporal_client is not None
     workflow_handle = await temporal_client.start_workflow(

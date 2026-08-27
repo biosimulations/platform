@@ -1,13 +1,22 @@
 """Tests for the simulations router endpoints."""
 
+from datetime import datetime, timezone
+from typing import Literal
 from unittest.mock import patch, AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
 
 from biosim_server.api.main import app
 from biosim_server.biosim_omex.models import OmexFile
-from biosim_server.biosim_runs import BiosimulatorVersion
-from biosim_server.common.auth import get_current_user, get_optional_user
+from biosim_server.biosim_runs import BiosimulatorVersion, HDF5File
+from biosim_server.common.auth import AuthenticatedUser, get_current_user, get_optional_user
+from biosim_server.simulations.database import build_mongo_query
+from biosim_server.simulations.models import (
+    ConglomerateStatus,
+    ListSimulationRunsRequest,
+    SimulationJobStatus,
+    SimulationRunRecord,
+)
 from biosim_server.simulations.workflow import SimulationRunWorkflowInput
 from tests.fixtures.auth_fixtures import make_authenticated_user
 
@@ -18,6 +27,17 @@ MOCK_OMEX_FILE = OmexFile(
     bucket_name="test-bucket",
     omex_gcs_path="omex/abc123def456/test.omex",
     file_size=1024,
+    visibility="public",
+)
+
+MOCK_PRIVATE_OMEX = OmexFile(
+    file_hash_md5="abc123def456",
+    uploaded_filename="test.omex",
+    bucket_name="test-bucket",
+    omex_gcs_path="omex/abc123def456/test.omex",
+    file_size=1024,
+    owner="auth0|owner",
+    visibility="private",
 )
 
 MOCK_SIMULATOR_VERSIONS = [
@@ -54,6 +74,66 @@ def _make_request(
     }
 
 
+def _make_run_record(
+    run_id: str,
+    *,
+    processing_id: str,
+    status: str = "SUCCEEDED",
+    simulator: str = "copasi",
+    biosimulations_run_id: str | None = "biosim-abc",
+    email: str | None = "user@example.com",
+    owner_sub: str | None = None,
+    owner: str | None = None,
+    visibility: Literal["public", "private"] | None = None,
+) -> SimulationRunRecord:
+    """Build a SimulationRunRecord for fallback / hybrid-merge / authz tests."""
+    when = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    return SimulationRunRecord(
+        run_id=run_id,
+        processing_id=processing_id,
+        name="Run",
+        simulator=simulator,
+        simulator_version="4.34.251",
+        simulator_digest="sha256:abc",
+        cache_buster="0",
+        email=email,
+        owner_sub=owner_sub,
+        owner=owner if owner is not None else owner_sub,
+        visibility=visibility,
+        status=status,  # type: ignore[arg-type]
+        biosimulations_run_id=biosimulations_run_id,
+        submitted=when,
+        updated=when,
+    )
+
+
+def _stub_create_deps(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock | None = None,
+    *,
+    omex: OmexFile | None = MOCK_OMEX_FILE,
+) -> tuple[AsyncMock, AsyncMock, AsyncMock]:
+    omex_db = AsyncMock()
+    omex_db.get_omex_file_for_caller.return_value = omex
+    mock_get_omex_db.return_value = omex_db
+
+    biosim_service = AsyncMock()
+    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
+    mock_get_biosim.return_value = biosim_service
+
+    temporal_client = AsyncMock()
+    temporal_client.start_workflow.return_value = AsyncMock(id="sim-run-test")
+    mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    if mock_get_runs_db is not None:
+        mock_get_runs_db.return_value = runs_db
+    return omex_db, temporal_client, runs_db
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 @patch("biosim_server.simulations.router.get_temporal_client")
 @patch("biosim_server.simulations.router.get_biosim_service")
 @patch("biosim_server.simulations.router.get_omex_database_service")
@@ -61,11 +141,12 @@ def test_run_simulations_success(
     mock_get_omex_db: MagicMock,
     mock_get_biosim: MagicMock,
     mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
 ) -> None:
     """Test successful simulation run request."""
     # Mock omex database
     omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    omex_db.get_omex_file_for_caller.return_value = MOCK_OMEX_FILE
     mock_get_omex_db.return_value = omex_db
 
     # Mock biosim service
@@ -79,6 +160,7 @@ def test_run_simulations_success(
     workflow_handle.id = "sim-run-test"
     temporal_client.start_workflow.return_value = workflow_handle
     mock_get_temporal.return_value = temporal_client
+    mock_get_runs_db.return_value = AsyncMock()
 
     client = TestClient(app)
     response = client.post("/simulations/run", json=_make_request())
@@ -94,6 +176,7 @@ def test_run_simulations_success(
     assert len(data["jobs"][0]["job_id"]) == 32  # hex UUID
 
 
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 @patch("biosim_server.simulations.router.get_temporal_client")
 @patch("biosim_server.simulations.router.get_biosim_service")
 @patch("biosim_server.simulations.router.get_omex_database_service")
@@ -101,19 +184,10 @@ def test_run_simulations_multiple_simulators(
     mock_get_omex_db: MagicMock,
     mock_get_biosim: MagicMock,
     mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
 ) -> None:
     """Test simulation run with multiple simulators."""
-    omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
-    mock_get_omex_db.return_value = omex_db
-
-    biosim_service = AsyncMock()
-    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
-    mock_get_biosim.return_value = biosim_service
-
-    temporal_client = AsyncMock()
-    temporal_client.start_workflow.return_value = AsyncMock(id="sim-run-test")
-    mock_get_temporal.return_value = temporal_client
+    _stub_create_deps(mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db)
 
     client = TestClient(app)
     request = _make_request(simulators=[
@@ -137,6 +211,7 @@ def _workflow_input_from(temporal_client: AsyncMock) -> SimulationRunWorkflowInp
     return workflow_input
 
 
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 @patch("biosim_server.simulations.router.get_temporal_client")
 @patch("biosim_server.simulations.router.get_biosim_service")
 @patch("biosim_server.simulations.router.get_omex_database_service")
@@ -144,18 +219,12 @@ def test_run_simulations_cache_buster_passthrough(
     mock_get_omex_db: MagicMock,
     mock_get_biosim: MagicMock,
     mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
 ) -> None:
     """An explicit cache_buster is forwarded to the workflow input."""
-    omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
-    mock_get_omex_db.return_value = omex_db
-
-    biosim_service = AsyncMock()
-    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
-    mock_get_biosim.return_value = biosim_service
-
-    temporal_client = AsyncMock()
-    mock_get_temporal.return_value = temporal_client
+    _, temporal_client, _ = _stub_create_deps(
+        mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db
+    )
 
     request = _make_request()
     request["cache_buster"] = "salt-123"
@@ -165,6 +234,7 @@ def test_run_simulations_cache_buster_passthrough(
     assert _workflow_input_from(temporal_client).cache_buster == "salt-123"
 
 
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 @patch("biosim_server.simulations.router.get_temporal_client")
 @patch("biosim_server.simulations.router.get_biosim_service")
 @patch("biosim_server.simulations.router.get_omex_database_service")
@@ -172,18 +242,12 @@ def test_run_simulations_cache_buster_defaults_to_zero(
     mock_get_omex_db: MagicMock,
     mock_get_biosim: MagicMock,
     mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
 ) -> None:
     """When cache_buster is omitted, the workflow input defaults to "0" (dedup)."""
-    omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
-    mock_get_omex_db.return_value = omex_db
-
-    biosim_service = AsyncMock()
-    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
-    mock_get_biosim.return_value = biosim_service
-
-    temporal_client = AsyncMock()
-    mock_get_temporal.return_value = temporal_client
+    _, temporal_client, _ = _stub_create_deps(
+        mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db
+    )
 
     response = TestClient(app).post("/simulations/run", json=_make_request())
 
@@ -205,7 +269,7 @@ def test_run_simulations_inserts_before_starting_workflow(
     child OmexSimWorkflow's early update_run_status_activity (Mongo update_one with no
     upsert) would otherwise silently no-op against missing rows on cache hits."""
     omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    omex_db.get_omex_file_for_caller.return_value = MOCK_OMEX_FILE
     mock_get_omex_db.return_value = omex_db
 
     biosim_service = AsyncMock()
@@ -254,7 +318,7 @@ def test_run_simulations_trusts_authenticated_email_over_request_body(
 ) -> None:
     """An authenticated caller's token email overrides a spoofed request-body email_address."""
     omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    omex_db.get_omex_file_for_caller.return_value = MOCK_OMEX_FILE
     mock_get_omex_db.return_value = omex_db
 
     biosim_service = AsyncMock()
@@ -280,6 +344,8 @@ def test_run_simulations_trusts_authenticated_email_over_request_body(
     inserted_record = runs_db.insert_simulation_run.call_args.args[0]
     assert inserted_record.email == user.email
     assert inserted_record.owner_sub == user.sub
+    assert inserted_record.owner == user.sub
+    assert inserted_record.visibility == "private"
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
@@ -294,7 +360,7 @@ def test_run_simulations_anonymous_still_uses_request_body_email(
 ) -> None:
     """No bearer token -- behavior is unchanged from before the email-trust fix."""
     omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    omex_db.get_omex_file_for_caller.return_value = MOCK_OMEX_FILE
     mock_get_omex_db.return_value = omex_db
 
     biosim_service = AsyncMock()
@@ -314,8 +380,109 @@ def test_run_simulations_anonymous_still_uses_request_body_email(
     inserted_record = runs_db.insert_simulation_run.call_args.args[0]
     assert inserted_record.email == request["email_address"]
     assert inserted_record.owner_sub is None
+    assert inserted_record.owner is None
+    assert inserted_record.visibility == "public"
 
 
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_authenticated_explicit_public_is_public_and_owned(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """An authenticated caller may opt into public visibility; the run is
+    still owned exclusively by the verified token's sub."""
+    _, _, runs_db = _stub_create_deps(
+        mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db
+    )
+
+    user = make_authenticated_user()
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        request = _make_request()
+        request["visibility"] = "public"
+        response = TestClient(app).post("/simulations/run", json=request)
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+
+    assert response.status_code == 200
+    inserted_record = runs_db.insert_simulation_run.call_args.args[0]
+    assert inserted_record.visibility == "public"
+    assert inserted_record.owner_sub == user.sub
+    assert inserted_record.owner == user.sub
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_authenticated_explicit_private_is_private(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    _, _, runs_db = _stub_create_deps(
+        mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db
+    )
+
+    user = make_authenticated_user()
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        request = _make_request()
+        request["visibility"] = "private"
+        response = TestClient(app).post("/simulations/run", json=request)
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+
+    assert response.status_code == 200
+    inserted_record = runs_db.insert_simulation_run.call_args.args[0]
+    assert inserted_record.visibility == "private"
+    assert inserted_record.owner_sub == user.sub
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_anonymous_requested_private_is_forced_public(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """An anonymous caller requesting private visibility is safely forced to
+    public with no owner -- an anonymous private run would be permanently
+    inaccessible, and the client-supplied email must not create ownership."""
+    _, _, runs_db = _stub_create_deps(
+        mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db
+    )
+
+    request = _make_request()
+    request["visibility"] = "private"
+    response = TestClient(app).post("/simulations/run", json=request)
+
+    assert response.status_code == 200
+    inserted_record = runs_db.insert_simulation_run.call_args.args[0]
+    assert inserted_record.visibility == "public"
+    assert inserted_record.owner_sub is None
+    assert inserted_record.owner is None
+
+
+def test_run_simulations_rejects_invalid_visibility_value() -> None:
+    """The visibility field is validated: anything besides public/private/null
+    is a 422 before the handler runs."""
+    request = _make_request()
+    request["visibility"] = "secret"
+    response = TestClient(app).post("/simulations/run", json=request)
+    assert response.status_code == 422
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 @patch("biosim_server.simulations.router.get_temporal_client")
 @patch("biosim_server.simulations.router.get_biosim_service")
 @patch("biosim_server.simulations.router.get_omex_database_service")
@@ -323,23 +490,14 @@ def test_run_simulations_allows_anonymous_callers(
     mock_get_omex_db: MagicMock,
     mock_get_biosim: MagicMock,
     mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
 ) -> None:
     """P1 #9 Option B: POST /simulations/run stays reachable without a bearer token.
 
     Recorded in backend/CLAUDE.md → Authentication. Rate limiting (P1 #10)
     is the load-bearing control for this decision.
     """
-    omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
-    mock_get_omex_db.return_value = omex_db
-
-    biosim_service = AsyncMock()
-    biosim_service.get_simulator_versions.return_value = MOCK_SIMULATOR_VERSIONS
-    mock_get_biosim.return_value = biosim_service
-
-    temporal_client = AsyncMock()
-    temporal_client.start_workflow.return_value = AsyncMock(id="sim-run-test")
-    mock_get_temporal.return_value = temporal_client
+    _stub_create_deps(mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db)
 
     response = TestClient(app).post("/simulations/run", json=_make_request())
     assert response.status_code == 200
@@ -358,7 +516,7 @@ def test_run_simulations_marks_records_failed_when_start_workflow_raises(
     """If start_workflow raises after inserts succeed, the rows must be marked FAILED
     so they don't linger as CREATED forever -- no workflow will ever move them out."""
     omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    omex_db.get_omex_file_for_caller.return_value = MOCK_OMEX_FILE
     mock_get_omex_db.return_value = omex_db
 
     biosim_service = AsyncMock()
@@ -390,7 +548,7 @@ def test_run_simulations_marks_records_failed_when_start_workflow_raises(
 def test_run_simulations_omex_not_found(mock_get_omex_db: MagicMock) -> None:
     """Test 404 when OMEX file not found."""
     omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = None
+    omex_db.get_omex_file_for_caller.return_value = None
     mock_get_omex_db.return_value = omex_db
 
     client = TestClient(app)
@@ -408,7 +566,7 @@ def test_run_simulations_simulator_not_found(
 ) -> None:
     """Test 400 when requested simulator version not found."""
     omex_db = AsyncMock()
-    omex_db.get_omex_file.return_value = MOCK_OMEX_FILE
+    omex_db.get_omex_file_for_caller.return_value = MOCK_OMEX_FILE
     mock_get_omex_db.return_value = omex_db
 
     biosim_service = AsyncMock()
@@ -423,11 +581,99 @@ def test_run_simulations_simulator_not_found(
     assert "not found" in response.json()["detail"]
 
 
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 @patch("biosim_server.simulations.router.get_temporal_client")
-def test_get_simulation_status_success(mock_get_temporal: MagicMock) -> None:
-    """Test successful status query."""
-    from biosim_server.simulations.models import ConglomerateStatus, SimulationJobStatus
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_insert_failure_does_not_start_workflow(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    """Policy persistence is mandatory: a failed insert must not start Temporal."""
+    _, temporal_client, runs_db = _stub_create_deps(
+        mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db
+    )
+    runs_db.insert_simulation_run.side_effect = RuntimeError("mongo insert failed")
 
+    response = TestClient(app).post("/simulations/run", json=_make_request())
+
+    assert response.status_code == 503
+    temporal_client.start_workflow.assert_not_called()
+    runs_db.delete_simulation_runs_by_processing_id.assert_awaited()
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_owner_can_use_private_omex(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    owner = make_authenticated_user(sub="auth0|owner")
+    private = MOCK_PRIVATE_OMEX.model_copy(update={"owner": owner.sub})
+    _stub_create_deps(
+        mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db, omex=private
+    )
+    app.dependency_overrides[get_optional_user] = lambda: owner
+    try:
+        response = TestClient(app).post("/simulations/run", json=_make_request())
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+    assert response.status_code == 200
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_anonymous_cannot_use_private_omex(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    _, temporal_client, _ = _stub_create_deps(
+        mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db, omex=MOCK_PRIVATE_OMEX
+    )
+    response = TestClient(app).post("/simulations/run", json=_make_request())
+    assert response.status_code == 401
+    temporal_client.start_workflow.assert_not_called()
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_omex_database_service")
+def test_run_simulations_non_owner_cannot_use_private_omex(
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_temporal: MagicMock,
+    mock_get_runs_db: MagicMock,
+) -> None:
+    _, temporal_client, _ = _stub_create_deps(
+        mock_get_omex_db, mock_get_biosim, mock_get_temporal, mock_get_runs_db, omex=MOCK_PRIVATE_OMEX
+    )
+    user = make_authenticated_user(sub="auth0|other")
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        response = TestClient(app).post("/simulations/run", json=_make_request())
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+    assert response.status_code == 403
+    temporal_client.start_workflow.assert_not_called()
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_get_simulation_status_success(
+    mock_get_temporal: MagicMock, mock_get_runs_db: MagicMock
+) -> None:
+    """Test successful status query of a public run."""
     expected = ConglomerateStatus(
         processing_id="sim-run-test",
         jobs=[
@@ -447,6 +693,12 @@ def test_get_simulation_status_success(mock_get_temporal: MagicMock) -> None:
     temporal_client.get_workflow_handle.return_value = workflow_handle
     mock_get_temporal.return_value = temporal_client
 
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record("abc123", processing_id="sim-run-test", email=None, visibility="public"),
+    ]
+    mock_get_runs_db.return_value = runs_db
+
     client = TestClient(app)
     response = client.get("/simulations/sim-run-test")
 
@@ -458,52 +710,22 @@ def test_get_simulation_status_success(mock_get_temporal: MagicMock) -> None:
     assert data["jobs"][0]["biosimulations_run_id"] == "ext-123"
 
 
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 @patch("biosim_server.simulations.router.get_temporal_client")
-def test_get_simulation_status_not_found(mock_get_temporal: MagicMock) -> None:
-    """Test 404 when workflow not found AND no DB records exist."""
-    temporal_client = MagicMock()
-    workflow_handle = AsyncMock()
-    workflow_handle.query.side_effect = Exception("Workflow not found")
-    temporal_client.get_workflow_handle.return_value = workflow_handle
-    mock_get_temporal.return_value = temporal_client
+def test_get_simulation_status_not_found(
+    mock_get_temporal: MagicMock, mock_get_runs_db: MagicMock
+) -> None:
+    """Test 404 when no DB records exist. Temporal is not queried."""
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = []
+    mock_get_runs_db.return_value = runs_db
+    mock_get_temporal.return_value = MagicMock()
 
     client = TestClient(app)
     response = client.get("/simulations/nonexistent")
 
     assert response.status_code == 404
-
-
-def _make_run_record(
-    run_id: str,
-    *,
-    processing_id: str,
-    status: str = "SUCCEEDED",
-    simulator: str = "copasi",
-    biosimulations_run_id: str | None = "biosim-abc",
-    email: str | None = "user@example.com",
-    owner_sub: str | None = None,
-) -> object:
-    """Build a SimulationRunRecord for the fallback / hybrid-merge tests."""
-    from datetime import datetime, timezone
-
-    from biosim_server.simulations.models import SimulationRunRecord
-
-    when = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    return SimulationRunRecord(
-        run_id=run_id,
-        processing_id=processing_id,
-        name="Run",
-        simulator=simulator,
-        simulator_version="4.34.251",
-        simulator_digest="sha256:abc",
-        cache_buster="0",
-        email=email,
-        owner_sub=owner_sub,
-        status=status,  # type: ignore[arg-type]
-        biosimulations_run_id=biosimulations_run_id,
-        submitted=when,
-        updated=when,
-    )
+    mock_get_temporal.return_value.get_workflow_handle.assert_not_called()
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
@@ -574,8 +796,6 @@ def test_get_simulation_status_hybrid_enriches_biosim_run_id_from_db(
     """When the workflow query returns biosimulations_run_id=None for a job (mid-run
     before the parent has copied it from children), the DB record's id fills in --
     this is the PR2.5 early-write path made visible through GET /simulations/{id}."""
-    from biosim_server.simulations.models import ConglomerateStatus, SimulationJobStatus
-
     workflow_status = ConglomerateStatus(
         processing_id="sim-run-x",
         jobs=[SimulationJobStatus(
@@ -618,11 +838,12 @@ def test_run_simulations_missing_fields() -> None:
 
 # --------------------------- /status (explicit sub-resource) ---------------------------
 
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 @patch("biosim_server.simulations.router.get_temporal_client")
-def test_get_simulation_status_explicit_matches_combined(mock_get_temporal: MagicMock) -> None:
+def test_get_simulation_status_explicit_matches_combined(
+    mock_get_temporal: MagicMock, mock_get_runs_db: MagicMock
+) -> None:
     """GET /{id}/status returns the same payload as GET /{id}."""
-    from biosim_server.simulations.models import ConglomerateStatus, SimulationJobStatus
-
     expected = ConglomerateStatus(
         processing_id="sim-run-test",
         jobs=[SimulationJobStatus(job_id="abc123", simulator_id="copasi", version="4.34.251", status="success")],
@@ -632,6 +853,12 @@ def test_get_simulation_status_explicit_matches_combined(mock_get_temporal: Magi
     workflow_handle.query.return_value = expected
     temporal_client.get_workflow_handle.return_value = workflow_handle
     mock_get_temporal.return_value = temporal_client
+
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record("abc123", processing_id="sim-run-test", email=None, visibility="public"),
+    ]
+    mock_get_runs_db.return_value = runs_db
 
     response = TestClient(app).get("/simulations/sim-run-test/status")
     assert response.status_code == 200
@@ -643,8 +870,6 @@ def test_get_simulation_status_explicit_matches_combined(mock_get_temporal: Magi
 @patch("biosim_server.simulations.router.get_biosim_service")
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_get_simulation_results(mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock) -> None:
-    from biosim_server.biosim_runs import HDF5File
-
     runs_db = AsyncMock()
     runs_db.get_simulation_runs_by_processing_id.return_value = [
         _make_run_record(
@@ -729,6 +954,7 @@ def test_get_simulation_results_anonymous_cannot_read_owned_run(
             processing_id="sim-run-r",
             owner_sub="auth0|owner",
             email="owner@example.com",
+            visibility="private",
         ),
     ]
     mock_get_runs_db.return_value = runs_db
@@ -755,6 +981,7 @@ def test_get_simulation_results_owner_can_read(
                 owner_sub=user.sub,
                 email=user.email,
                 biosimulations_run_id=None,
+                visibility="private",
             ),
         ]
         mock_get_runs_db.return_value = runs_db
@@ -781,6 +1008,7 @@ def test_get_simulation_logs_non_owner_forbidden(
                 processing_id="sim-run-l",
                 owner_sub="auth0|owner",
                 email="owner@example.com",
+                visibility="private",
             ),
         ]
         mock_get_runs_db.return_value = runs_db
@@ -792,11 +1020,12 @@ def test_get_simulation_logs_non_owner_forbidden(
         app.dependency_overrides.pop(get_optional_user, None)
 
 
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 @patch("biosim_server.simulations.router.get_temporal_client")
-def test_get_simulation_status_remains_public(mock_get_temporal: MagicMock) -> None:
-    """P1 #11 leaves GET /{id} and /status open -- a processing_id is not a secret."""
-    from biosim_server.simulations.models import ConglomerateStatus, SimulationJobStatus
-
+def test_get_simulation_status_remains_public(
+    mock_get_temporal: MagicMock, mock_get_runs_db: MagicMock
+) -> None:
+    """Public and legacy-missing-visibility runs stay pollable without a token."""
     temporal_client = MagicMock()
     workflow_handle = AsyncMock()
     workflow_handle.query.return_value = ConglomerateStatus(
@@ -810,10 +1039,132 @@ def test_get_simulation_status_remains_public(mock_get_temporal: MagicMock) -> N
     temporal_client.get_workflow_handle.return_value = workflow_handle
     mock_get_temporal.return_value = temporal_client
 
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record("job-1", processing_id="sim-run-public", email=None, visibility="public"),
+    ]
+    mock_get_runs_db.return_value = runs_db
+
     status_response = TestClient(app).get("/simulations/sim-run-public/status")
     assert status_response.status_code == 200
     id_response = TestClient(app).get("/simulations/sim-run-public")
     assert id_response.status_code == 200
+
+
+def _private_run(processing_id: str = "sim-run-priv") -> SimulationRunRecord:
+    return _make_run_record(
+        "job-1",
+        processing_id=processing_id,
+        owner_sub="auth0|owner",
+        email="owner@example.com",
+        visibility="private",
+    )
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_private_status_anonymous_401_does_not_query_temporal(
+    mock_get_temporal: MagicMock, mock_get_runs_db: MagicMock
+) -> None:
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [_private_run()]
+    mock_get_runs_db.return_value = runs_db
+    temporal_client = MagicMock()
+    mock_get_temporal.return_value = temporal_client
+
+    for path in ("/simulations/sim-run-priv", "/simulations/sim-run-priv/status"):
+        response = TestClient(app).get(path)
+        assert response.status_code == 401
+        assert "WWW-Authenticate" in response.headers
+    temporal_client.get_workflow_handle.assert_not_called()
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_private_status_owner_allowed(
+    mock_get_temporal: MagicMock, mock_get_runs_db: MagicMock
+) -> None:
+    owner = make_authenticated_user(sub="auth0|owner")
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [_private_run()]
+    mock_get_runs_db.return_value = runs_db
+    temporal_client = MagicMock()
+    workflow_handle = AsyncMock()
+    workflow_handle.query.return_value = ConglomerateStatus(
+        processing_id="sim-run-priv",
+        jobs=[SimulationJobStatus(job_id="job-1", simulator_id="copasi", version="4.34.251", status="processing")],
+    )
+    temporal_client.get_workflow_handle.return_value = workflow_handle
+    mock_get_temporal.return_value = temporal_client
+
+    app.dependency_overrides[get_optional_user] = lambda: owner
+    try:
+        response = TestClient(app).get("/simulations/sim-run-priv")
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+    assert response.status_code == 200
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_private_status_non_owner_and_admin_forbidden(
+    mock_get_temporal: MagicMock, mock_get_runs_db: MagicMock
+) -> None:
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [_private_run()]
+    mock_get_runs_db.return_value = runs_db
+    temporal_client = MagicMock()
+    mock_get_temporal.return_value = temporal_client
+
+    for user in (
+        make_authenticated_user(sub="auth0|other"),
+        make_authenticated_user(sub="auth0|admin", roles=["admin"]),
+    ):
+        app.dependency_overrides[get_optional_user] = lambda u=user: u
+        try:
+            response = TestClient(app).get("/simulations/sim-run-priv")
+        finally:
+            app.dependency_overrides.pop(get_optional_user, None)
+        assert response.status_code == 403
+    temporal_client.get_workflow_handle.assert_not_called()
+
+
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_private_results_admin_non_owner_forbidden(
+    mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock
+) -> None:
+    admin = make_authenticated_user(sub="auth0|admin", roles=["admin"])
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [_private_run("sim-run-r")]
+    mock_get_runs_db.return_value = runs_db
+    mock_get_biosim.return_value = AsyncMock()
+    app.dependency_overrides[get_optional_user] = lambda: admin
+    try:
+        response = TestClient(app).get("/simulations/sim-run-r/results")
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+    assert response.status_code == 403
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+@patch("biosim_server.simulations.router.get_temporal_client")
+def test_mixed_visibility_processing_id_fails_closed(
+    mock_get_temporal: MagicMock, mock_get_runs_db: MagicMock
+) -> None:
+    """A private sibling in the group denies the whole processing_id to non-owners."""
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = [
+        _make_run_record("job-pub", processing_id="sim-run-mix", email=None, visibility="public"),
+        _private_run("sim-run-mix"),
+    ]
+    mock_get_runs_db.return_value = runs_db
+    temporal_client = MagicMock()
+    mock_get_temporal.return_value = temporal_client
+
+    response = TestClient(app).get("/simulations/sim-run-mix")
+    assert response.status_code == 401
+    temporal_client.get_workflow_handle.assert_not_called()
 
 
 # --------------------------- /cancel ---------------------------
@@ -830,7 +1181,7 @@ def test_cancel_simulation_run_requires_authentication(
 @patch("biosim_server.simulations.router.get_temporal_client")
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_cancel_simulation_run_not_found(
-    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock, authenticated_user: object
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock, authenticated_user: AuthenticatedUser
 ) -> None:
     runs_db = AsyncMock()
     runs_db.get_simulation_runs_by_processing_id.return_value = []
@@ -843,11 +1194,11 @@ def test_cancel_simulation_run_not_found(
 @patch("biosim_server.simulations.router.get_temporal_client")
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_cancel_simulation_run_forbidden_for_non_owner(
-    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock, authenticated_user: object
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock, authenticated_user: AuthenticatedUser
 ) -> None:
     runs_db = AsyncMock()
     record = _make_run_record("job-1", processing_id="sim-run-c")
-    record.email = "someone-else@example.com"  # type: ignore[attr-defined]
+    record.email = "someone-else@example.com"
     runs_db.get_simulation_runs_by_processing_id.return_value = [record]
     mock_get_runs_db.return_value = runs_db
 
@@ -858,15 +1209,15 @@ def test_cancel_simulation_run_forbidden_for_non_owner(
 @patch("biosim_server.simulations.router.get_temporal_client")
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_cancel_simulation_run_success(
-    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock, authenticated_user: object
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock, authenticated_user: AuthenticatedUser
 ) -> None:
-    from biosim_server.simulations.models import SimulationRunRecord
-
-    record: SimulationRunRecord = _make_run_record(  # type: ignore[assignment]
-        "job-1", processing_id="sim-run-c", status="CREATED"
+    record: SimulationRunRecord = _make_run_record(
+        "job-1",
+        processing_id="sim-run-c",
+        status="CREATED",
+        email=authenticated_user.email,
+        owner_sub=authenticated_user.sub,
     )
-    record.email = authenticated_user.email  # type: ignore[attr-defined]
-    record.owner_sub = authenticated_user.sub  # type: ignore[attr-defined]
 
     updated_record = record.model_copy(update={"status": "CANCELLED"})
 
@@ -895,12 +1246,10 @@ def test_cancel_simulation_run_success(
 def test_cancel_simulation_run_success_as_admin_non_owner(
     mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock
 ) -> None:
-    from biosim_server.simulations.models import SimulationRunRecord
-
     user = make_authenticated_user(roles=["admin"])
     app.dependency_overrides[get_current_user] = lambda: user
     try:
-        record: SimulationRunRecord = _make_run_record(  # type: ignore[assignment]
+        record: SimulationRunRecord = _make_run_record(
             "job-1", processing_id="sim-run-c", status="CREATED"
         )
         record.email = "someone-else@example.com"
@@ -926,16 +1275,34 @@ def test_cancel_simulation_run_success_as_admin_non_owner(
 
 @patch("biosim_server.simulations.router.get_temporal_client")
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_cancel_private_run_forbidden_for_admin_non_owner(
+    mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock
+) -> None:
+    admin = make_authenticated_user(roles=["admin"])
+    app.dependency_overrides[get_current_user] = lambda: admin
+    try:
+        runs_db = AsyncMock()
+        runs_db.get_simulation_runs_by_processing_id.return_value = [_private_run("sim-run-c")]
+        mock_get_runs_db.return_value = runs_db
+        mock_get_temporal.return_value = MagicMock()
+
+        response = TestClient(app).post("/simulations/sim-run-c/cancel")
+        assert response.status_code == 403
+        mock_get_temporal.return_value.get_workflow_handle.assert_not_called()
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@patch("biosim_server.simulations.router.get_temporal_client")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_cancel_legacy_run_succeeds_with_verified_email(
     mock_get_runs_db: MagicMock, mock_get_temporal: MagicMock
 ) -> None:
     """P1 #8: a verified-email token may still own a pre-owner_sub (legacy) run."""
-    from biosim_server.simulations.models import SimulationRunRecord
-
     user = make_authenticated_user(email="legacy-owner@example.com", email_verified=True)
     app.dependency_overrides[get_current_user] = lambda: user
     try:
-        record: SimulationRunRecord = _make_run_record(  # type: ignore[assignment]
+        record: SimulationRunRecord = _make_run_record(
             "job-1",
             processing_id="sim-run-legacy",
             status="CREATED",
@@ -994,7 +1361,7 @@ def test_delete_simulation_run_requires_authentication(mock_get_runs_db: MagicMo
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_delete_simulation_run_not_found_roleless_caller_forbidden(
-    mock_get_runs_db: MagicMock, authenticated_user: object
+    mock_get_runs_db: MagicMock, authenticated_user: AuthenticatedUser
 ) -> None:
     """The admin-or-publisher role gate runs (via require_roles) before records are
     fetched, so a roleless caller is rejected with 403 even for a nonexistent run --
@@ -1029,7 +1396,7 @@ def test_delete_simulation_run_forbidden_for_plain_user_role(mock_get_runs_db: M
     try:
         runs_db = AsyncMock()
         record = _make_run_record("job-1", processing_id="sim-run-d")
-        record.email = user.email  # type: ignore[attr-defined]
+        record.email = user.email
         runs_db.get_simulation_runs_by_processing_id.return_value = [record]
         mock_get_runs_db.return_value = runs_db
 
@@ -1046,7 +1413,7 @@ def test_delete_simulation_run_forbidden_for_publisher_non_owner(mock_get_runs_d
     try:
         runs_db = AsyncMock()
         record = _make_run_record("job-1", processing_id="sim-run-d")
-        record.email = "someone-else@example.com"  # type: ignore[attr-defined]
+        record.email = "someone-else@example.com"
         runs_db.get_simulation_runs_by_processing_id.return_value = [record]
         mock_get_runs_db.return_value = runs_db
 
@@ -1063,8 +1430,8 @@ def test_delete_simulation_run_success_as_publisher_owner(mock_get_runs_db: Magi
     try:
         runs_db = AsyncMock()
         record = _make_run_record("job-1", processing_id="sim-run-d")
-        record.email = user.email  # type: ignore[attr-defined]
-        record.owner_sub = user.sub  # type: ignore[attr-defined]
+        record.email = user.email
+        record.owner_sub = user.sub
         runs_db.get_simulation_runs_by_processing_id.return_value = [record]
         mock_get_runs_db.return_value = runs_db
 
@@ -1082,13 +1449,29 @@ def test_delete_simulation_run_success_as_admin_non_owner(mock_get_runs_db: Magi
     try:
         runs_db = AsyncMock()
         record = _make_run_record("job-1", processing_id="sim-run-d")
-        record.email = "someone-else@example.com"  # type: ignore[attr-defined]
+        record.email = "someone-else@example.com"
         runs_db.get_simulation_runs_by_processing_id.return_value = [record]
         mock_get_runs_db.return_value = runs_db
 
         response = TestClient(app).delete("/simulations/sim-run-d")
         assert response.status_code == 204
         runs_db.delete_simulation_runs_by_processing_id.assert_awaited_once_with("sim-run-d")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_delete_private_run_forbidden_for_admin_non_owner(mock_get_runs_db: MagicMock) -> None:
+    admin = make_authenticated_user(roles=["admin"])
+    app.dependency_overrides[get_current_user] = lambda: admin
+    try:
+        runs_db = AsyncMock()
+        runs_db.get_simulation_runs_by_processing_id.return_value = [_private_run("sim-run-d")]
+        mock_get_runs_db.return_value = runs_db
+
+        response = TestClient(app).delete("/simulations/sim-run-d")
+        assert response.status_code == 403
+        runs_db.delete_simulation_runs_by_processing_id.assert_not_called()
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -1115,6 +1498,8 @@ def test_list_simulation_runs_all_works_anonymously(mock_get_runs_db: MagicMock)
         json={"type": "all", "filters": [], "pagination": {"page": 1, "perPage": 20}},
     )
     assert response.status_code == 200
+    runs_db.query_simulation_runs.assert_awaited_once()
+    assert runs_db.query_simulation_runs.call_args.kwargs.get("caller_sub") is None
 
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
@@ -1398,12 +1783,9 @@ def test_list_simulation_runs_per_page_over_cap_422(mock_get_runs_db: MagicMock)
 
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_list_simulation_runs_invalid_date_filter_400(mock_get_runs_db: MagicMock) -> None:
-    from biosim_server.simulations.database import build_mongo_query
-    from biosim_server.simulations.models import ListSimulationRunsRequest
-
     runs_db = AsyncMock()
 
-    async def _query(request: ListSimulationRunsRequest) -> tuple[list[object], int]:
+    async def _query(request: ListSimulationRunsRequest, **_kwargs: object) -> tuple[list[object], int]:
         build_mongo_query(request)
         return [], 0
 

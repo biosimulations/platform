@@ -1,12 +1,14 @@
 import hashlib
 import logging
-from typing import Callable, Coroutine, Any, Iterable, Protocol
+from typing import Callable, Coroutine, Any, Iterable, Literal, Protocol
 
 from fastapi import Depends, HTTPException, status
 
 from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user
 
 logger = logging.getLogger(__name__)
+
+ResourceVisibility = Literal["public", "private"]
 
 
 def _log_authorization_denial(reason: str, user: AuthenticatedUser) -> None:
@@ -135,13 +137,24 @@ def is_owner(user: AuthenticatedUser, record: _OwnedRecord) -> bool:
     True if `user` owns `record`, independent of admin status.
 
     Primary key: owner_sub, set only from a verified token (P1 #7) -- never
-    client-suppliable. Falls back to a verified-email match ONLY for legacy
-    records with no owner_sub (P1 #8's dependency: an unverified email must
-    never grant ownership, or #7's whole point is undermined by a caller who
-    simply claims someone else's email).
+    client-suppliable. A populated owner_sub is authoritative: the email
+    fallback below can never supersede it. Falls back to a verified-email
+    match ONLY for genuinely legacy records -- no owner_sub AND no explicit
+    visibility (P1 #8's dependency: an unverified email must never grant
+    ownership, or #7's whole point is undermined by a caller who simply
+    claims someone else's email). Records written after visibility existed
+    are stamped with an explicit visibility, so a newly created anonymous
+    (explicitly public) run with a client-supplied email can never be
+    acquired later by an authenticated user whose verified email happens to
+    match.
     """
     if record.owner_sub is not None:
         return user.sub == record.owner_sub
+    if getattr(record, "visibility", None) is not None:
+        # Not a legacy record: it was written with explicit visibility and a
+        # deliberately null owner (anonymous creation). Email never confers
+        # ownership of it.
+        return False
     if not user.email_verified or user.email is None:
         return False
     return record.email == user.email
@@ -182,3 +195,87 @@ def is_ownerless(record: _OwnedRecord) -> bool:
     """
 
     return record.owner_sub is None and not record.email
+
+
+def creation_policy(
+    user: AuthenticatedUser | None,
+    requested: ResourceVisibility | None = None,
+) -> tuple[str | None, ResourceVisibility]:
+    """Server-authoritative owner + visibility for a new resource.
+
+    The owner is never client-suppliable: it is ``user.sub`` from a verified
+    token, or ``None`` for anonymous. ``requested`` is the (validated,
+    optional) client-requested visibility:
+
+    - Authenticated: omitted defaults to private; an explicit ``public`` or
+      ``private`` is honored, always owned by the caller.
+    - Anonymous: the resource is ALWAYS public with a null owner. A requested
+      ``private`` is safely forced to public -- there is no verified identity
+      that could ever be granted access to an anonymous private resource, so
+      honoring it would create a permanently inaccessible record instead of a
+      protected one.
+    """
+    if user is None:
+        return None, "public"
+    return user.sub, requested or "private"
+
+
+def _record_owner_id(record: object) -> str | None:
+    owner_sub = getattr(record, "owner_sub", None)
+    if isinstance(owner_sub, str) and owner_sub:
+        return owner_sub
+    owner = getattr(record, "owner", None)
+    if isinstance(owner, str) and owner:
+        return owner
+    return None
+
+
+def resource_is_public(record: object) -> bool:
+    """Missing or null visibility is public (legacy compatibility)."""
+    visibility = getattr(record, "visibility", None)
+    return visibility is None or visibility == "public"
+
+
+def _missing_bearer(detail: str) -> HTTPException:
+    return HTTPException(
+        status.HTTP_401_UNAUTHORIZED,
+        detail,
+        headers={
+            "WWW-Authenticate": (
+                'Bearer realm="api", error="invalid_request", '
+                'error_description="Missing bearer token"'
+            )
+        },
+    )
+
+
+def authorize_resource_access(
+    user: AuthenticatedUser | None,
+    records: Iterable[object],
+    *,
+    action: str,
+) -> None:
+    """Public records are allowed; private records require the exact owner.
+
+    No admin bypass. Missing/null visibility is public. An empty record set
+    fails closed. Anonymous callers of a private resource receive 401;
+    authenticated non-owners receive 403.
+    """
+    owned = list(records)
+    if not owned:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"Only the owner can {action} this resource",
+        )
+    for record in owned:
+        if resource_is_public(record):
+            continue
+        if user is None:
+            raise _missing_bearer(f"Authentication required to {action} this resource")
+        owner_id = _record_owner_id(record)
+        if owner_id is None or user.sub != owner_id:
+            _log_authorization_denial("ownership_required", user)
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Only the owner can {action} this resource",
+            )

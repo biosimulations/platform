@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -7,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from biosim_server.api.main import app
-from biosim_server.biosim_omex import OmexDatabaseServiceMongo
-from biosim_server.biosim_runs import BiosimServiceRest, DatabaseServiceMongo
+from biosim_server.biosim_omex import OmexDatabaseServiceMongo, OmexFile
+from biosim_server.biosim_runs import BiosimServiceRest, BiosimulatorVersion, DatabaseServiceMongo
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
@@ -236,6 +237,151 @@ async def test_verify_omex_requires_authentication() -> None:
             files={"uploaded_file": ("empty.omex", b"", "application/zip")},
         )
         assert response.status_code == 401
+
+
+def _verify_omex_mocks(*, insert_raises: bool = False) -> tuple[MagicMock, MagicMock, MagicMock, MagicMock]:
+    """Build the four service mocks POST /verify/omex touches on a cache-miss path.
+
+    OMEX cache-miss -> GCS upload -> Mongo insert (optionally failing) -> simulator
+    resolution -> Temporal start_workflow.
+    """
+    file_service = MagicMock()
+    file_service.upload_bytes = AsyncMock(return_value="omex/deadbeef/model.omex")
+
+    omex_database = MagicMock()
+    omex_database.get_omex_file_by_hash_and_owner = AsyncMock(return_value=None)
+    omex_database.get_omex_file = AsyncMock(return_value=None)  # cache miss
+
+    async def _insert(omex_file: OmexFile) -> OmexFile:
+        if insert_raises:
+            raise RuntimeError("mongo insert failed")
+        return omex_file
+
+    omex_database.insert_omex_file = AsyncMock(side_effect=_insert)
+
+    biosim_service = MagicMock()
+    biosim_service.get_simulator_versions = AsyncMock(
+        return_value=[
+            BiosimulatorVersion(
+                id="copasi", name="COPASI", version="4.34.251",
+                image_url="ghcr.io/biosimulators/copasi:4.34.251",
+                image_digest="sha256:abc123",
+                created="2024-01-01T00:00:00Z", updated="2024-01-01T00:00:00Z",
+            )
+        ]
+    )
+
+    temporal = MagicMock()
+
+    async def _start_workflow(*_args: object, id: str = "", **_kwargs: object) -> MagicMock:
+        handle = MagicMock()
+        handle.id = id
+        handle.run_id = "run-1"
+        return handle
+
+    temporal.start_workflow = AsyncMock(side_effect=_start_workflow)
+    return file_service, omex_database, biosim_service, temporal
+
+
+@pytest.mark.asyncio
+async def test_verify_omex_stamps_verified_subject_as_owner_server_side() -> None:
+    """The persisted OmexFile.owner is the caller's verified token ``sub`` -- there
+    is no request field, query param, or header that lets the client set it."""
+    file_service, omex_database, biosim_service, temporal = _verify_omex_mocks()
+    user = AuthenticatedUser(sub="auth0|verify-owner", email="owner@example.com")
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        with patch("biosim_server.api.main.get_file_service", return_value=file_service), \
+             patch("biosim_server.api.main.get_omex_database_service", return_value=omex_database), \
+             patch("biosim_server.api.main.get_biosim_service", return_value=biosim_service), \
+             patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as test_client:
+                response = await test_client.post(
+                    "/verify/omex",
+                    files={"uploaded_file": ("model.omex", b"PK\x03\x04fake", "application/zip")},
+                    params={"simulators": ["copasi"], "owner": "auth0|attacker"},
+                )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert response.status_code == 200
+    inserted = omex_database.insert_omex_file.call_args.kwargs["omex_file"]
+    assert inserted.owner == "auth0|verify-owner"
+    assert inserted.visibility == "private"
+    # The spoof attempt in the query string is inert -- FastAPI never binds it.
+    assert temporal.start_workflow.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_verify_omex_workflow_start_log_carries_no_subject_email_or_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Task 6 (logging privacy): the workflow-start log line must carry only
+    non-sensitive correlation fields (OMEX hash, workflow id, visibility) --
+    never the whole OmexFile repr, whose ``owner`` is a raw Auth0 subject,
+    and never the caller's email."""
+    file_service, omex_database, biosim_service, temporal = _verify_omex_mocks()
+    raw_sub = "auth0|log-privacy-owner"
+    raw_email = "log-owner@example.com"
+    user = AuthenticatedUser(sub=raw_sub, email=raw_email)
+    app.dependency_overrides[get_current_user] = lambda: user
+    file_bytes = b"PK\x03\x04fake-log-privacy"
+    try:
+        with patch("biosim_server.api.main.get_file_service", return_value=file_service), \
+             patch("biosim_server.api.main.get_omex_database_service", return_value=omex_database), \
+             patch("biosim_server.api.main.get_biosim_service", return_value=biosim_service), \
+             patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+             caplog.at_level(logging.INFO):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as test_client:
+                response = await test_client.post(
+                    "/verify/omex",
+                    files={"uploaded_file": ("model.omex", file_bytes, "application/zip")},
+                    params={"simulators": ["copasi"]},
+                )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert response.status_code == 200
+    rendered = caplog.text
+    assert raw_sub not in rendered
+    assert raw_email not in rendered
+    # The useful correlation fields survive: OMEX hash, workflow id, visibility.
+    file_hash = hashlib.md5(file_bytes).hexdigest()
+    assert file_hash in rendered
+    assert response.json()["workflow_id"] in rendered
+    assert "visibility=private" in rendered
+
+
+@pytest.mark.asyncio
+async def test_verify_omex_does_not_start_workflow_when_omex_persistence_fails() -> None:
+    """Invariant: the OMEX policy row must be durable before any workflow starts.
+    If the Mongo insert raises, start_workflow must never be reached."""
+    file_service, omex_database, biosim_service, temporal = _verify_omex_mocks(insert_raises=True)
+    user = AuthenticatedUser(sub="auth0|verify-owner", email="owner@example.com")
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        with patch("biosim_server.api.main.get_file_service", return_value=file_service), \
+             patch("biosim_server.api.main.get_omex_database_service", return_value=omex_database), \
+             patch("biosim_server.api.main.get_biosim_service", return_value=biosim_service), \
+             patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+            async with AsyncClient(
+                transport=ASGITransport(app=app, raise_app_exceptions=False),
+                base_url="http://test",
+            ) as test_client:
+                response = await test_client.post(
+                    "/verify/omex",
+                    files={"uploaded_file": ("model.omex", b"PK\x03\x04fake", "application/zip")},
+                    params={"simulators": ["copasi"]},
+                )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    assert response.status_code >= 500
+    temporal.start_workflow.assert_not_called()
 
 
 @pytest.mark.asyncio
