@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 .idea
+.agents-new
+.cursor
+.freebuff
+.junie
+.vscode
 
 # C extensions
 *.so
@@ -225,3 +230,4 @@ kustomize/overlays/**/secrets.dat
 # Stray poetry.lock -- this project's Python dependency manager is uv
 # (uv.lock, pyproject.toml), never poetry.
 poetry.lock
+
