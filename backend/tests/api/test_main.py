@@ -12,14 +12,16 @@ from biosim_server.biosim_runs import BiosimServiceRest, DatabaseServiceMongo
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
-from biosim_server.common.auth import AuthenticatedUser, get_current_user
+from biosim_server.common.auth import AuthenticatedUser, get_current_user, get_optional_user
 from biosim_server.common.storage import FileServiceGCS
+from biosim_server.common.storage.file_service_local import FileServiceLocal
 from biosim_server.config import get_settings
 from biosim_server.version import __version__
 from httpx import ASGITransport, AsyncClient
 from temporalio.client import Client
 from temporalio.worker import Worker
 from tests.biosim_verify.test_omex_verify_workflows import assert_omex_verify_results
+from tests.fixtures.biosim_service_mock import BiosimServiceMock
 from tests.biosim_verify.test_runs_verify_workflow import assert_runs_verify_results
 
 
@@ -347,3 +349,88 @@ async def test_protected_route(keycloak_async_client: AsyncClient, alice_token: 
     )
     assert response.status_code == 200
     assert response.json() == {"name": "alice@example.com"}
+
+# --------------------------------------------------------------------------
+# POST /verify/omex ingest ownership
+#
+# The verify endpoint stays reachable anonymously (it always has been), but a
+# caller who *does* authenticate gets an archive owned by their verified `sub`
+# and private by default, rather than one more entry in a globally reusable
+# hash cache.
+# --------------------------------------------------------------------------
+
+def _temporal_client_echoing_workflow_id() -> AsyncMock:
+    """start_workflow stub whose handle reports back the id it was started with."""
+    client = AsyncMock()
+
+    async def _start(*args: object, **kwargs: object) -> MagicMock:
+        return MagicMock(id=kwargs["id"], run_id="run-1")
+
+    client.start_workflow.side_effect = _start
+    return client
+
+
+@pytest.mark.integration_local
+@pytest.mark.asyncio
+async def test_verify_omex_anonymous_ingest_is_public(
+    omex_test_file: Path,
+    omex_database_service_mongo: OmexDatabaseServiceMongo,
+    file_service_local: FileServiceLocal,
+    biosim_service_mock: BiosimServiceMock,
+) -> None:
+    with patch("biosim_server.api.main.get_temporal_client") as mock_temporal:
+        mock_temporal.return_value = _temporal_client_echoing_workflow_id()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            with open(omex_test_file, "rb") as f:
+                response = await client.post(
+                    "/verify/omex?simulators=tellurium",
+                    files={"uploaded_file": (omex_test_file.name, f, "application/zip")},
+                )
+    assert response.status_code == 200, response.text
+
+    stored = [f for f in await omex_database_service_mongo.list_omex_files()]
+    assert len(stored) == 1
+    assert stored[0].owner_sub is None
+    assert stored[0].visibility == "public"
+
+
+@pytest.mark.integration_local
+@pytest.mark.asyncio
+async def test_verify_omex_authenticated_ingest_is_private_and_owned(
+    omex_test_file: Path,
+    omex_database_service_mongo: OmexDatabaseServiceMongo,
+    file_service_local: FileServiceLocal,
+    biosim_service_mock: BiosimServiceMock,
+) -> None:
+    user = AuthenticatedUser(sub="auth0|alice", email="alice@example.com")
+    app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        with patch("biosim_server.api.main.get_temporal_client") as mock_temporal:
+            mock_temporal.return_value = _temporal_client_echoing_workflow_id()
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with open(omex_test_file, "rb") as f:
+                    response = await client.post(
+                        "/verify/omex?simulators=tellurium",
+                        files={"uploaded_file": (omex_test_file.name, f, "application/zip")},
+                    )
+    finally:
+        app.dependency_overrides.pop(get_optional_user, None)
+    assert response.status_code == 200, response.text
+
+    stored = await omex_database_service_mongo.list_omex_files()
+    assert len(stored) == 1
+    assert stored[0].owner_sub == "auth0|alice"
+    assert stored[0].visibility == "private"
+
+
+@pytest.mark.asyncio
+async def test_verify_omex_invalid_token_is_401_not_anonymous(omex_test_file: Path) -> None:
+    """An invalid bearer must not silently ingest the archive as a public one."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with open(omex_test_file, "rb") as f:
+            response = await client.post(
+                "/verify/omex",
+                files={"uploaded_file": (omex_test_file.name, f, "application/zip")},
+                headers={"Authorization": "Bearer not-a-jwt"},
+            )
+    assert response.status_code == 401

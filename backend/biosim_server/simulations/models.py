@@ -7,11 +7,15 @@ from biosim_server.biosim_runs import HDF5File
 
 
 class SimulatorSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str        # e.g., "copasi"
     version: str   # e.g., "4.34.251"
 
 
 class RunSimulationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     omex_id: str
     name: str
     simulators: list[SimulatorSelection]
@@ -96,6 +100,18 @@ class SimulationRunRecord(BaseModel):
     updated: datetime = Field(default_factory=_utcnow)
     biosimulations_run_id: str | None = None
     database_id: str | None = None
+    # --- ownership & access (server-stamped at insert; never from request body) ---
+    owner_sub: str | None = None
+    # None means "legacy document, written before visibility existed". Those
+    # predate any private concept and were world-readable, so they stay public
+    # (see the audit plan's migration strategy: missing visibility -> public;
+    # missing owner is deliberately *not* read as private). Every record this
+    # code writes is stamped explicitly -- authenticated create is "private",
+    # anonymous create is "public" -- so None only ever comes out of Mongo.
+    visibility: Literal["public", "private"] | None = None
+
+    # --- provenance ---
+    omex_id: str | None = None  # MD5 hash; same as POST /simulations/run omex_id
 
     @field_validator("email")
     @classmethod
@@ -125,6 +141,9 @@ class SimulationRun(BaseModel):
     max_time: int = Field(serialization_alias="maxTime")
     env_vars: list[str] = Field(serialization_alias="envVars")
     purpose: str
+    # Redacted to None for everyone but the run's owner and admins -- see
+    # SimulationRun.from_record. Cancel/delete ownership keys off
+    # SimulationRunRecord.owner_sub, never off this field.
     email: str | None
     status: str
     runtime: int
@@ -134,7 +153,25 @@ class SimulationRun(BaseModel):
     updated: str
 
     @classmethod
-    def from_record(cls, record: SimulationRunRecord) -> "SimulationRun":
+    def from_record(
+        cls,
+        record: SimulationRunRecord,
+        *,
+        viewer_sub: str | None = None,
+        viewer_is_admin: bool = False,
+    ) -> "SimulationRun":
+        """Serialize a record for the listing API.
+
+        ``email`` is the submitter's contact address and is not part of the
+        public catalog: the anonymous ``type=all`` listing would otherwise
+        enumerate every runner's email. It is emitted only to the record's
+        own owner (matched on ``owner_sub``) or to an admin.
+        """
+        owns = (
+            viewer_sub is not None
+            and record.owner_sub is not None
+            and record.owner_sub == viewer_sub
+        )
         return cls(
             id=record.run_id,
             biosimulations_run_id=record.biosimulations_run_id,
@@ -147,7 +184,7 @@ class SimulationRun(BaseModel):
             max_time=record.max_time,
             env_vars=record.env_vars,
             purpose=record.purpose,
-            email=record.email,
+            email=record.email if (owns or viewer_is_admin) else None,
             status=record.status,
             runtime=record.runtime,
             project_size=record.project_size,
@@ -164,18 +201,22 @@ def _iso(value: datetime) -> str:
 
 
 class TableSort(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str | None = None
     direction: Literal["asc", "desc"] | None = None
 
 
 class TableFilter(BaseModel):
+    # extra is left as ignore: the listing UI sends _filterType / _filterOptions
+    # alongside the query fields. Forbidding extras here would 422 those requests.
     id: str | None = None
     operator: str | None = None
     value: Any = None
 
 
 class TablePagination(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     page: int = 1
     per_page: int = Field(default=20, alias="perPage")
@@ -185,11 +226,29 @@ class TablePagination(BaseModel):
 class ListSimulationRunsRequest(BaseModel):
     """Body of ``POST /simulations/runs`` — table query for the runs listing."""
 
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["all", "user"] = "all"
     user: str | None = None
     sort: TableSort | None = None
     filters: list[TableFilter] = Field(default_factory=list)
     pagination: TablePagination = Field(default_factory=TablePagination)
+
+
+class SetSimulationVisibilityRequest(BaseModel):
+    """Body of ``PATCH /simulations/{processing_id}/visibility`` (owner-only)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    visibility: Literal["public", "private"]
+
+
+class SetSimulationVisibilityResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    processing_id: str = Field(serialization_alias="processingId")
+    visibility: Literal["public", "private"]
+    updated_runs: int = Field(serialization_alias="updatedRuns")
 
 
 class ListSimulationRunsResponse(BaseModel):

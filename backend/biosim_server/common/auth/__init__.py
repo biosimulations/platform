@@ -3,7 +3,9 @@ from biosim_server.common.auth.roles import (
     ADMIN_ROLE,
     PUBLISHER_ROLE,
     USER_ROLE,
-    require_owner_or_admin,
+    authorize_simulation_run_access,
+    authorize_simulation_run_mutation,
+    can_view_simulation_run,
     require_roles,
 )
 
@@ -12,7 +14,9 @@ __all__ = [
     "get_current_user",
     "get_optional_user",
     "require_roles",
-    "require_owner_or_admin",
+    "can_view_simulation_run",
+    "authorize_simulation_run_access",
+    "authorize_simulation_run_mutation",
     "ADMIN_ROLE",
     "PUBLISHER_ROLE",
     "USER_ROLE",

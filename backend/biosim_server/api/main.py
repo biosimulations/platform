@@ -13,6 +13,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import HTMLResponse
 
 from biosim_server.biosim_omex import OmexFile, get_cached_omex_file_from_upload
+from biosim_server.common.auth.auth0 import AuthenticatedUser, get_optional_user
 from biosim_server.biosim_runs import BiosimulatorVersion
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.compatibility import compatibility_router
@@ -205,15 +206,22 @@ async def verify_omex(
         abs_tol_scale: float = Query(default=0.00001, description="Scale for absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
         cache_buster: str = Query(default="0", description="Optional unique id for cache busting (unique string to force new simulation runs)."),
         observables: Optional[list[str]] = Query(default=None,
-                                                 description="List of observables to include in the return data.")
+                                                 description="List of observables to include in the return data."),
+        user: AuthenticatedUser | None = Depends(get_optional_user)
 ) -> VerifyWorkflowOutput:
+    # Optional auth: anonymous verification keeps working exactly as before (and
+    # ingests a public archive), while a caller who does send a valid bearer token
+    # gets an archive owned by their verified `sub` and private by default. An
+    # invalid token is a 401 here, never a silent downgrade to anonymous.
+    #
     # ---- using hash to avoid saving multiple copies, upload to cloud storage if needed ---- #
     file_service = get_file_service()
     assert file_service is not None
     omex_database = get_omex_database_service()
     assert omex_database is not None
     omex_file: OmexFile = await get_cached_omex_file_from_upload(file_service=file_service, omex_database=omex_database,
-                                                                 uploaded_file=uploaded_file)
+                                                                 uploaded_file=uploaded_file,
+                                                                 owner_sub=user.sub if user is not None else None)
 
     # ---- create workflow input ---- #
     simulator_versions: list[BiosimulatorVersion] = []

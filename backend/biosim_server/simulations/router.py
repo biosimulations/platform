@@ -1,7 +1,7 @@
 import logging
 import uuid
 from datetime import timedelta
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
@@ -17,6 +17,8 @@ from biosim_server.simulations.models import (
     ConglomerateStatus,
     JobLogs,
     JobResult,
+    SetSimulationVisibilityRequest,
+    SetSimulationVisibilityResponse,
     SimulationJobStatus,
     SimulationRunLogs,
     SimulationRunRecord,
@@ -28,7 +30,13 @@ from biosim_server.simulations.models import (
 from biosim_server.simulations.workflow import SimulationRunWorkflow, SimulationRunWorkflowInput
 
 from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user, get_optional_user
-from biosim_server.common.auth.roles import ADMIN_ROLE, PUBLISHER_ROLE, require_owner_or_admin, require_roles
+from biosim_server.common.auth.roles import (
+    ADMIN_ROLE,
+    PUBLISHER_ROLE,
+    authorize_simulation_run_access,
+    authorize_simulation_run_mutation,
+    require_roles,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +54,25 @@ async def run_simulations(
     request: RunSimulationRequest,
     user: AuthenticatedUser | None = Depends(get_optional_user),
 ) -> ConglomerateStatus:
-    # Look up OMEX file by omex_id (which is the file_hash_md5)
+    # Server-authoritative identity first: ownership and visibility are derived
+    # from the verified token, never from the request body.
+    if user is not None and not user.sub:
+        raise HTTPException(status_code=401, detail="Authenticated identity missing subject")
+    owner_sub = user.sub if user is not None else None
+    visibility: Literal["public", "private"] = "private" if user is not None else "public"
+
+    # Resolve the OMEX *before* touching Temporal or biosimulations.org. The
+    # omex_id is a content hash, not a capability: find_accessible_omex_file only
+    # returns the caller's own resource or a public/legacy one, so another
+    # owner's private archive is a 404 here and never reaches start_workflow.
+    # This is also what keeps an anonymous (public) run from referencing a
+    # private archive -- an anonymous caller can only resolve public resources.
     omex_database = get_omex_database_service()
     if omex_database is None:
         raise HTTPException(status_code=503, detail="OMEX database service not available")
-    omex_file = await omex_database.get_omex_file(file_hash_md5=request.omex_id)
+    omex_file = await omex_database.find_accessible_omex_file(
+        file_hash_md5=request.omex_id, viewer_sub=owner_sub
+    )
     if omex_file is None:
         raise HTTPException(status_code=404, detail=f"OMEX file not found for omex_id: {request.omex_id}")
 
@@ -82,6 +104,8 @@ async def run_simulations(
     # salt forces fresh biosimulations.org runs (parity with /verify/omex's cache_buster).
     cache_buster = request.cache_buster or "0"
 
+    omex_id = request.omex_id
+
     workflow_input = SimulationRunWorkflowInput(
         omex_file=omex_file,
         simulators=simulator_versions,
@@ -97,31 +121,44 @@ async def run_simulations(
     # the workflow. A child OmexSimWorkflow that cache-hits and dispatches its early
     # update_run_status_activity in ~milliseconds would otherwise race the API's inserts
     # -- update_one with no upsert silently no-ops against a missing row, dropping the
-    # biosimulations_run_id on the floor. Insert failures are still non-fatal.
+    # biosimulations_run_id on the floor. Insert failure is fatal (see below).
     runs_db = get_simulation_run_database_service()
-    if runs_db is not None:
-        for job_id, sim in zip(job_ids, simulator_versions):
+    if runs_db is None:
+        raise HTTPException(status_code=503, detail="Simulation run database service not available")
+    for job_id, sim in zip(job_ids, simulator_versions):
+        try:
+            await runs_db.insert_simulation_run(SimulationRunRecord(
+                run_id=job_id,
+                processing_id=workflow_id,
+                name=request.name,
+                simulator=sim.id,
+                simulator_version=sim.version,
+                simulator_digest=sim.image_digest,
+                cache_buster=cache_buster,
+                # Contact metadata only -- ownership is owner_sub, never this.
+                # An authenticated caller's email comes from the verified token
+                # and nothing else: falling back to the body for a token with no
+                # email claim would stamp an unverified, client-chosen address
+                # onto an identified user's record (audit plan 4.1, item 8).
+                # Anonymous callers have no verified identity to contradict, so
+                # their self-declared address is kept as before.
+                email=(user.email if user is not None else request.email_address),
+                status="CREATED",
+                owner_sub=owner_sub,
+                visibility=visibility,
+                omex_id=omex_id,
+            ))
+        except Exception as e:
+            # Fatal, and fatal *before* start_workflow: the record is where a run's
+            # owner and visibility live. A workflow started without it would run
+            # unowned and unreachable -- invisible in the listing and, worse,
+            # ungoverned by any ACL. Roll back whatever we did insert.
+            logger.error(f"Failed to persist simulation run record {job_id}: {e}", exc_info=e)
             try:
-                await runs_db.insert_simulation_run(SimulationRunRecord(
-                    run_id=job_id,
-                    processing_id=workflow_id,
-                    name=request.name,
-                    simulator=sim.id,
-                    simulator_version=sim.version,
-                    simulator_digest=sim.image_digest,
-                    cache_buster=cache_buster,
-                    # Trust the verified token's email over the client-supplied field
-                    # when the caller is authenticated -- request.email_address is
-                    # otherwise spoofable and would undermine ownership checks (e.g.
-                    # delete_simulation_run) downstream. Anonymous submissions keep
-                    # using the request body field unchanged.
-                    email=(user.email if user is not None and user.email else request.email_address),
-                    status="CREATED",
-                ))
-            except Exception as e:
-                logger.error(f"Failed to persist simulation run record {job_id}: {e}", exc_info=e)
-    else:
-        logger.warning("Simulation run database service not available; run not persisted for listing")
+                await runs_db.delete_simulation_runs_by_processing_id(workflow_id)
+            except Exception as cleanup_e:
+                logger.warning(f"Rollback of partial run records for {workflow_id} failed: {cleanup_e}")
+            raise HTTPException(status_code=503, detail="Failed to persist simulation run record")
 
     # Start Temporal workflow. If this raises, mark the just-inserted rows FAILED so
     # they don't linger as CREATED forever (no workflow will ever move them out).
@@ -134,12 +171,11 @@ async def run_simulations(
         )
     except Exception as e:
         logger.error(f"Failed to start SimulationRunWorkflow {workflow_id}: {e}", exc_info=e)
-        if runs_db is not None:
-            for job_id in job_ids:
-                try:
-                    await runs_db.update_simulation_run(job_id, status="FAILED")
-                except Exception as cleanup_e:
-                    logger.warning(f"Cleanup of run record {job_id} after start_workflow failure failed: {cleanup_e}")
+        for job_id in job_ids:
+            try:
+                await runs_db.update_simulation_run(job_id, status="FAILED")
+            except Exception as cleanup_e:
+                logger.warning(f"Cleanup of run record {job_id} after start_workflow failure failed: {cleanup_e}")
         raise HTTPException(status_code=503, detail=f"Failed to start simulation workflow: {e}")
     logger.info(f"Started SimulationRunWorkflow with id {workflow_id}")
 
@@ -165,44 +201,44 @@ async def list_simulation_runs(
     request: ListSimulationRunsRequest,
     user: AuthenticatedUser | None = Depends(get_optional_user),
 ) -> ListSimulationRunsResponse:
-    # Any email-based scoping of the listing -- "type": "user" or a "filters"
-    # entry on the "email" field -- requires a verified identity. Without this,
-    # an anonymous or authenticated-as-someone-else caller could read another
-    # user's full run history just by knowing/guessing their email, via either
-    # mechanism. "type": "all" with no email filter stays open to anonymous
-    # browsing.
-    wants_email_scope = request.type == "user" or any(f.id == "email" for f in request.filters)
-    if wants_email_scope:
-        if user is None:
-            raise HTTPException(status_code=401, detail="Authentication required to filter runs by email")
-        if ADMIN_ROLE not in user.roles:
-            # Non-admins may only self-scope, and only via an exact-match email
-            # filter -- contains/starts_with/is_any would turn "filter by my own
-            # email" into an email-harvesting probe.
-            if request.type == "user":
-                request.user = user.email
-            for table_filter in request.filters:
-                if table_filter.id != "email":
-                    continue
-                if table_filter.operator not in (None, "equal", "is"):
-                    raise HTTPException(status_code=403, detail="Only an exact-match email filter is allowed")
-                if not user.email or str(table_filter.value or "").lower() != user.email.lower():
-                    raise HTTPException(status_code=403, detail="Can only filter runs by your own email")
-        elif request.type == "user" and not request.user:
-            raise HTTPException(status_code=400, detail="user (email) is required when type is 'user'")
-
     runs_db = get_simulation_run_database_service()
     if runs_db is None:
         raise HTTPException(status_code=503, detail="Simulation run database service not available")
 
-    records, total = await runs_db.query_simulation_runs(request)
+    if request.type == "user":
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        if not user.sub:
+            raise HTTPException(status_code=401, detail="Authenticated identity missing subject")
+        # Client-supplied request.user is a filter hint, never ownership identity.
+        request.user = None
+
+    # ACL + table filters are applied together inside Mongo, so `total` counts
+    # only rows the caller may see -- pagination can't leak private-run counts.
+    records, total = await runs_db.query_simulation_runs(request, viewer=user)
+    viewer_sub = user.sub if user is not None else None
+    viewer_is_admin = user is not None and ADMIN_ROLE in user.roles
     return ListSimulationRunsResponse(
-        runs=[SimulationRun.from_record(record) for record in records],
+        runs=[
+            SimulationRun.from_record(record, viewer_sub=viewer_sub, viewer_is_admin=viewer_is_admin)
+            for record in records
+        ],
         pagination=request.pagination.model_copy(update={"total": total}),
     )
 
 
-async def _get_conglomerate_status(processing_id: str) -> ConglomerateStatus:
+async def _get_conglomerate_status(
+    processing_id: str,
+    user: AuthenticatedUser | None,
+) -> ConglomerateStatus:
+    runs_db = get_simulation_run_database_service()
+    if runs_db is None:
+        raise HTTPException(status_code=503, detail="Simulation run database service not available")
+    records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
+    if not records:
+        raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+    authorize_simulation_run_access(user, records, action="view")
+
     temporal_client = get_temporal_client()
     if temporal_client is None:
         raise HTTPException(status_code=503, detail="Temporal service not available")
@@ -224,17 +260,6 @@ async def _get_conglomerate_status(processing_id: str) -> ConglomerateStatus:
     except Exception as e:
         logger.info(f"Workflow query failed for {processing_id} (will try DB fallback): {e}")
 
-    # Fetch SimulationRunRecord rows for this processing_id once -- they enrich the
-    # workflow-query view with the early biosimulations_run_id, AND serve as the
-    # sole source when the workflow query failed above.
-    records: list[SimulationRunRecord] = []
-    runs_db = get_simulation_run_database_service()
-    if runs_db is not None:
-        try:
-            records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
-        except Exception as e:
-            logger.warning(f"Failed to read SimulationRunRecords for {processing_id}: {e}")
-
     if status is not None:
         # Hybrid: workflow-query for live state, DB for the early run id per job.
         id_by_run = {r.run_id: r.biosimulations_run_id for r in records}
@@ -243,8 +268,6 @@ async def _get_conglomerate_status(processing_id: str) -> ConglomerateStatus:
                 job.biosimulations_run_id = id_by_run.get(job.job_id)
         return status
 
-    if not records:
-        raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
     return _conglomerate_status_from_records(processing_id, records)
 
 
@@ -255,8 +278,11 @@ async def _get_conglomerate_status(processing_id: str) -> ConglomerateStatus:
     dependencies=[Depends(get_temporal_client)],
     summary="Get status of a simulation run",
 )
-async def get_simulation_status(processing_id: str) -> ConglomerateStatus:
-    return await _get_conglomerate_status(processing_id)
+async def get_simulation_status(
+    processing_id: str,
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> ConglomerateStatus:
+    return await _get_conglomerate_status(processing_id, user)
 
 
 @router.get(
@@ -266,8 +292,11 @@ async def get_simulation_status(processing_id: str) -> ConglomerateStatus:
     dependencies=[Depends(get_temporal_client)],
     summary="Get status of a simulation run (explicit sub-resource, same data as GET /{id})",
 )
-async def get_simulation_status_explicit(processing_id: str) -> ConglomerateStatus:
-    return await _get_conglomerate_status(processing_id)
+async def get_simulation_status_explicit(
+    processing_id: str,
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> ConglomerateStatus:
+    return await _get_conglomerate_status(processing_id, user)
 
 
 @router.get(
@@ -276,7 +305,10 @@ async def get_simulation_status_explicit(processing_id: str) -> ConglomerateStat
     operation_id="get-simulation-results",
     summary="Get the result-dataset catalog for each job in a simulation run",
 )
-async def get_simulation_results(processing_id: str) -> SimulationRunResults:
+async def get_simulation_results(
+    processing_id: str,
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> SimulationRunResults:
     runs_db = get_simulation_run_database_service()
     if runs_db is None:
         raise HTTPException(status_code=503, detail="Simulation run database service not available")
@@ -287,6 +319,7 @@ async def get_simulation_results(processing_id: str) -> SimulationRunResults:
     records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
     if not records:
         raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+    authorize_simulation_run_access(user, records, action="view")
 
     jobs: list[JobResult] = []
     for record in records:
@@ -307,7 +340,10 @@ async def get_simulation_results(processing_id: str) -> SimulationRunResults:
     operation_id="get-simulation-logs",
     summary="Get simulator logs for each job in a simulation run",
 )
-async def get_simulation_logs(processing_id: str) -> SimulationRunLogs:
+async def get_simulation_logs(
+    processing_id: str,
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> SimulationRunLogs:
     runs_db = get_simulation_run_database_service()
     if runs_db is None:
         raise HTTPException(status_code=503, detail="Simulation run database service not available")
@@ -318,6 +354,7 @@ async def get_simulation_logs(processing_id: str) -> SimulationRunLogs:
     records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
     if not records:
         raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+    authorize_simulation_run_access(user, records, action="view")
 
     jobs: list[JobLogs] = []
     for record in records:
@@ -349,7 +386,7 @@ async def cancel_simulation_run(
     records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
     if not records:
         raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
-    require_owner_or_admin(user, (record.email for record in records), action="cancel")
+    authorize_simulation_run_mutation(user, records, action="cancel")
 
     temporal_client = get_temporal_client()
     if temporal_client is None:
@@ -375,6 +412,75 @@ async def cancel_simulation_run(
     return _conglomerate_status_from_records(processing_id, updated_records)
 
 
+@router.patch(
+    "/{processing_id}/visibility",
+    response_model=SetSimulationVisibilityResponse,
+    operation_id="set-simulation-visibility",
+    summary="Publish or unpublish a simulation run (owner or admin)",
+)
+async def set_simulation_visibility(
+    processing_id: str,
+    request: SetSimulationVisibilityRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> SetSimulationVisibilityResponse:
+    """Owner-only publicity control for a run.
+
+    Publishing also publishes the caller's own OMEX resource for the run, in the
+    same authorized action -- otherwise a public run would point at a private
+    archive that nobody but the owner could execute. If the run's archive can't
+    be published by this caller (e.g. an admin publishing somebody else's run,
+    whose private archive is not theirs to expose), the request is refused
+    rather than silently producing an inconsistent public run.
+    """
+    runs_db = get_simulation_run_database_service()
+    if runs_db is None:
+        raise HTTPException(status_code=503, detail="Simulation run database service not available")
+
+    records = await runs_db.get_simulation_runs_by_processing_id(processing_id)
+    if not records:
+        raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
+    authorize_simulation_run_mutation(user, records, action="change the visibility of")
+
+    if request.visibility == "public":
+        await _publish_referenced_omex(records, user)
+
+    updated = await runs_db.set_visibility_by_processing_id(processing_id, request.visibility)
+    return SetSimulationVisibilityResponse(
+        processing_id=processing_id,
+        visibility=request.visibility,
+        updated_runs=updated,
+    )
+
+
+async def _publish_referenced_omex(records: list[SimulationRunRecord], user: AuthenticatedUser) -> None:
+    """Make sure every archive a run references is public before the run becomes public."""
+    omex_database = get_omex_database_service()
+    if omex_database is None:
+        raise HTTPException(status_code=503, detail="OMEX database service not available")
+
+    for omex_id in {record.omex_id for record in records if record.omex_id}:
+        own = await omex_database.get_omex_file(file_hash_md5=omex_id, owner_sub=user.sub)
+        if own is not None:
+            if not own.is_public:
+                await omex_database.set_omex_visibility(
+                    file_hash_md5=omex_id, owner_sub=user.sub, visibility="public"
+                )
+            continue
+        # Not the caller's archive -- it may only be published if it is already
+        # public. Never flip another owner's resource to public on their behalf.
+        accessible = await omex_database.find_accessible_omex_file(
+            file_hash_md5=omex_id, viewer_sub=user.sub
+        )
+        if accessible is None or not accessible.is_public:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot publish run: its OMEX archive {omex_id} is private and "
+                    "not owned by the caller"
+                ),
+            )
+
+
 @router.delete(
     "/{processing_id}",
     status_code=204,
@@ -393,7 +499,7 @@ async def delete_simulation_run(
     if not records:
         raise HTTPException(status_code=404, detail=f"Simulation run not found: {processing_id}")
 
-    require_owner_or_admin(user, (record.email for record in records), action="delete")
+    authorize_simulation_run_mutation(user, records, action="delete")
 
     await runs_db.delete_simulation_runs_by_processing_id(processing_id)
     return Response(status_code=204)

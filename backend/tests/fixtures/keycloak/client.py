@@ -29,6 +29,7 @@ def keycloak_auth_settings(keycloak_realm: KeycloakTestRealm, monkeypatch: pytes
     monkeypatch.setattr(settings, "roles_claim", keycloak_realm.roles_claim)
     auth0_module._jwks_cache["keys"] = None
     auth0_module._jwks_cache["fetched_at"] = 0.0
+    auth0_module._jwks_cache["last_forced_at"] = 0.0
     return keycloak_realm
 
 

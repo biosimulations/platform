@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
+from jose import jwt  # type: ignore[import-untyped]
 from temporalio.worker import Worker
 
 from biosim_server.biosim_omex import OmexDatabaseServiceMongo
@@ -172,3 +173,218 @@ async def test_simulations_run(
     )
     assert other.status_code == 200, other.text
     assert other.json()["pagination"]["_total"] == 0
+
+
+@pytest.mark.integration_local
+@pytest.mark.asyncio
+async def test_simulations_run_authenticated_vs_anonymous_persistence(
+    omex_test_file: Path,
+    omex_database_service_mongo: OmexDatabaseServiceMongo,
+    database_service_mongo: DatabaseServiceMongo,
+    simulation_run_database_service_mongo: SimulationRunDatabaseServiceMongo,
+    file_service_local: FileServiceLocal,
+    biosim_service_mock: BiosimServiceMock,
+    temporal_verify_worker: Worker,
+    keycloak_async_client: AsyncClient,
+    charlie_token: str,
+    bob_token: str,
+) -> None:
+    _patch_mock_to_succeed(biosim_service_mock)
+    charlie_headers = {"Authorization": f"Bearer {charlie_token}"}
+    bob_headers = {"Authorization": f"Bearer {bob_token}"}
+    charlie_sub = jwt.get_unverified_claims(charlie_token)["sub"]
+    with open(omex_test_file, "rb") as f:
+        omex_id = (
+            await keycloak_async_client.post(
+                "/compatibility/check",
+                files={"uploaded_file": (omex_test_file.name, f, "application/zip")},
+            )
+        ).json()["omex_id"]
+    payload = {
+        "omex_id": omex_id,
+        "name": "anon-run",
+        "simulators": [{"id": "tellurium", "version": "2.2.10"}],
+        "email_address": "anon@example.com",
+    }
+    anon = await keycloak_async_client.post("/simulations/run", json=payload)
+    assert anon.status_code == 200
+    anon_id = anon.json()["processing_id"]
+    anon_rows = await simulation_run_database_service_mongo.get_simulation_runs_by_processing_id(anon_id)
+    assert anon_rows[0].owner_sub is None
+    assert anon_rows[0].visibility == "public"
+    payload["name"] = "charlie-run"
+    auth = await keycloak_async_client.post(
+        "/simulations/run", json=payload, headers=charlie_headers
+    )
+    assert auth.status_code == 200
+    auth_id = auth.json()["processing_id"]
+    auth_rows = await simulation_run_database_service_mongo.get_simulation_runs_by_processing_id(auth_id)
+    assert auth_rows[0].owner_sub == charlie_sub
+    assert auth_rows[0].visibility == "private"
+    bob_list = await keycloak_async_client.post(
+        "/simulations/runs",
+        json={"type": "all", "filters": [], "pagination": {"page": 1, "perPage": 20}},
+        headers=bob_headers,
+    )
+    ids = {r["name"] for r in bob_list.json()["runs"]}
+    assert "anon-run" in ids
+    assert "charlie-run" not in ids
+    charlie_mine = await keycloak_async_client.post(
+        "/simulations/runs",
+        json={"type": "user", "filters": [], "pagination": {"page": 1, "perPage": 20}},
+        headers=charlie_headers,
+    )
+    names = {r["name"] for r in charlie_mine.json()["runs"]}
+    assert "charlie-run" in names
+
+
+@pytest.mark.integration_local
+@pytest.mark.asyncio
+async def test_private_omex_cannot_be_executed_by_another_user(
+    omex_test_file: Path,
+    omex_database_service_mongo: OmexDatabaseServiceMongo,
+    database_service_mongo: DatabaseServiceMongo,
+    simulation_run_database_service_mongo: SimulationRunDatabaseServiceMongo,
+    file_service_local: FileServiceLocal,
+    biosim_service_mock: BiosimServiceMock,
+    temporal_verify_worker: Worker,
+    keycloak_async_client: AsyncClient,
+    charlie_token: str,
+    bob_token: str,
+) -> None:
+    """End to end: an OMEX hash is not an access capability.
+
+    Charlie ingests an archive while authenticated (private, owned by him). Bob
+    knows the hash -- it is returned in the compatibility response -- but must
+    not be able to run it, and an anonymous caller must not either.
+    """
+    _patch_mock_to_succeed(biosim_service_mock)
+    charlie_headers = {"Authorization": f"Bearer {charlie_token}"}
+    bob_headers = {"Authorization": f"Bearer {bob_token}"}
+    charlie_sub = jwt.get_unverified_claims(charlie_token)["sub"]
+
+    with open(omex_test_file, "rb") as f:
+        compat = await keycloak_async_client.post(
+            "/compatibility/check",
+            files={"uploaded_file": (omex_test_file.name, f, "application/zip")},
+            headers=charlie_headers,
+        )
+    assert compat.status_code == 200, compat.text
+    omex_id = compat.json()["omex_id"]
+
+    stored = await omex_database_service_mongo.get_omex_file(
+        file_hash_md5=omex_id, owner_sub=charlie_sub
+    )
+    assert stored is not None
+    assert stored.owner_sub == charlie_sub
+    assert stored.visibility == "private"
+
+    payload = {
+        "omex_id": omex_id,
+        "name": "private-omex-run",
+        "simulators": [{"id": "tellurium", "version": "2.2.10"}],
+    }
+
+    # Bob knows the hash. That is not enough.
+    denied = await keycloak_async_client.post(
+        "/simulations/run", json=payload, headers=bob_headers
+    )
+    assert denied.status_code == 404, denied.text
+
+    # Neither is anonymity.
+    denied_anon = await keycloak_async_client.post("/simulations/run", json=payload)
+    assert denied_anon.status_code == 404, denied_anon.text
+
+    # The owner can.
+    allowed = await keycloak_async_client.post(
+        "/simulations/run", json=payload, headers=charlie_headers
+    )
+    assert allowed.status_code == 200, allowed.text
+    rows = await simulation_run_database_service_mongo.get_simulation_runs_by_processing_id(
+        allowed.json()["processing_id"]
+    )
+    assert rows[0].owner_sub == charlie_sub
+    assert rows[0].visibility == "private"
+    assert rows[0].omex_id == omex_id
+
+
+@pytest.mark.integration_local
+@pytest.mark.asyncio
+async def test_publish_then_unpublish_a_private_run(
+    omex_test_file: Path,
+    omex_database_service_mongo: OmexDatabaseServiceMongo,
+    database_service_mongo: DatabaseServiceMongo,
+    simulation_run_database_service_mongo: SimulationRunDatabaseServiceMongo,
+    file_service_local: FileServiceLocal,
+    biosim_service_mock: BiosimServiceMock,
+    temporal_verify_worker: Worker,
+    keycloak_async_client: AsyncClient,
+    charlie_token: str,
+    bob_token: str,
+) -> None:
+    """Owner-only publicity control, with run/OMEX consistency across the flip."""
+    _patch_mock_to_succeed(biosim_service_mock)
+    charlie_headers = {"Authorization": f"Bearer {charlie_token}"}
+    bob_headers = {"Authorization": f"Bearer {bob_token}"}
+    charlie_sub = jwt.get_unverified_claims(charlie_token)["sub"]
+
+    with open(omex_test_file, "rb") as f:
+        omex_id = (
+            await keycloak_async_client.post(
+                "/compatibility/check",
+                files={"uploaded_file": (omex_test_file.name, f, "application/zip")},
+                headers=charlie_headers,
+            )
+        ).json()["omex_id"]
+
+    created = await keycloak_async_client.post(
+        "/simulations/run",
+        json={
+            "omex_id": omex_id,
+            "name": "publishable-run",
+            "simulators": [{"id": "tellurium", "version": "2.2.10"}],
+        },
+        headers=charlie_headers,
+    )
+    assert created.status_code == 200, created.text
+    processing_id = created.json()["processing_id"]
+
+    # Private: Bob sees a 404, not a 403 -- the id itself is concealed.
+    assert (await keycloak_async_client.get(
+        f"/simulations/{processing_id}", headers=bob_headers)).status_code == 404
+
+    # Bob cannot publish somebody else's run.
+    forbidden = await keycloak_async_client.patch(
+        f"/simulations/{processing_id}/visibility",
+        json={"visibility": "public"},
+        headers=bob_headers,
+    )
+    assert forbidden.status_code == 403
+
+    published = await keycloak_async_client.patch(
+        f"/simulations/{processing_id}/visibility",
+        json={"visibility": "public"},
+        headers=charlie_headers,
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["visibility"] == "public"
+
+    # The archive was published in the same action, so the public run is runnable.
+    omex_after = await omex_database_service_mongo.get_omex_file(
+        file_hash_md5=omex_id, owner_sub=charlie_sub
+    )
+    assert omex_after is not None and omex_after.visibility == "public"
+
+    # Anonymous access now succeeds.
+    assert (await keycloak_async_client.get(
+        f"/simulations/{processing_id}")).status_code == 200
+
+    # ... and stops again on unpublish.
+    unpublished = await keycloak_async_client.patch(
+        f"/simulations/{processing_id}/visibility",
+        json={"visibility": "private"},
+        headers=charlie_headers,
+    )
+    assert unpublished.status_code == 200
+    assert (await keycloak_async_client.get(
+        f"/simulations/{processing_id}")).status_code == 404
