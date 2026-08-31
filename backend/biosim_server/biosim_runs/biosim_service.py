@@ -3,6 +3,7 @@ import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, AsyncGenerator
+from urllib.parse import quote
 
 import aiofiles
 import aiohttp
@@ -63,6 +64,10 @@ class BiosimService(ABC):
 
     @abstractmethod
     async def get_sim_run_logs(self, simulation_run_id: str) -> dict[str, Any]:
+        pass
+
+    @abstractmethod
+    async def get_project_summary(self, project_id: str) -> dict[str, Any]:
         pass
 
     @abstractmethod
@@ -179,6 +184,21 @@ class BiosimServiceRest(BiosimService):
                 resp.raise_for_status()
                 logs: dict[str, Any] = await resp.json()
                 return logs
+
+    @override
+    async def get_project_summary(self, project_id: str) -> dict[str, Any]:
+        """ raises ClientResponseError if the response status is not 2xx """
+        api_base_url = get_settings().biosimulations_api_base_url
+        assert (api_base_url is not None)
+
+        # The id is caller-supplied and may contain '/' or '?'; quote it so it
+        # stays a single path segment instead of reshaping the upstream URL.
+        url = f"{api_base_url}/projects/{quote(project_id, safe='')}/summary"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                summary: dict[str, Any] = await resp.json()
+                return summary
 
     @override
     @cached(ttl=3600, cache=SimpleMemoryCache)  # type: ignore

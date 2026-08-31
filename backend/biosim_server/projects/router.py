@@ -3,16 +3,23 @@
 Two decoupled GET endpoints replace the legacy ``/projects/summary_filtered``
 so paging through slim results is independent of the heavier facet computation
 (see ``docs/project-search-api-plan.md``).
+
+``GET /{id}/summary`` is different in kind: the project *detail* contract still
+belongs to biosimulations.org, so that route is a passthrough to the upstream
+API rather than a view over the platform's own project data.
 """
 
 import json
 import logging
+from typing import Any
 
+import aiohttp
+from aiohttp import ClientResponseError
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import ValidationError
 
 from biosim_server.config import get_settings
-from biosim_server.dependencies import get_project_database_service
+from biosim_server.dependencies import get_biosim_service, get_project_database_service
 from biosim_server.projects.models import (
     ProjectQueryStat,
     ProjectSearchFilter,
@@ -112,3 +119,46 @@ async def list_project_stats(
     return await projects_db.query_project_stats(
         filters=parsed_filters, search_term=searchTerm.strip()
     )
+
+
+@router.get(
+    "/{project_id}/summary",
+    operation_id="get-project-summary",
+    summary="Full project summary (passthrough to the biosimulations.org API)",
+)
+async def get_project_summary(project_id: str) -> dict[str, Any]:
+    """Proxy ``GET /projects/{id}/summary`` to the biosimulations.org API.
+
+    The detail contract (a ``SimulationRunSummary``: tasks, outputs, run details
+    and the full metadata block) is assembled by biosimulations.org and has no
+    confirmed schema to model against here — the platform's own project view is
+    the slim ``ProjectStub`` built for the list/facet endpoints above, which does
+    not carry those fields. So the upstream body is returned unchanged, the same
+    way ``JobLogs.logs`` passes the biosimulations.org ``/logs/{id}`` payload
+    through untyped.
+
+    The project catalog is published and anonymous-readable, like the two search
+    routes above, so this route takes no auth dependency and nothing but the
+    project id is sent upstream — no caller credentials are forwarded.
+    """
+    biosim_service = get_biosim_service()
+    if biosim_service is None:
+        raise HTTPException(status_code=503, detail="Biosim service not available")
+
+    try:
+        return await biosim_service.get_project_summary(project_id)
+    except ClientResponseError as e:
+        if e.status == 404:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        if 400 <= e.status < 500:
+            # A 4xx upstream is attributable to the id the caller supplied (a
+            # malformed id upstream-400s), not to a broken gateway -- forwarding it
+            # says "your request was wrong" instead of "our dependency is down".
+            raise HTTPException(status_code=e.status, detail=f"Upstream rejected project id: HTTP {e.status}")
+        logger.warning(f"Upstream project summary failed for {project_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch project summary: HTTP {e.status}")
+    except aiohttp.ClientError as e:
+        # The transport error names the upstream host and port; that belongs in the
+        # log, not in a public response body (same split as users/router.py's 502s).
+        logger.warning(f"Upstream project summary unreachable for {project_id}: {e}", exc_info=e)
+        raise HTTPException(status_code=502, detail="Failed to fetch project summary from the biosimulations.org API")

@@ -21,12 +21,14 @@ class BiosimServiceMock(BiosimService):
     hdf5_files: dict[str, HDF5File] = {}
     hdf5_data: dict[str, dict[str, Hdf5DataValues]] = {}
     run_logs: dict[str, dict[str, Any]] = {}
+    project_summaries: dict[str, dict[str, Any]] = {}
 
     def __init__(self,
                  sim_runs: dict[str, BiosimSimulationRun] | None = None,
                  hdf5_files: dict[str, HDF5File] | None = None,
                  hdf5_data: dict[str, dict[str, Hdf5DataValues]] | None = None,
-                 run_logs: dict[str, dict[str, Any]] | None = None) -> None:
+                 run_logs: dict[str, dict[str, Any]] | None = None,
+                 project_summaries: dict[str, dict[str, Any]] | None = None) -> None:
         if sim_runs:
             self.sim_runs = sim_runs
         if hdf5_files:
@@ -35,6 +37,8 @@ class BiosimServiceMock(BiosimService):
             self.hdf5_data = hdf5_data
         if run_logs:
             self.run_logs = run_logs
+        if project_summaries:
+            self.project_summaries = project_summaries
 
     @override
     async def get_sim_run(self, simulation_run_id: str) -> BiosimSimulationRun:
@@ -81,6 +85,14 @@ class BiosimServiceMock(BiosimService):
             return logs
         else:
             raise ObjectNotFoundError("Logs not found")
+
+    @override
+    async def get_project_summary(self, project_id: str) -> dict[str, Any]:
+        summary = self.project_summaries.get(project_id)
+        if summary is not None:
+            return summary
+        else:
+            raise ObjectNotFoundError("Project summary not found")
 
     @override
     async def get_simulator_versions(self) -> list[BiosimulatorVersion]:
