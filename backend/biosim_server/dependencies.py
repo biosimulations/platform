@@ -4,8 +4,6 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from temporalio.client import Client as TemporalClient
 
 from biosim_server.biosim_omex.database import OmexDatabaseService, OmexDatabaseServiceMongo
-from biosim_server.biosim_runs.biosim_service import BiosimService, BiosimServiceRest
-from biosim_server.biosim_runs.database import DatabaseService, DatabaseServiceMongo
 from biosim_server.common.storage import FileService, FileServiceGCS, FileServiceLocal, FileServiceMinio
 from biosim_server.config import get_local_cache_dir, get_settings
 
@@ -14,6 +12,12 @@ if TYPE_CHECKING:
     # simulations/__init__.py -> router -> dependencies.
     from biosim_server.simulations.database import SimulationRunDatabaseService
     from biosim_server.projects.database import ProjectDatabaseService
+    # Same reason, one package over: importing either biosim_runs submodule
+    # executes biosim_runs/__init__.py, which eagerly imports activities.py,
+    # which imports this module -- so at module level it would resolve against a
+    # half-built `dependencies` and fail on the first getter it wants.
+    from biosim_server.biosim_runs.biosim_service import BiosimService
+    from biosim_server.biosim_runs.database import DatabaseService
 
 #------ file service (standalone or pytest) ------
 
@@ -29,13 +33,13 @@ def get_file_service() -> FileService | None:
 
 #------- database service (standalone or pytest) ------
 
-global_database_service: DatabaseService | None = None
+global_database_service: "DatabaseService | None" = None
 
-def set_database_service(database_service: DatabaseService | None) -> None:
+def set_database_service(database_service: "DatabaseService | None") -> None:
     global global_database_service
     global_database_service = database_service
 
-def get_database_service() -> DatabaseService | None:
+def get_database_service() -> "DatabaseService | None":
     global global_database_service
     return global_database_service
 
@@ -77,13 +81,13 @@ def get_project_database_service() -> "ProjectDatabaseService | None":
 
 #------- biosim service (standalone or pytest) ------
 
-global_biosim_service: BiosimService | None = None
+global_biosim_service: "BiosimService | None" = None
 
-def set_biosim_service(biosim_service: BiosimService | None) -> None:
+def set_biosim_service(biosim_service: "BiosimService | None") -> None:
     global global_biosim_service
     global_biosim_service = biosim_service
 
-def get_biosim_service() -> BiosimService | None:
+def get_biosim_service() -> "BiosimService | None":
     global global_biosim_service
     return global_biosim_service
 
@@ -128,13 +132,17 @@ def _make_file_service(backend: str) -> FileService:
 
 async def init_standalone() -> None:
     settings = get_settings()
+
+    # Local imports avoid the simulations/biosim_runs -> dependencies import
+    # cycles at module load; by the time this runs, every module is fully built.
+    from biosim_server.biosim_runs.biosim_service import BiosimServiceRest
+    from biosim_server.biosim_runs.database import DatabaseServiceMongo
+    from biosim_server.simulations.database import SimulationRunDatabaseServiceMongo
+    from biosim_server.projects.search import ProjectSearchServiceMongo
+
     set_file_service(_make_file_service(settings.storage_backend))
     set_biosim_service(BiosimServiceRest())
     set_temporal_client(await TemporalClient.connect(settings.temporal_service_url))
-
-    # Local import avoids the simulations -> dependencies import cycle at module load.
-    from biosim_server.simulations.database import SimulationRunDatabaseServiceMongo
-    from biosim_server.projects.search import ProjectSearchServiceMongo
 
     motor_client = AsyncIOMotorClient(get_settings().mongodb_uri)
     set_mongo_client(motor_client)
