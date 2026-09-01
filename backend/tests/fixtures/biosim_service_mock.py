@@ -6,6 +6,8 @@ from typing_extensions import override
 
 from biosim_server.biosim_runs import BiosimService, BiosimulatorVersion, BiosimSimulationRun, \
     BiosimSimulationRunStatus, Hdf5DataValues, HDF5File
+from biosim_server.common.biosim_api import KisaoTerm, OutputResults, ProjectFile, ProjectSummary, \
+    RunLog, SedDocumentSpec, SimulationRunSummary, local_kisao_term
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -21,14 +23,22 @@ class BiosimServiceMock(BiosimService):
     hdf5_files: dict[str, HDF5File] = {}
     hdf5_data: dict[str, dict[str, Hdf5DataValues]] = {}
     run_logs: dict[str, dict[str, Any]] = {}
-    project_summaries: dict[str, dict[str, Any]] = {}
+    project_summaries: dict[str, ProjectSummary] = {}
+    run_summaries: dict[str, SimulationRunSummary] = {}
+    run_files: dict[str, list[ProjectFile]] = {}
+    run_specifications: dict[str, list[SedDocumentSpec]] = {}
+    output_results: dict[tuple[str, str], OutputResults] = {}
 
     def __init__(self,
                  sim_runs: dict[str, BiosimSimulationRun] | None = None,
                  hdf5_files: dict[str, HDF5File] | None = None,
                  hdf5_data: dict[str, dict[str, Hdf5DataValues]] | None = None,
                  run_logs: dict[str, dict[str, Any]] | None = None,
-                 project_summaries: dict[str, dict[str, Any]] | None = None) -> None:
+                 project_summaries: dict[str, ProjectSummary] | None = None,
+                 run_summaries: dict[str, SimulationRunSummary] | None = None,
+                 run_files: dict[str, list[ProjectFile]] | None = None,
+                 run_specifications: dict[str, list[SedDocumentSpec]] | None = None,
+                 output_results: dict[tuple[str, str], OutputResults] | None = None) -> None:
         if sim_runs:
             self.sim_runs = sim_runs
         if hdf5_files:
@@ -39,6 +49,14 @@ class BiosimServiceMock(BiosimService):
             self.run_logs = run_logs
         if project_summaries:
             self.project_summaries = project_summaries
+        if run_summaries:
+            self.run_summaries = run_summaries
+        if run_files:
+            self.run_files = run_files
+        if run_specifications:
+            self.run_specifications = run_specifications
+        if output_results:
+            self.output_results = output_results
 
     @override
     async def get_sim_run(self, simulation_run_id: str) -> BiosimSimulationRun:
@@ -87,12 +105,56 @@ class BiosimServiceMock(BiosimService):
             raise ObjectNotFoundError("Logs not found")
 
     @override
-    async def get_project_summary(self, project_id: str) -> dict[str, Any]:
+    async def get_project_summary(self, project_id: str) -> ProjectSummary:
         summary = self.project_summaries.get(project_id)
         if summary is not None:
             return summary
         else:
             raise ObjectNotFoundError("Project summary not found")
+
+    @override
+    async def get_run_summary(self, simulation_run_id: str) -> SimulationRunSummary:
+        summary = self.run_summaries.get(simulation_run_id)
+        if summary is not None:
+            return summary
+        else:
+            raise ObjectNotFoundError("Run summary not found")
+
+    @override
+    async def get_run_files(self, simulation_run_id: str) -> list[ProjectFile]:
+        return self.run_files.get(simulation_run_id, [])
+
+    @override
+    async def get_run_specifications(self, simulation_run_id: str) -> list[SedDocumentSpec]:
+        specs = self.run_specifications.get(simulation_run_id)
+        if specs is not None:
+            return specs
+        else:
+            raise ObjectNotFoundError("Run specifications not found")
+
+    @override
+    async def get_run_log(self, simulation_run_id: str) -> RunLog:
+        logs = self.run_logs.get(simulation_run_id)
+        if logs is not None:
+            return RunLog.model_validate(logs)
+        else:
+            raise ObjectNotFoundError("Logs not found")
+
+    @override
+    async def get_output_results(self, simulation_run_id: str, output_id: str) -> OutputResults:
+        results = self.output_results.get((simulation_run_id, output_id))
+        if results is not None:
+            return results
+        else:
+            raise ObjectNotFoundError("Output results not found")
+
+    @override
+    async def get_kisao_term(self, kisao_id: str) -> KisaoTerm:
+        term = local_kisao_term(kisao_id)
+        if term is not None:
+            return term
+        else:
+            raise ObjectNotFoundError("KISAO term not found")
 
     @override
     async def get_simulator_versions(self) -> list[BiosimulatorVersion]:

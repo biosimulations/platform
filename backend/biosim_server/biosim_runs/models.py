@@ -99,6 +99,13 @@ class BiosimSimulationRun(BaseModel):
     results_size: Optional[int] = None     # (in bytes)
     runtime: Optional[int] = None          # (in milliseconds)
     email: Optional[str] = None
+    # Upstream /runs/{id} reports the simulator as a slug plus a bare version
+    # string. `simulator_version` above is already taken by the *resolved*
+    # BiosimulatorVersion object (name + image url + digest, looked up against
+    # api.biosimulators.org), so the raw string cannot reuse that name without
+    # making the model actively misleading.
+    simulator_id: Optional[str] = None              # e.g. "copasi" (an id, not a display name)
+    simulator_version_string: Optional[str] = None  # e.g. "4.34.251"
 
     @field_validator('id')
     def validate_id(cls, v: str) -> str:

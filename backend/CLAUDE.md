@@ -141,6 +141,14 @@ backend/
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
 | `/simulations/runs` | POST | List simulation runs (owner-scoped, paginated, sortable, filterable) |
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
+| `/projects/{id}/summary` | GET | Project detail envelope (passthrough to biosimulations.org) |
+| `/projects/{id}/detail` | GET | Summary + the run's files/specification (+ log via `?include=log`) |
+| `/runs/{id}/summary` | GET | Run summary (passthrough) |
+| `/files/{id}` | GET | Files in a run's archive (passthrough) |
+| `/specifications/{id}` | GET | SED-ML specification (passthrough) |
+| `/logs/{id}` | GET | Execution log (passthrough) |
+| `/results/{id}/{outputId}` | GET | Results for one output (passthrough, lazy) |
+| `/ontologies/KISAO/{id}` | GET | KISAO algorithm term (passthrough, cached) |
 | `/verify/omex` | POST | Verify OMEX file across simulators |
 | `/verify/{workflow_id}` | GET | Get verification results |
 | `/verify/runs` | POST | Compare existing biosimulation runs |

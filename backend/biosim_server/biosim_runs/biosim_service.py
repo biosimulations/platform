@@ -3,6 +3,8 @@ import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, AsyncGenerator
+
+from pydantic import TypeAdapter
 from urllib.parse import quote
 
 import aiofiles
@@ -14,9 +16,16 @@ from typing_extensions import override
 from biosim_server.biosim_runs.models import BiosimulatorVersion, BiosimSimulationRun, \
     BiosimSimulationRunStatus, HDF5File, Hdf5DataValues, BiosimSimulationRunApiRequest
 from biosim_server.config import get_settings
+from biosim_server.common.biosim_api import KisaoTerm, OutputResults, ProjectFile, ProjectSummary, \
+    RunLog, SedDocumentSpec, SimulationRunSummary, local_kisao_term, upstream_kisao_id
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# Reused per call: building a TypeAdapter compiles a validator, so hoist it out
+# of the request path.
+_PROJECT_FILES_ADAPTER = TypeAdapter(list[ProjectFile])
+_SED_DOCUMENTS_ADAPTER = TypeAdapter(list[SedDocumentSpec])
 
 
 def _sim_run_from_response(res: dict[str, Any], simulator_version: BiosimulatorVersion) -> BiosimSimulationRun:
@@ -41,6 +50,8 @@ def _sim_run_from_response(res: dict[str, Any], simulator_version: BiosimulatorV
         results_size=res.get("resultsSize"),
         runtime=res.get("runtime"),
         email=res.get("email"),
+        simulator_id=res.get("simulator"),
+        simulator_version_string=res.get("simulatorVersion"),
     )
 
 
@@ -67,7 +78,31 @@ class BiosimService(ABC):
         pass
 
     @abstractmethod
-    async def get_project_summary(self, project_id: str) -> dict[str, Any]:
+    async def get_project_summary(self, project_id: str) -> ProjectSummary:
+        pass
+
+    @abstractmethod
+    async def get_run_summary(self, simulation_run_id: str) -> SimulationRunSummary:
+        pass
+
+    @abstractmethod
+    async def get_run_files(self, simulation_run_id: str) -> list[ProjectFile]:
+        pass
+
+    @abstractmethod
+    async def get_run_specifications(self, simulation_run_id: str) -> list[SedDocumentSpec]:
+        pass
+
+    @abstractmethod
+    async def get_run_log(self, simulation_run_id: str) -> RunLog:
+        pass
+
+    @abstractmethod
+    async def get_output_results(self, simulation_run_id: str, output_id: str) -> OutputResults:
+        pass
+
+    @abstractmethod
+    async def get_kisao_term(self, kisao_id: str) -> KisaoTerm:
         pass
 
     @abstractmethod
@@ -185,20 +220,147 @@ class BiosimServiceRest(BiosimService):
                 logs: dict[str, Any] = await resp.json()
                 return logs
 
-    @override
-    async def get_project_summary(self, project_id: str) -> dict[str, Any]:
-        """ raises ClientResponseError if the response status is not 2xx """
+    async def _get_biosim_json(self, path: str, params: dict[str, str] | None = None) -> Any:
+        """GET `path` on the biosimulations.org API and return the decoded JSON.
+
+        `path` must already be percent-encoded: every id reaching these endpoints
+        is caller-supplied and may contain '/' or '?', which would otherwise
+        reshape the upstream URL.
+
+        raises ClientResponseError if the response status is not 2xx.
+        """
         api_base_url = get_settings().biosimulations_api_base_url
         assert (api_base_url is not None)
 
-        # The id is caller-supplied and may contain '/' or '?'; quote it so it
-        # stays a single path segment instead of reshaping the upstream URL.
-        url = f"{api_base_url}/projects/{quote(project_id, safe='')}/summary"
+        # Omit `params` entirely when there are none, so the outgoing call is
+        # session.get(url) rather than session.get(url, params=None).
+        kwargs: dict[str, Any] = {} if params is None else {"params": params}
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
+            async with session.get(f"{api_base_url}{path}", **kwargs) as resp:
                 resp.raise_for_status()
-                summary: dict[str, Any] = await resp.json()
-                return summary
+                payload: Any = await resp.json()
+                return payload
+
+    @override
+    async def get_project_summary(self, project_id: str) -> ProjectSummary:
+        """ raises ClientResponseError if the response status is not 2xx """
+        payload = await self._get_biosim_json(f"/projects/{quote(project_id, safe='')}/summary")
+        return ProjectSummary.model_validate(payload)
+
+    @override
+    async def get_run_summary(self, simulation_run_id: str) -> SimulationRunSummary:
+        """``GET /runs/{id}/summary``.
+
+        Returns the same object that a project summary already embeds under
+        `simulationRun` -- callers holding a ProjectSummary must not call this.
+
+        raises ClientResponseError if the response status is not 2xx.
+        """
+        payload = await self._get_biosim_json(
+            f"/runs/{quote(simulation_run_id, safe='')}/summary"
+        )
+        return SimulationRunSummary.model_validate(payload)
+
+    @override
+    async def get_run_files(self, simulation_run_id: str) -> list[ProjectFile]:
+        """``GET /files/{run_id}`` -- every file in the run's archive.
+
+        raises ClientResponseError if the response status is not 2xx.
+        """
+        payload = await self._get_biosim_json(f"/files/{quote(simulation_run_id, safe='')}")
+        if not isinstance(payload, list):
+            # The contract is a bare array. Anything else is an upstream change we
+            # cannot represent -- log it and degrade to "no files" rather than 500.
+            logger.warning(
+                f"Expected a JSON array from /files/{simulation_run_id}, got {type(payload).__name__}"
+            )
+            return []
+        return _PROJECT_FILES_ADAPTER.validate_python(payload)
+
+    @override
+    async def get_run_specifications(self, simulation_run_id: str) -> list[SedDocumentSpec]:
+        """``GET /specifications/{run_id}`` -- the run's SED-ML documents.
+
+        Upstream returns an **array**: an archive may hold more than one SED-ML
+        document. A lone object is still accepted and wrapped, so either shape
+        parses.
+
+        raises ClientResponseError if the response status is not 2xx.
+        """
+        payload = await self._get_biosim_json(
+            f"/specifications/{quote(simulation_run_id, safe='')}"
+        )
+        if isinstance(payload, dict):
+            payload = [payload]
+        elif not isinstance(payload, list):
+            logger.warning(
+                f"Expected a JSON array from /specifications/{simulation_run_id}, "
+                f"got {type(payload).__name__}"
+            )
+            return []
+        return _SED_DOCUMENTS_ADAPTER.validate_python(payload)
+
+    @override
+    async def get_run_log(self, simulation_run_id: str) -> RunLog:
+        """``GET /logs/{run_id}``, typed.
+
+        Distinct from `get_sim_run_logs`, which returns the same payload as a raw
+        dict and is what `GET /simulations/{id}/logs` passes through untouched.
+
+        raises ClientResponseError if the response status is not 2xx.
+        """
+        payload = await self._get_biosim_json(f"/logs/{quote(simulation_run_id, safe='')}")
+        return RunLog.model_validate(payload)
+
+    @override
+    async def get_output_results(self, simulation_run_id: str, output_id: str) -> OutputResults:
+        """``GET /results/{run_id}/{output_id}?includeData=true``.
+
+        `output_id` is composite ("{sedDocLocation}/{outputId}") and so contains a
+        '/', which must be percent-encoded as data rather than left to split the
+        upstream path.
+
+        raises ClientResponseError if the response status is not 2xx.
+        """
+        payload = await self._get_biosim_json(
+            f"/results/{quote(simulation_run_id, safe='')}/{quote(output_id, safe='')}",
+            params={"includeData": "true"},
+        )
+        return OutputResults.model_validate(payload)
+
+    @override
+    async def get_kisao_term(self, kisao_id: str) -> KisaoTerm:
+        """``GET /ontologies/KISAO/{id}``, falling back to the vendored table.
+
+        Accepts either id spelling. If upstream is unreachable or does not know
+        the term, a locally-known term still yields a name and an OLS link --
+        degrading a log's algorithm label is better than failing the lookup.
+        An id unknown both upstream and locally re-raises, so the route 404s.
+
+        raises ClientResponseError if the term cannot be resolved at all.
+        """
+        try:
+            # Annotated because the aiocache decorator is untyped, so the awaited
+            # call would otherwise widen to Any and slip past strict checking.
+            term: KisaoTerm = await self._fetch_kisao_term(upstream_kisao_id(kisao_id))
+            return term
+        except aiohttp.ClientError as e:
+            local = local_kisao_term(kisao_id)
+            if local is None:
+                raise
+            logger.info(f"KISAO lookup for {kisao_id} fell back to the local table: {e}")
+            return local
+
+    # Cached, not the public method above: caching the *successful* upstream
+    # response avoids pinning a degraded fallback for an hour. Keyed on the
+    # normalized id, so both spellings share one entry. Mirrors the TTL cache on
+    # get_simulator_versions.
+    @cached(ttl=3600, cache=SimpleMemoryCache)  # type: ignore
+    async def _fetch_kisao_term(self, upstream_id: str) -> KisaoTerm:
+        payload = await self._get_biosim_json(
+            f"/ontologies/KISAO/{quote(upstream_id, safe='')}"
+        )
+        return KisaoTerm.model_validate(payload)
 
     @override
     @cached(ttl=3600, cache=SimpleMemoryCache)  # type: ignore

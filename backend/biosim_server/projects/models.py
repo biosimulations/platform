@@ -12,6 +12,13 @@ not drift.
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from biosim_server.common.biosim_api import (
+    ProjectFile,
+    ProjectSummary,
+    RunLog,
+    SedDocumentSpec,
+)
+
 
 class ValueFrequency(BaseModel):
     """One facet value and how many matching projects carry it."""
@@ -65,3 +72,28 @@ class ProjectStubPage(BaseModel):
 
     items: list[ProjectStub]
     total: int
+
+
+class ProjectDetail(BaseModel):
+    """One round trip for the project page: summary + its run-scoped resources.
+
+    Purely a composition of the passthrough models -- ``ProjectSummary`` itself
+    is untouched and its own route is unchanged.
+
+    Only ``summary`` is load-bearing. ``files`` and ``specifications`` are
+    best-effort: an upstream failure there degrades the field (to ``[]``)
+    rather than failing the request, matching what the frontend already does with
+    its per-resource ``.catch``. ``log`` is filled only when asked for -- raw
+    stdout is large and the project page does not render it.
+
+    Results and KISAO terms are deliberately absent: results are one call *per
+    plot* with an unbounded payload, and a KISAO term repeats across every level
+    of a log. Both stay separately fetchable.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    summary: ProjectSummary
+    files: list[ProjectFile] = Field(default_factory=list)
+    specifications: list[SedDocumentSpec] = Field(default_factory=list)
+    log: RunLog | None = None

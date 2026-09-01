@@ -9,18 +9,20 @@ belongs to biosimulations.org, so that route is a passthrough to the upstream
 API rather than a view over the platform's own project data.
 """
 
+import asyncio
 import json
 import logging
-from typing import Any
 
-import aiohttp
-from aiohttp import ClientResponseError
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import ValidationError
 
+from biosim_server.common.biosim_api import ProjectSummary
+from biosim_server.common.upstream_errors import upstream_errors
 from biosim_server.config import get_settings
 from biosim_server.dependencies import get_biosim_service, get_project_database_service
+from biosim_server.common.biosim_api import ProjectFile, SedDocumentSpec
 from biosim_server.projects.models import (
+    ProjectDetail,
     ProjectQueryStat,
     ProjectSearchFilter,
     ProjectStubPage,
@@ -126,16 +128,14 @@ async def list_project_stats(
     operation_id="get-project-summary",
     summary="Full project summary (passthrough to the biosimulations.org API)",
 )
-async def get_project_summary(project_id: str) -> dict[str, Any]:
+async def get_project_summary(project_id: str) -> ProjectSummary:
     """Proxy ``GET /projects/{id}/summary`` to the biosimulations.org API.
 
-    The detail contract (a ``SimulationRunSummary``: tasks, outputs, run details
-    and the full metadata block) is assembled by biosimulations.org and has no
-    confirmed schema to model against here — the platform's own project view is
-    the slim ``ProjectStub`` built for the list/facet endpoints above, which does
-    not carry those fields. So the upstream body is returned unchanged, the same
-    way ``JobLogs.logs`` passes the biosimulations.org ``/logs/{id}`` payload
-    through untyped.
+    The detail contract is a nested envelope (``id`` + ``simulationRun`` with
+    ``metadata`` and ``run`` sizes, plus unmodeled extras such as tasks/outputs/
+    owner). The platform validates the fields it types and keeps remaining
+    upstream keys via ``extra="allow"``. The slim ``ProjectStub`` used by the
+    list/facet endpoints above does not carry this nested detail.
 
     The project catalog is published and anonymous-readable, like the two search
     routes above, so this route takes no auth dependency and nothing but the
@@ -145,20 +145,79 @@ async def get_project_summary(project_id: str) -> dict[str, Any]:
     if biosim_service is None:
         raise HTTPException(status_code=503, detail="Biosim service not available")
 
-    try:
+    with upstream_errors(
+        resource="project summary",
+        identifier=project_id,
+        not_found_detail=f"Project not found: {project_id}",
+        bad_request_subject="project id",
+    ):
         return await biosim_service.get_project_summary(project_id)
-    except ClientResponseError as e:
-        if e.status == 404:
-            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
-        if 400 <= e.status < 500:
-            # A 4xx upstream is attributable to the id the caller supplied (a
-            # malformed id upstream-400s), not to a broken gateway -- forwarding it
-            # says "your request was wrong" instead of "our dependency is down".
-            raise HTTPException(status_code=e.status, detail=f"Upstream rejected project id: HTTP {e.status}")
-        logger.warning(f"Upstream project summary failed for {project_id}: {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to fetch project summary: HTTP {e.status}")
-    except aiohttp.ClientError as e:
-        # The transport error names the upstream host and port; that belongs in the
-        # log, not in a public response body (same split as users/router.py's 502s).
-        logger.warning(f"Upstream project summary unreachable for {project_id}: {e}", exc_info=e)
-        raise HTTPException(status_code=502, detail="Failed to fetch project summary from the biosimulations.org API")
+
+
+@router.get(
+    "/{project_id}/detail",
+    operation_id="get-project-detail",
+    summary="Project summary plus its run's files, specifications and (optionally) log",
+)
+async def get_project_detail(
+    project_id: str,
+    include: list[str] = Query(
+        default=[],
+        description="Optional extra resources to fetch. Currently only 'log'.",
+    ),
+) -> ProjectDetail:
+    """Compose the project page's data in one round trip.
+
+    Call graph:
+
+    1. ``GET /projects/{id}/summary`` -- mandatory; its failure fails the request.
+    2. The run id comes **only** from that summary's embedded ``simulationRun``.
+       The run summary itself is already in hand, so ``/runs/{id}/summary`` is
+       never called here. With no run id there is nothing to key a dependent
+       request on, so the summary is returned alone rather than requesting a
+       malformed upstream URL.
+    3. Files and the SED-ML specifications are fetched concurrently, best-effort.
+    4. The log is fetched only for ``?include=log``.
+
+    Results and KISAO terms are never fetched here -- see ProjectDetail.
+    """
+    biosim_service = get_biosim_service()
+    if biosim_service is None:
+        raise HTTPException(status_code=503, detail="Biosim service not available")
+
+    with upstream_errors(
+        resource="project summary",
+        identifier=project_id,
+        not_found_detail=f"Project not found: {project_id}",
+        bad_request_subject="project id",
+    ):
+        summary = await biosim_service.get_project_summary(project_id)
+
+    run_id = summary.simulation_run.id
+    if not run_id:
+        logger.info(f"Project {project_id} has no simulationRun.id; returning summary only")
+        return ProjectDetail(summary=summary)
+
+    files_result, spec_result = await asyncio.gather(
+        biosim_service.get_run_files(run_id),
+        biosim_service.get_run_specifications(run_id),
+        return_exceptions=True,
+    )
+    if isinstance(files_result, BaseException):
+        logger.info(f"No files for run {run_id} of project {project_id}: {files_result}")
+    if isinstance(spec_result, BaseException):
+        logger.info(f"No specification for run {run_id} of project {project_id}: {spec_result}")
+
+    files: list[ProjectFile] = files_result if isinstance(files_result, list) else []
+    specifications: list[SedDocumentSpec] = spec_result if isinstance(spec_result, list) else []
+
+    log = None
+    if "log" in include:
+        try:
+            log = await biosim_service.get_run_log(run_id)
+        except Exception as e:
+            # Best-effort, like the other secondaries: a run that has not started
+            # has no log yet, and that must not fail the page.
+            logger.info(f"No log for run {run_id} of project {project_id}: {e}")
+
+    return ProjectDetail(summary=summary, files=files, specifications=specifications, log=log)

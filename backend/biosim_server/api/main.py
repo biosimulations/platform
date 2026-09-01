@@ -17,6 +17,7 @@ from biosim_server.common.auth.auth0 import AuthenticatedUser, get_optional_user
 from biosim_server.biosim_runs import BiosimulatorVersion
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.compatibility import compatibility_router
+from biosim_server.legacy_proxy import legacy_proxy_router
 from biosim_server.simulations import simulations_router
 from biosim_server.projects.router import router as projects_router
 from biosim_server.rbac_demo.router import router as rbac_demo_router
@@ -129,6 +130,7 @@ app.include_router(simulations_router)
 app.include_router(projects_router)
 app.include_router(users_router)
 app.include_router(rbac_demo_router)
+app.include_router(legacy_proxy_router)
 
 
 # -- endpoint logic -- #
