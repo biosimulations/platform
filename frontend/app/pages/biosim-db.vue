@@ -201,13 +201,13 @@ function get_allowable_values(target: string): string[] {
 }
 
 function set_allowable_values(target: string, values: string[]) {
-  const filter = searched_filters.value.find(f => f.target === target)
-  if (filter) {
-    filter.allowable_values = values
+  const found = searched_filters.value.find(f => f.target === target)
+  if (found) {
+    found.allowable_values = values
   } else {
     searched_filters.value.push({ target, allowable_values: values })
   }
-  _update_filter_chips()
+  update_filter_chips()
 }
 
 function on_column_toggle() {
@@ -219,20 +219,7 @@ function change_pagination(new_page: number) {
   fetch_projects()
 }
 
-function get_allowable_values(target: string): string[] {
-  const found = searched_filters.value.find(f => f.target === target)
-  return found ? found.allowable_values : []
-}
 
-function set_allowable_values(target: string, values: string[]) {
-  const found = searched_filters.value.find(f => f.target === target)
-  if (found) {
-    found.allowable_values = values
-  } else {
-    searched_filters.value.push({ target, allowable_values: values })
-  }
-  update_filter_chips()
-}
 
 function update_filter_chips() {
   chips.value = []
