@@ -3,16 +3,21 @@
 Two decoupled GET endpoints replace the legacy ``/projects/summary_filtered``
 so paging through slim results is independent of the heavier facet computation
 (see ``docs/project-search-api-plan.md``).
+
+``GET /{id}/summary`` proxies the biosimulations.org response without changing
+its body, so callers can switch API base URLs without a schema migration.
 """
 
 import json
 import logging
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import ValidationError
 
 from biosim_server.config import get_settings
-from biosim_server.dependencies import get_project_database_service
+from biosim_server.common.proxy import proxy_get, upstream_url
+from biosim_server.dependencies import get_http_client, get_project_database_service
 from biosim_server.projects.models import (
     ProjectQueryStat,
     ProjectSearchFilter,
@@ -111,4 +116,33 @@ async def list_project_stats(
     parsed_filters = _parse_filters(filters)
     return await projects_db.query_project_stats(
         filters=parsed_filters, search_term=searchTerm.strip()
+    )
+
+
+@router.get(
+    "/{project_id}/summary",
+    response_model=None,
+    operation_id="get-project-summary",
+    summary="Project summary passthrough to the biosimulations.org API",
+    responses={
+        502: {"description": "The upstream service returned 5xx or was unreachable."},
+        504: {"description": "Timed out while contacting the upstream service."},
+    },
+)
+async def get_project_summary(
+    project_id: str,
+    request: Request,
+    client: httpx.AsyncClient = Depends(get_http_client),
+) -> Response:
+    """Return the upstream bytes unchanged.
+
+    Downstream 2xx, 3xx and 4xx statuses are mirrored. A downstream 5xx or
+    transport failure becomes 502, and a timeout becomes 504. Caller headers
+    and credentials are never forwarded.
+    """
+    return await proxy_get(
+        client,
+        upstream_url("projects", project_id, "summary"),
+        query=request.scope.get("query_string", b""),
+        resource="project summary",
     )
