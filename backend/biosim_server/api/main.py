@@ -16,7 +16,7 @@ from biosim_server.biosim_omex import OmexFile, get_cached_omex_file_from_upload
 from biosim_server.biosim_runs import BiosimulatorVersion
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.compatibility import compatibility_router
-from biosim_server.simulations import simulations_router
+from biosim_server.simulations import run_summary_router, simulations_router
 from biosim_server.projects.router import router as projects_router
 from biosim_server.rbac_demo.router import router as rbac_demo_router
 from biosim_server.users.router import router as users_router
@@ -125,6 +125,7 @@ app.add_middleware(
 # include routers
 app.include_router(compatibility_router)
 app.include_router(simulations_router)
+app.include_router(run_summary_router)
 app.include_router(projects_router)
 app.include_router(users_router)
 app.include_router(rbac_demo_router)

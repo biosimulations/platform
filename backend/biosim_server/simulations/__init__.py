@@ -19,6 +19,7 @@ from biosim_server.simulations.models import (
     TableSort,
 )
 from biosim_server.simulations.router import router as simulations_router
+from biosim_server.simulations.router import run_summary_router
 from biosim_server.simulations.workflow import SimulationRunWorkflow, SimulationRunWorkflowInput
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "TablePagination",
     "TableSort",
     "simulations_router",
+    "run_summary_router",
     "SimulationRunWorkflow",
     "SimulationRunWorkflowInput",
 ]
