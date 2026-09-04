@@ -301,8 +301,7 @@ onMounted(async () => {
 
               <div class="mt-4 pt-4 border-t border-neutral-200">
                 <UButton
-                  :to="`https://biosimulations.org/runs/new?projectUrl=${encodeURIComponent('https://api.biosimulations.org/runs/' + run_info!.id + '/download')}&simulator=${encodeURIComponent(run_info!.simulator!)}&simulatorVersion=${encodeURIComponent(run_info!.simulatorVersion!)}&runName=${encodeURIComponent(run_info!.name + ' (rerun)')}`"
-                  target="_blank"
+                  :to="`/simulations/run?projectUrl=${encodeURIComponent(`${runtimeConfig.public.legacy_api_url}/runs/${run_info!.id}/download`)}&simulator=${encodeURIComponent(run_info!.simulator!)}&simulatorVersion=${encodeURIComponent(run_info!.simulatorVersion!)}&runName=${encodeURIComponent(run_info!.name + ' (rerun)')}`"
                   color="primary"
                   variant="outline"
                   icon="i-lucide-redo"

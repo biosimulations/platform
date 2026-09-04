@@ -27,6 +27,16 @@
 
       breadcrumbs.value.push(breadcrumb)
     })
+
+    if (route.query.runName) {
+      submission_payload.name = String(route.query.runName)
+    }
+
+    if (route.query.projectUrl) {
+      is_rerun.value = true
+      archive_url.value = String(route.query.projectUrl)
+      process_archive()
+    }
   })
   //</editor-fold>
 
@@ -54,8 +64,10 @@
 
   const archive_file = ref<File | null>(null)
   const archive_url = ref<string | undefined>(undefined)
+  const is_rerun = ref(false)
 
   const processing_archive = ref(false)
+  const archive_processing_error = ref<string | null>(null)
 
   const archive_processed = ref(false)
   const submission_payload = reactive(new RunSimulationPayload())
@@ -134,13 +146,30 @@
         if (response) {
           submission_payload.omex_id = response.omex_id
           archive_compatibility_response.value = response as ArchiveCompatibilityResponse
-          eligible_simulators.value = archive_compatibility_response.value.eligible_simulators?.slice()
+          eligible_simulators.value = archive_compatibility_response.value.eligible_simulators?.slice() || []
+
+          if (route.query.simulator) {
+            const requestedSimulatorId = String(route.query.simulator).toLowerCase()
+            const requestedVersion = route.query.simulatorVersion ? String(route.query.simulatorVersion) : undefined
+
+            const matchedSimulator = eligible_simulators.value.find(s => s.id.toLowerCase() === requestedSimulatorId)
+
+            if (matchedSimulator) {
+              submission_payload._simulators = [matchedSimulator]
+
+              if (requestedVersion && matchedSimulator.versions.includes(requestedVersion)) {
+                matchedSimulator._selected_version = requestedVersion
+              } else if (matchedSimulator.versions.length > 0) {
+                matchedSimulator._selected_version = matchedSimulator.versions[0]
+              }
+            }
+          }
 
           archive_processed.value = true
           advance()
         }
       } catch (error) {
-        console.log(error)
+        archive_processing_error.value = String(error)
       } finally {
         processing_archive.value = false
       }
@@ -207,7 +236,7 @@
 </script>
 
 <template>
-  <section class="w-full relative px-6 max-w-[1200px] mx-auto my-auto flex flex-col gap-4 items-center justify-center text-center md:text-left pt-5">
+  <section class="w-full relative px-6 max-w-300 mx-auto my-auto flex flex-col gap-4 items-center justify-center text-center md:text-left pt-5">
     <UBreadcrumb :items="breadcrumbs"></UBreadcrumb>
 
     <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
@@ -217,20 +246,35 @@
     </div>
 
     <UForm :schema="schema" :state="submission_payload" @submit="submit()">
-      <UStepper v-model="stepper_position" class="w-full md:w-[700px] mt-7" ref="stepper" :items="steps">
+      <UStepper v-model="stepper_position" class="w-full md:w-175 mt-7" ref="stepper" :items="steps">
         <template #archive>
           <UCard class="w-full" :ui="{body: 'bg-gray-50/50'}">
             <div class="w-full sm:w-max mx-auto flex flex-col items-center gap-4">
-              <UFileUpload layout="list" accept=".omex" label="OMEX/Combine Archive" color="primary" description="Drop your OMEX/Combine archive here, or click to select" class="w-full sm:min-w-96 min-h-48" :class="{'opacity-50 pointer-events-none': archive_url, 'cursor-pointer': !archive_url}" v-model="archive_file" @change="handle_file_change()" />
-              <USeparator :class="!!archive_file || archive_url ? 'opacity-50' : 'opacity-100'" label="or" />
-              <div class="w-full flex flex-col gap-1" :class="{'opacity-50': !!archive_file}">
+              <UFileUpload layout="list" accept=".omex" label="OMEX/Combine Archive" color="primary" description="Drop your OMEX/Combine archive here, or click to select" class="w-full sm:min-w-96 min-h-48" :class="{'opacity-50 pointer-events-none': archive_url || is_rerun, 'cursor-pointer': !archive_url && !is_rerun}" v-model="archive_file" @change="handle_file_change()" />
+              <USeparator :class="!!archive_file || archive_url || is_rerun ? 'opacity-50' : 'opacity-100'" label="or" />
+              <div class="w-full flex flex-col gap-1" :class="{'opacity-50': !!archive_file || is_rerun}">
                 <label for="omex_url"><small class="font-semibold">Enter URL for COMBINE/OMEX archive</small></label>
-                <UInput name="omex_url" :disabled="!!archive_file" class="w-full sm:min-w-96" placeholder="https://*" v-model="archive_url" />
+                <UInput name="omex_url" :disabled="!!archive_file || is_rerun" class="w-full sm:min-w-96" placeholder="https://*" v-model="archive_url" />
               </div>
 
               <UAlert
+                v-if="archive_processing_error"
+                class="w-full p-2 flex flex-col lg:flex-row items-center gap-4 justify-center lg:justify-between"
+                :title="archive_processing_error"
+                icon="i-lucide-x"
+                orientation="horizontal"
+                variant="subtle"
+                color="error"
+                :ui="{
+                  title: 'text-sm text-center md:text-left font-normal',
+                  icon: 'size-5'
+                }"
+              >
+              </UAlert>
+
+              <UAlert
                 v-if="archive_processed"
-                class="w-full p-2 flex flex-col lg:flex-row items-center gap-[16px] justify-center lg:justify-between"
+                class="w-full p-2 flex flex-col lg:flex-row items-center gap-4 justify-center lg:justify-between"
                 title="Archive successfully processed. Proceed to next step."
                 icon="i-lucide-check"
                 orientation="horizontal"
@@ -249,7 +293,7 @@
           <UCard class="w-full" :ui="{body: 'bg-gray-50/50'}">
             <h3 class="text-base font-bold">Select desired simulators and versions</h3>
             <div class="w-full mx-auto flex flex-col items-center gap-4 mt-2">
-              <UFormField class="md:w-[250px]" label="Desired Simulators" name="simulators">
+              <UFormField class="md:w-62.5" label="Desired Simulators" name="simulators">
                 <USelectMenu class="w-full" multiple name="simulators_selection" v-model="submission_payload._simulators" :items="eligible_simulators" placeholder="Select desired simulator(s)" label-key="name" />
               </UFormField>
 <!--              <div class="w-full flex flex-col gap-1">
@@ -259,7 +303,7 @@
               <USeparator v-if="submission_payload._simulators && submission_payload._simulators.length" />
 
 
-              <UFormField class="md:w-[250px]" :label="simulator.name + ' Version'" :name="`simulators.${index}._selected_version`" v-for="(simulator, index) in submission_payload._simulators" :key="simulator.id">
+              <UFormField class="md:w-62.5" :label="simulator.name + ' Version'" :name="`simulators.${index}._selected_version`" v-for="(simulator, index) in submission_payload._simulators" :key="simulator.id">
                 <USelectMenu class="w-full" :disabled="!submission_payload._simulators || !submission_payload._simulators.length" :items="simulator.versions" v-model="simulator._selected_version" placeholder="Select version" />
               </UFormField>
 <!--              <div class="w-full flex flex-col gap-1" v-for="version_option of simulator_version_options">
@@ -272,7 +316,7 @@
         <template #end>
           <UCard class="w-full" :ui="{body: 'bg-gray-50/50'}">
             <h3 class="text-base font-bold">Just some final details</h3>
-            <div class="w-full mx-auto md:max-w-[250px] flex flex-col items-center gap-4 mt-2">
+            <div class="w-full mx-auto md:max-w-62.5 flex flex-col items-center gap-4 mt-2">
               <UFormField class="w-full" label="Simulation Name" name="name">
                 <UInput class="w-full" v-model="submission_payload.name" placeholder="Simulation Name" />
               </UFormField>
@@ -301,7 +345,7 @@
         </template>
     </UStepper>
 
-    <div class="w-full md:max-w-full md:w-max md:min-w-[700px] flex gap-4 mt-4" :class="{'justify-between': stepper?.hasPrev, 'justify-end': !stepper?.hasPrev}">
+    <div class="w-full md:max-w-full md:w-max md:min-w-175 flex gap-4 mt-4" :class="{'justify-between': stepper?.hasPrev, 'justify-end': !stepper?.hasPrev}">
       <UButton v-if="stepper?.hasPrev" type="button" class="cursor-pointer" variant="solid" leading-icon="i-lucide-arrow-left" @click="retreat()" label="Back"></UButton>
       <UButton type="button" class="cursor-pointer" v-if="!archive_processed && stepper_position == 0" leading-icon="i-fluent-sparkle-20-filled" :disabled="!archive_url && !archive_file" :variant="!archive_url && !archive_file ? 'outline' : 'solid'" color="primary" :loading="processing_archive" :label="!archive_url && !archive_file ? 'Process File/Validate URL' : (archive_url ? (processing_archive ? 'Validating URL' : 'Validate URL') : (processing_archive ? 'Processing File' : 'Process File'))" @click="process_archive()"></UButton>
       <UButton type="button" class="cursor-pointer" v-if="archive_processed && stepper_position >= 0 && stepper_position < steps.length - 1" trailing-icon="i-lucide-arrow-right" :disabled="!stepper?.hasNext || !archive_processed || form_invalid" @click="advance()" label="Next"></UButton>

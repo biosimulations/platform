@@ -134,12 +134,13 @@ async function fetch_projects() {
       total_results.value = result.total
     })
 
-    // Facet counts come from a separate endpoint. Pass only the search term (not
-    // the active filters) so the facet menu stays stable as filters are toggled.
+    // Facet counts come from a separate endpoint. Passing active filters enables
+    // orthogonal filtering behavior on the backend.
     $fetch<ProjectQueryStat[]>(`${runtimeConfig.public.api_url}/projects/stats`, {
       method: 'GET',
       query: {
-        'searchTerm': fuzzy_search_term.value
+        'searchTerm': fuzzy_search_term.value,
+        'filters': JSON.stringify(populated_filters)
       }
     }).then((query_stats: ProjectQueryStat[]) => {
       filter_suggestions.value = query_stats_to_filter_groups(query_stats)
@@ -155,7 +156,11 @@ async function fetch_projects() {
     error_encountered.value = error.message
     throw error
   } finally {
-    loading.value = false
+    // Debounce results to give things a chance to render before setting loading to `false`,
+    // which could otherwise erroneously show a brief "no results" message
+    setTimeout(() => {
+      loading.value = false
+    }, 700)
   }
 }
 
@@ -196,13 +201,13 @@ function get_allowable_values(target: string): string[] {
 }
 
 function set_allowable_values(target: string, values: string[]) {
-  const filter = searched_filters.value.find(f => f.target === target)
-  if (filter) {
-    filter.allowable_values = values
+  const found = searched_filters.value.find(f => f.target === target)
+  if (found) {
+    found.allowable_values = values
   } else {
     searched_filters.value.push({ target, allowable_values: values })
   }
-  _update_filter_chips()
+  update_filter_chips()
 }
 
 function on_column_toggle() {
@@ -214,10 +219,15 @@ function change_pagination(new_page: number) {
   fetch_projects()
 }
 
-function _update_filter_chips() {
-  if (!searched_filters.value || !searched_filters.value.length) return
 
+
+function update_filter_chips() {
   chips.value = []
+
+  if (!searched_filters.value || !searched_filters.value.length) {
+    fetch_projects()
+    return
+  }
 
   searched_filters.value.forEach((filter: ProjectSearchFilter) => {
     filter.allowable_values.forEach((value: string) => {
