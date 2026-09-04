@@ -1,4 +1,12 @@
-"""Small, deliberately narrow helpers for proxying public upstream GETs."""
+"""Small, deliberately narrow helpers for proxying public upstream GETs.
+
+Stop-gap. These helpers exist for exactly two endpoints -- ``GET
+/projects/{id}/summary`` and ``GET /runs/{run_id}/summary`` -- so the frontend
+can move off the upstream API without waiting on a schema migration. Replacing
+them with datamodels this repository owns is tracked in
+https://github.com/biosimulations/platform/issues/108. Do not add further
+endpoint families to ``proxy_get`` without revisiting that decision first.
+"""
 
 from __future__ import annotations
 
@@ -41,8 +49,25 @@ SAFE_RESPONSE_HEADERS = frozenset(
 )
 
 
+# quote() leaves "." alone -- it is RFC 3986 unreserved -- so a caller-supplied
+# id arriving from Starlette as "." or ".." would build a real dot segment that
+# httpx resolves away against its base_url ("/projects/../summary" -> "/summary").
+# Neither is a valid upstream id, so reject rather than encode: encoding would
+# depend on every intermediary preserving it instead of decode-and-normalizing.
+DOT_SEGMENTS = frozenset({".", ".."})
+
+
 def upstream_url(*segments: str) -> str:
-    """Build an upstream path with every segment quoted independently."""
+    """Build an upstream path with every segment quoted independently.
+
+    Raises 404 for a dot-only segment, before any URL exists to request.
+    """
+    for segment in segments:
+        if segment in DOT_SEGMENTS:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Not Found",
+            )
     return "/" + "/".join(quote(segment, safe="") for segment in segments)
 
 

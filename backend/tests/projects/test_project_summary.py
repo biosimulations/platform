@@ -175,7 +175,16 @@ async def test_project_summary_route_does_not_shadow_stats() -> None:
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("caller_segment", "expected_segment"),
-    [("a%25b", b"a%25b"), ("a%20b", b"a%20b"), ("a%23b", b"a%23b")],
+    [
+        ("a%25b", b"a%25b"),
+        ("a%20b", b"a%20b"),
+        ("a%23b", b"a%23b"),
+        # Periods are only special as a whole segment. These pin the rejection
+        # boundary below, so a future guard cannot widen into every dotted id.
+        ("a.b", b"a.b"),
+        ("5f2a.", b"5f2a."),
+        ("...", b"..."),
+    ],
 )
 async def test_project_id_stays_one_encoded_path_segment(
     caller_segment: str, expected_segment: bytes
@@ -216,6 +225,36 @@ async def test_encoded_slash_in_id_is_rejected_before_any_upstream_call() -> Non
         response = await caller.get("/projects/..%2Fruns%2Fsecret%3Fx=1/summary")
 
     assert response.status_code == 404
+    assert seen == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("caller_segment", ["%2E", "%2E%2E", ".%2E"])
+async def test_dot_only_project_id_is_rejected_before_any_upstream_call(
+    caller_segment: str,
+) -> None:
+    """A decoded "." or ".." id is refused rather than proxied.
+
+    ``quote`` leaves "." unescaped, so such an id would build a real dot
+    segment that httpx resolves against its base_url -- ``/projects/../summary``
+    became an upstream ``/summary``, escaping the id segment entirely.
+
+    The encoded forms are what the regression needs: a literal ``..`` is
+    normalized away by the caller's own HTTP client before Starlette ever sees
+    it, while ``%2E%2E`` survives routing and reaches the vulnerable path.
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=b"ok")
+
+    caller, upstream = proxy_client(handler)
+    async with caller, upstream:
+        response = await caller.get(f"/projects/{caller_segment}/summary")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
     assert seen == []
 
 

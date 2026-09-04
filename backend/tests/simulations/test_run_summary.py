@@ -160,6 +160,64 @@ async def test_run_summary_transport_failures(
     assert "internal:443" not in response.text
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("caller_segment", "expected_segment"),
+    [
+        ("a%25b", b"a%25b"),
+        ("a.b", b"a.b"),
+        ("5f2a.", b"5f2a."),
+    ],
+)
+async def test_run_id_stays_one_encoded_path_segment(
+    caller_segment: str, expected_segment: bytes
+) -> None:
+    """A caller-supplied id is re-quoted into exactly one segment, not double-encoded.
+
+    The dotted cases pin the boundary of the dot-only rejection below: only a
+    whole "." / ".." segment is refused, never an id that merely contains one.
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=b"ok")
+
+    caller, upstream = proxy_client(handler)
+    async with caller, upstream:
+        response = await caller.get(f"/runs/{caller_segment}/summary")
+
+    assert response.status_code == 200
+    assert len(seen) == 1
+    assert seen[0].url.raw_path == b"/runs/" + expected_segment + b"/summary"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("caller_segment", ["%2E", "%2E%2E", ".%2E"])
+async def test_dot_only_run_id_is_rejected_before_any_upstream_call(
+    caller_segment: str,
+) -> None:
+    """A decoded "." or ".." id is refused rather than proxied.
+
+    The run route inherits this from ``upstream_url``; pinning it here as well
+    keeps the contract from regressing if only one router is ever touched. See
+    the project-side twin for why the encoded forms are the ones that matter.
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=b"ok")
+
+    caller, upstream = proxy_client(handler)
+    async with caller, upstream:
+        response = await caller.get(f"/runs/{caller_segment}/summary")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+    assert seen == []
+
+
 def test_summary_routes_and_simulation_submission_are_registered() -> None:
     schema = app.openapi()
     assert "/projects/{project_id}/summary" in schema["paths"]
