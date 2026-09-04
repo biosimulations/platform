@@ -74,3 +74,9 @@ python_files = "main.py"
 # Non-package project: put the backend root on sys.path so `biosim_server`
 # and `tests` import without an editable install (poetry used to install both).
 pythonpath = ["."]
+
+[tool.basedpyright]
+pythonVersion = "3.13"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["."]
