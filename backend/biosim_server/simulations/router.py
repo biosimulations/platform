@@ -3,10 +3,13 @@ import uuid
 from datetime import timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from biosim_server.biosim_runs import BiosimulatorVersion
+from biosim_server.common.proxy import proxy_get, upstream_url
 from biosim_server.dependencies import (
+    get_http_client,
     get_temporal_client,
     get_biosim_service,
     get_omex_database_service,
@@ -33,6 +36,40 @@ from biosim_server.common.auth.roles import ADMIN_ROLE, PUBLISHER_ROLE, require_
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/simulations", tags=["Simulations"])
+
+# A second router in this module: the run-summary contract is keyed by the
+# upstream biosimulations.org *run* id, not by our processing_id, so it cannot
+# live under the /simulations prefix.
+run_summary_router = APIRouter(prefix="/runs", tags=["Runs"])
+
+
+@run_summary_router.get(
+    "/{run_id}/summary",
+    response_model=None,
+    operation_id="get-run-summary",
+    summary="Run summary passthrough to the biosimulations.org API",
+    responses={
+        502: {"description": "The upstream service returned 5xx or was unreachable."},
+        504: {"description": "Timed out while contacting the upstream service."},
+    },
+)
+async def get_run_summary(
+    run_id: str,
+    request: Request,
+    client: httpx.AsyncClient = Depends(get_http_client),
+) -> Response:
+    """Return the upstream bytes unchanged.
+
+    Downstream 2xx, 3xx and 4xx statuses are mirrored. A downstream 5xx or
+    transport failure becomes 502, and a timeout becomes 504. Caller headers
+    and credentials are never forwarded.
+    """
+    return await proxy_get(
+        client,
+        upstream_url("runs", run_id, "summary"),
+        query=request.scope.get("query_string", b""),
+        resource="run summary",
+    )
 
 
 @router.post(
