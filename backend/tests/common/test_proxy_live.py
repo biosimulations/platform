@@ -97,9 +97,21 @@ async def test_summary_is_byte_identical_to_upstream(label: str, path: str) -> N
     assert proxied.content == direct.content, f"{label} body diverged from upstream"
     assert proxied.headers["content-type"] == direct.headers["content-type"]
     assert proxied.headers["content-length"] == str(len(direct.content))
-    # Upstream sends a weak ETag; it must survive, since we return its exact bytes.
+    # Derived from what upstream actually sent, so this pins the contract rather
+    # than today's coincidence: a validator is forwarded verbatim unless httpx
+    # decoded the body and the tag was strong, in which case it weakens. Upstream
+    # currently sends a weak ETag and no coding, so both branches agree there.
     if "etag" in direct.headers:
-        assert proxied.headers["etag"] == direct.headers["etag"]
+        upstream_etag = direct.headers["etag"]
+        codings = {
+            token.strip().lower()
+            for value in direct.headers.get_list("content-encoding")
+            for token in value.split(",")
+            if token.strip()
+        }
+        weakened = bool(codings - {"identity"}) and not upstream_etag.startswith("W/")
+        expected_etag = f"W/{upstream_etag}" if weakened else upstream_etag
+        assert proxied.headers["etag"] == expected_etag, label
     for unsafe in ("set-cookie", "x-powered-by", "server", "connection", "content-encoding"):
         assert unsafe not in proxied.headers, f"{label} leaked {unsafe}"
 

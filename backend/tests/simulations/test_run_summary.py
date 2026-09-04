@@ -84,7 +84,8 @@ async def test_run_summary_fidelity_query_headers_credentials_and_contract() -> 
     assert "authorization" not in seen[0].headers
     assert "cookie" not in seen[0].headers
     assert response.headers["content-type"] == "application/json; charset=utf-8"
-    assert response.headers["etag"] == '"run-v1"'
+    # httpx decoded the gzip body, so the strong upstream tag is weakened.
+    assert response.headers["etag"] == 'W/"run-v1"'
     for blocked in (
         "set-cookie",
         "x-powered-by",
@@ -158,6 +159,25 @@ async def test_run_summary_transport_failures(
 
     assert response.status_code == expected_status
     assert "internal:443" not in response.text
+
+
+@pytest.mark.anyio
+async def test_already_weak_etag_is_not_prefixed_twice() -> None:
+    """The run route shares ``_safe_response_headers``; pin the no-W/W/ rule here too."""
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(RAW_BODY),
+            headers={"Content-Encoding": "gzip", "ETag": 'W/"run-v1"'},
+        )
+
+    caller, upstream = proxy_client(handler)
+    async with caller, upstream:
+        response = await caller.get("/runs/61fea483f499ccf25faafc4d/summary")
+
+    assert response.status_code == 200
+    assert response.headers["etag"] == 'W/"run-v1"'
+    assert response.content == RAW_BODY
 
 
 @pytest.mark.anyio

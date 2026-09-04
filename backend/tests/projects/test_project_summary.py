@@ -1,6 +1,7 @@
 """HTTP contract tests for the project-summary passthrough proxy."""
 
 import gzip
+import zlib
 
 from collections.abc import Callable, Iterator
 
@@ -73,7 +74,9 @@ async def test_project_summary_fidelity_query_headers_and_credentials() -> None:
     assert "authorization" not in seen[0].headers
     assert "cookie" not in seen[0].headers
     assert response.headers["content-type"] == "application/problem+json; charset=utf-8"
-    assert response.headers["etag"] == '"project-v1"'
+    # httpx decoded the gzip body, so the strong upstream tag is weakened -- see
+    # test_etag_is_weakened_only_when_upstream_body_was_decoded.
+    assert response.headers["etag"] == 'W/"project-v1"'
     assert response.headers["vary"] == "Accept-Encoding"
     for blocked in (
         "set-cookie",
@@ -99,6 +102,64 @@ async def test_connection_named_response_header_is_removed() -> None:
 
     assert "connection" not in response.headers
     assert "etag" not in response.headers
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("content_encoding", "upstream_etag", "expected_etag"),
+    [
+        # httpx decodes these, so the bytes we serve are no longer the ones the
+        # upstream tag was minted for: a strong tag has to weaken.
+        ("gzip", '"v1"', 'W/"v1"'),
+        ("deflate", '"v1"', 'W/"v1"'),
+        # Already weak -- prefixing again would emit W/W/"v1".
+        ("gzip", 'W/"v1"', 'W/"v1"'),
+        # Nothing to weaken, and nothing to invent.
+        ("gzip", None, None),
+        # Body untouched, so the validator stays exactly as upstream sent it.
+        (None, '"v1"', '"v1"'),
+        (None, 'W/"v1"', 'W/"v1"'),
+        ("identity", '"v1"', '"v1"'),
+    ],
+)
+async def test_etag_is_weakened_only_when_upstream_body_was_decoded(
+    content_encoding: str | None, upstream_etag: str | None, expected_etag: str | None
+) -> None:
+    """A strong validator survives only while the bytes it identifies do.
+
+    httpx decodes gzip/deflate transparently, so ``downstream.content`` is the
+    identity representation while the upstream ETag still describes the coded
+    one. Weakening keeps the tag usable for ``If-None-Match`` without asserting
+    a byte-for-byte identity that no longer holds.
+    """
+    if content_encoding == "gzip":
+        body = gzip.compress(RAW_BODY)
+    elif content_encoding == "deflate":
+        body = zlib.compress(RAW_BODY)
+    else:
+        body = RAW_BODY
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        headers = {"Content-Type": "application/json"}
+        if content_encoding is not None:
+            headers["Content-Encoding"] = content_encoding
+        if upstream_etag is not None:
+            headers["ETag"] = upstream_etag
+        return httpx.Response(200, content=body, headers=headers)
+
+    caller, upstream = proxy_client(handler)
+    async with caller, upstream:
+        response = await caller.get("/projects/project-1/summary")
+
+    assert response.status_code == 200
+    if expected_etag is None:
+        assert "etag" not in response.headers
+    else:
+        assert response.headers["etag"] == expected_etag
+    # The decoded representation is what the weakened tag now describes.
+    assert response.content == RAW_BODY
+    assert "content-encoding" not in response.headers
+    assert response.headers["content-length"] == str(len(RAW_BODY))
 
 
 @pytest.mark.anyio

@@ -98,8 +98,24 @@ def _forwarded_vary(value: str) -> str | None:
     return ", ".join(kept) or None
 
 
+def _body_was_decoded(headers: httpx.Headers) -> bool:
+    """True when upstream applied a content coding that httpx will have undone."""
+    for value in headers.get_list("content-encoding"):
+        for token in value.split(","):
+            coding = token.strip().lower()
+            if coding and coding != "identity":
+                return True
+    return False
+
+
 def _safe_response_headers(headers: httpx.Headers) -> dict[str, str]:
     blocked = HOP_BY_HOP | _connection_tokens(headers)
+    # httpx decodes the codings it supports before Response.content is read, so
+    # the bytes we serve are the identity representation -- not the one a strong
+    # upstream ETag was minted for. Weakening it (as nginx does when it changes a
+    # coding) keeps the tag usable for If-None-Match without asserting a
+    # byte-for-byte identity that no longer holds.
+    decoded = _body_was_decoded(headers)
     forwarded: dict[str, str] = {}
     for name, value in headers.items():
         lowered = name.lower()
@@ -110,6 +126,8 @@ def _safe_response_headers(headers: httpx.Headers) -> dict[str, str]:
             if narrowed is None:
                 continue
             value = narrowed
+        elif lowered == "etag" and decoded and not value.startswith("W/"):
+            value = f"W/{value}"
         forwarded[name] = value
     return forwarded
 
@@ -129,7 +147,12 @@ async def proxy_get(
     query: bytes,
     resource: str,
 ) -> Response:
-    """Proxy one GET without forwarding caller headers or transforming its body."""
+    """Proxy one GET without forwarding caller headers.
+
+    The body is returned as the HTTP client decoded it -- httpx undoes transport
+    content codings -- so a strong upstream ETag is weakened to describe the
+    identity bytes actually served. Nothing else about the payload is changed.
+    """
     try:
         downstream = await client.get(
             _target(upstream_path, query),
