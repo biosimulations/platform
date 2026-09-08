@@ -4,10 +4,13 @@ from datetime import timedelta
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import ValidationError
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from biosim_server.biosim_runs import BiosimulatorVersion
-from biosim_server.common.proxy import proxy_get, upstream_url
+from biosim_server.common.upstream import fetch_upstream_json, upstream_url
+from biosim_server.summaries.mapping import map_run_summary
+from biosim_server.summaries.models import RunSummary
 from biosim_server.dependencies import (
     get_http_client,
     get_temporal_client,
@@ -45,31 +48,31 @@ run_summary_router = APIRouter(prefix="/runs", tags=["Runs"])
 
 @run_summary_router.get(
     "/{run_id}/summary",
-    response_model=None,
+    response_model=RunSummary,
     operation_id="get-run-summary",
-    summary="Run summary passthrough to the biosimulations.org API",
+    summary="Platform-owned run summary",
     responses={
-        502: {"description": "The upstream service returned 5xx or was unreachable."},
+        502: {"description": "The upstream service failed, was unreachable, or returned an invalid summary."},
         504: {"description": "Timed out while contacting the upstream service."},
     },
 )
 async def get_run_summary(
     run_id: str,
-    request: Request,
     client: httpx.AsyncClient = Depends(get_http_client),
-) -> Response:
-    """Return the upstream bytes unchanged.
-
-    Downstream 2xx, 3xx and 4xx statuses are mirrored. A downstream 5xx or
-    transport failure becomes 502, and a timeout becomes 504. Caller headers
-    and credentials are never forwarded.
-    """
-    return await proxy_get(
+) -> RunSummary:
+    """Return a public typed summary; upstream drift is a sanitized gateway error."""
+    payload = await fetch_upstream_json(
         client,
         upstream_url("runs", run_id, "summary"),
-        query=request.scope.get("query_string", b""),
         resource="run summary",
     )
+    try:
+        return map_run_summary(payload)
+    except ValidationError as exc:
+        logger.warning("Invalid upstream run summary: %s", exc.errors(include_input=False))
+        raise HTTPException(
+            502, "The upstream service returned an unexpected run summary."
+        ) from exc
 
 
 @router.post(

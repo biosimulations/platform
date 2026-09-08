@@ -1,10 +1,6 @@
-"""HTTP contract tests for the run-summary passthrough proxy."""
+"""HTTP contract tests for owned run summaries."""
 
-import gzip
-import json
 from collections.abc import Callable, Iterator
-from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
@@ -12,15 +8,8 @@ from httpx import ASGITransport, AsyncClient
 
 from biosim_server.api.main import app
 from biosim_server.dependencies import get_http_client
-
-Handler = Callable[[httpx.Request], httpx.Response]
-
-# A genuine biosimulations.org /runs/{id}/summary capture. Held as raw bytes so
-# the fidelity test pins passthrough against real upstream output, including its
-# exact whitespace and key order, rather than against a re-serialized stub.
-FIXTURE = Path(__file__).parents[1] / "fixtures" / "local_data" / "run_summary_response.json"
-RAW_BODY = FIXTURE.read_bytes()
-RUN_SUMMARY: dict[str, Any] = json.loads(RAW_BODY)
+from biosim_server.summaries.mapping import map_run_summary
+from tests.summaries.test_mapping import payload
 
 
 @pytest.fixture
@@ -34,150 +23,75 @@ def clear_overrides() -> Iterator[None]:
     app.dependency_overrides.pop(get_http_client, None)
 
 
-def proxy_client(handler: Handler) -> tuple[AsyncClient, httpx.AsyncClient]:
-    upstream = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), base_url="https://upstream.test"
-    )
+def summary_client(handler: Callable[[httpx.Request], httpx.Response]) -> tuple[AsyncClient, AsyncClient]:
+    upstream = AsyncClient(transport=httpx.MockTransport(handler), base_url="https://upstream.test")
     app.dependency_overrides[get_http_client] = lambda: upstream
-    return (
-        AsyncClient(transport=ASGITransport(app=app), base_url="http://platform.test"),
-        upstream,
-    )
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://platform.test"), upstream
 
 
 @pytest.mark.anyio
-async def test_run_summary_fidelity_query_headers_credentials_and_contract() -> None:
+async def test_owned_json_credentials_query_and_headers() -> None:
     seen: list[httpx.Request] = []
+    raw = payload("run")
+    raw["unknownFutureField"] = "discard"
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(
-            200,
-            content=gzip.compress(RAW_BODY),
-            headers={
-                "Content-Type": "application/json; charset=utf-8",
-                "ETag": '"run-v1"',
-                "Set-Cookie": "session=secret",
-                "X-Powered-By": "legacy",
-                "Connection": "keep-alive",
-                "Keep-Alive": "timeout=5",
-                "Content-Encoding": "gzip",
-                "Content-Length": "99999",
-            },
-        )
+        return httpx.Response(200, json=raw, headers={
+            "ETag": '"legacy"', "Vary": "Accept-Encoding, Origin", "Location": "/other",
+            "Set-Cookie": "session=secret", "Cache-Control": "public, max-age=600",
+        })
 
-    caller, upstream = proxy_client(handler)
+    caller, upstream = summary_client(handler)
     async with caller, upstream:
         response = await caller.get(
-            "/runs/61fea483f499ccf25faafc4d/summary"
-            "?includeData=true&output=a&output=b&includeData=false",
-            headers={"Authorization": "Bearer secret", "Cookie": "caller=session"},
+            "/runs/example/summary?includeData=true&a=one&a=two",
+            headers={"Authorization": "Bearer secret", "Cookie": "session=caller"},
         )
-
     assert response.status_code == 200
-    assert response.content == RAW_BODY
+    assert response.json() == map_run_summary(raw).model_dump(by_alias=True)
     assert len(seen) == 1
-    assert seen[0].url.raw_path == (
-        b"/runs/61fea483f499ccf25faafc4d/summary"
-        b"?includeData=true&output=a&output=b&includeData=false"
-    )
+    assert seen[0].url.raw_path == b"/runs/example/summary"
     assert "authorization" not in seen[0].headers
     assert "cookie" not in seen[0].headers
-    assert response.headers["content-type"] == "application/json; charset=utf-8"
-    # httpx decoded the gzip body, so the strong upstream tag is weakened.
-    assert response.headers["etag"] == 'W/"run-v1"'
-    for blocked in (
-        "set-cookie",
-        "x-powered-by",
-        "connection",
-        "keep-alive",
-        "content-encoding",
-    ):
-        assert blocked not in response.headers
-    assert response.headers["content-length"] == str(len(RAW_BODY))
-
-    body = response.json()
-    assert body == RUN_SUMMARY
-    assert body["id"] == "61fea483f499ccf25faafc4d"
-    assert body["run"]["status"] == "SUCCEEDED"
-    assert body["run"]["simulator"]["name"] == "BoolNet"
-    assert body["metadata"][0]["creators"][0]["label"] == "D. J. Irons"
-    assert body["metadata"][0]["thumbnails"][0] == "Figure2.jpg"
-    assert body["tasks"][0]["id"] == "task_wt"
-    assert body["outputs"][0]["uri"] == "simulation.sedml/report_wt"
+    assert response.headers["content-type"] == "application/json"
+    for header in ["etag", "vary", "location", "set-cookie", "cache-control"]:
+        assert header not in response.headers
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("downstream_status", [204, 302, 400, 404, 429])
-async def test_run_summary_mirrors_2xx_3xx_and_4xx(downstream_status: int) -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        body = b"" if downstream_status == 204 else b"downstream-body"
-        return httpx.Response(
-            downstream_status,
-            content=body,
-            headers={"Location": "/runs/other/summary"},
-        )
-
-    caller, upstream = proxy_client(handler)
+@pytest.mark.parametrize(("status", "expected"), [(404, 404), (429, 429), (500, 502), (302, 502), (204, 502)])
+async def test_upstream_errors_are_sanitized(status: int, expected: int) -> None:
+    caller, upstream = summary_client(lambda request: httpx.Response(status, text="secret upstream body"))
     async with caller, upstream:
-        response = await caller.get("/runs/run-1/summary")
-
-    assert response.status_code == downstream_status
-    assert response.content == (b"" if downstream_status == 204 else b"downstream-body")
-    assert response.headers["location"] == "/runs/other/summary"
+        response = await caller.get("/runs/example/summary")
+    assert response.status_code == expected
+    assert "secret" not in response.text
+    if status == 404:
+        assert response.json() == {"detail": "Not Found"}
 
 
 @pytest.mark.anyio
-async def test_invalid_run_upstream_500_becomes_sanitized_502() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="legacy host internal.example:27017")
-
-    caller, upstream = proxy_client(handler)
+async def test_mapping_failure_is_502() -> None:
+    raw = payload("run")
+    del raw["id"]
+    caller, upstream = summary_client(lambda request: httpx.Response(200, json=raw))
     async with caller, upstream:
-        response = await caller.get("/runs/not-a-real-id/summary")
-
+        response = await caller.get("/runs/example/summary")
     assert response.status_code == 502
-    assert "internal.example" not in response.text
-    assert "27017" not in response.text
+    assert response.json() == {"detail": "The upstream service returned an unexpected run summary."}
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("error", "expected_status"),
-    [(httpx.ReadTimeout("slow"), 504), (httpx.ConnectError("internal:443"), 502)],
-)
-async def test_run_summary_transport_failures(
-    error: httpx.RequestError, expected_status: int
-) -> None:
+async def test_timeout_is_504() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        error.request = request
-        raise error
+        raise httpx.ReadTimeout("secret", request=request)
 
-    caller, upstream = proxy_client(handler)
+    caller, upstream = summary_client(handler)
     async with caller, upstream:
-        response = await caller.get("/runs/run-1/summary")
-
-    assert response.status_code == expected_status
-    assert "internal:443" not in response.text
-
-
-@pytest.mark.anyio
-async def test_already_weak_etag_is_not_prefixed_twice() -> None:
-    """The run route shares ``_safe_response_headers``; pin the no-W/W/ rule here too."""
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            content=gzip.compress(RAW_BODY),
-            headers={"Content-Encoding": "gzip", "ETag": 'W/"run-v1"'},
-        )
-
-    caller, upstream = proxy_client(handler)
-    async with caller, upstream:
-        response = await caller.get("/runs/61fea483f499ccf25faafc4d/summary")
-
-    assert response.status_code == 200
-    assert response.headers["etag"] == 'W/"run-v1"'
-    assert response.content == RAW_BODY
+        response = await caller.get("/runs/example/summary")
+    assert response.status_code == 504
+    assert "secret" not in response.text
 
 
 @pytest.mark.anyio
@@ -201,9 +115,9 @@ async def test_run_id_stays_one_encoded_path_segment(
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, content=b"ok")
+        return httpx.Response(200, json=payload())
 
-    caller, upstream = proxy_client(handler)
+    caller, upstream = summary_client(handler)
     async with caller, upstream:
         response = await caller.get(f"/runs/{caller_segment}/summary")
 
@@ -217,7 +131,7 @@ async def test_run_id_stays_one_encoded_path_segment(
 async def test_dot_only_run_id_is_rejected_before_any_upstream_call(
     caller_segment: str,
 ) -> None:
-    """A decoded "." or ".." id is refused rather than proxied.
+    """A decoded "." or ".." id is refused before fetching upstream.
 
     The run route inherits this from ``upstream_url``; pinning it here as well
     keeps the contract from regressing if only one router is ever touched. See
@@ -227,9 +141,9 @@ async def test_dot_only_run_id_is_rejected_before_any_upstream_call(
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, content=b"ok")
+        return httpx.Response(200, json=payload())
 
-    caller, upstream = proxy_client(handler)
+    caller, upstream = summary_client(handler)
     async with caller, upstream:
         response = await caller.get(f"/runs/{caller_segment}/summary")
 
@@ -238,37 +152,29 @@ async def test_dot_only_run_id_is_rejected_before_any_upstream_call(
     assert seen == []
 
 
-def test_summary_routes_and_simulation_submission_are_registered() -> None:
+def test_summary_openapi_contracts() -> None:
     schema = app.openapi()
-    assert "/projects/{project_id}/summary" in schema["paths"]
-    assert "/runs/{run_id}/summary" in schema["paths"]
+    schemas = schema["components"]["schemas"]
     assert "/simulations/run" in schema["paths"]
-    schemas = schema.get("components", {}).get("schemas", {})
-    assert "RunSummary" not in schemas
-    assert "ProjectSummaryResponse" not in schemas
-
-    parameters = schema["paths"]["/runs/{run_id}/summary"]["get"]["parameters"]
-    assert [parameter["name"] for parameter in parameters] == ["run_id"]
-
-
-@pytest.mark.anyio
-async def test_unknown_upstream_fields_are_returned_unprojected() -> None:
-    """Fields absent from any local model still reach the caller byte-for-byte.
-
-    The real capture above has no such field, so this uses a synthetic body to
-    keep the guarantee that the route neither validates nor re-serializes JSON.
-    """
-    synthetic = b'{"id": "example", "unknownFutureField": {"future": true}}'
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, content=synthetic, headers={"Content-Type": "application/json"}
-        )
-
-    caller, upstream = proxy_client(handler)
-    async with caller, upstream:
-        response = await caller.get("/runs/example/summary")
-
-    assert response.status_code == 200
-    assert response.content == synthetic
-    assert response.json()["unknownFutureField"] == {"future": True}
+    for path, model, operation in [
+        ("/projects/{project_id}/summary", "ProjectSummary", "get-project-summary"),
+        ("/runs/{run_id}/summary", "RunSummary", "get-run-summary"),
+    ]:
+        route = schema["paths"][path]["get"]
+        assert route["operationId"] == operation
+        assert not route.get("security")
+        assert route["responses"]["200"]["content"]["application/json"]["schema"] == {
+            "$ref": f"#/components/schemas/{model}"
+        }
+    expected = {
+        "ProjectSummary": {"id", "created", "updated", "simulationRun"},
+        "RunSummary": {"id", "name", "run", "metadata"},
+        "RunExecution": {"simulator", "projectSize", "resultsSize"},
+        "RunMetadataSummary": {"abstract", "description", "thumbnails", "creators", "keywords", "citations", "encodes"},
+        "LabeledIdentifier": {"uri", "label"},
+        "SimulatorSummary": {"name", "version"},
+    }
+    for model, fields in expected.items():
+        assert set(schemas[model]["properties"]) == fields
+    assert not any(name.startswith("_Upstream") for name in schemas)
+    assert schemas["ProjectSummary"]["properties"]["simulationRun"] == {"$ref": "#/components/schemas/RunSummary"}
