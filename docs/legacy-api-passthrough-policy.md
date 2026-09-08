@@ -14,10 +14,16 @@ drift fails validation and produces a sanitized 502; timeouts produce 504,
 upstream 404 remains 404, and other 4xx statuses retain their status with a
 sanitized body. Redirects, unexpected success statuses, and invalid JSON are 502.
 
-The project and run detail pages fetch summaries through the platform API.
-The project page derives its run summary from `simulationRun`, without another
-summary request. Files, specifications, logs, results, thumbnails, downloads,
-and non-summary run information continue to use the legacy API.
+The frontend has **not** been migrated yet — that is the one remaining #108
+checkbox. Both detail pages still fetch their summaries from `legacy_api_url`
+(`frontend/app/pages/projects/[id].vue:84`, `frontend/app/pages/runs/[id].vue:127`),
+so the platform routes have no consumers today. That is deliberate: it keeps the
+switch additive rather than breaking, and it is why the models could be sized
+from consumer needs instead of from the upstream payload. When the migration
+lands, the project page should derive its run summary from `simulationRun`
+rather than issuing a second summary request. Files, specifications, logs,
+results, thumbnails, downloads, and non-summary run information stay on the
+legacy API either way.
 
 ## Own the consumer contract
 
