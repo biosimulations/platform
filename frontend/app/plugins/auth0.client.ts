@@ -5,6 +5,8 @@ export default defineNuxtPlugin((nuxtApp) => {
   const auth0 = createAuth0({
     domain: config.public.auth0Domain,
     clientId: config.public.auth0ClientId,
+    useRefreshTokens: true,
+    cacheLocation: 'localstorage',
     authorizationParams: {
       redirect_uri: window.location.origin,
       audience: config.public.auth0Audience,

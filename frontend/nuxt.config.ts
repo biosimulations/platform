@@ -65,7 +65,10 @@ export default defineNuxtConfig({
     // top-level destructure throws a 500. The page is a redirect launcher with
     // nothing to server-render anyway. Only direct hits and refreshes were
     // affected -- in-app navigation to /login is client-side and always worked.
-    '/login': { ssr: false }
+    '/login': { ssr: false },
+    '/profile': { ssr: false },
+    '/verified': { ssr: false },
+    '/simulations': { ssr: false },
   },
 
   compatibilityDate: '2025-01-15',

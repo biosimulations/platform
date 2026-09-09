@@ -6,12 +6,19 @@
 
     const { isLoading, isAuthenticated, loginWithRedirect } = useAuth0()
 
-    // Wait for the SDK to finish restoring an existing login session.
+    // Wait for the SDK to finish restoring an existing login session (with safety timeout)
     if (isLoading.value) {
       await new Promise<void>((resolve) => {
-        const stop = watch(isLoading, (loading) => {
+        let stop: (() => void) | undefined
+        const timer = setTimeout(() => {
+          if (stop) stop()
+          resolve()
+        }, 1500)
+
+        stop = watch(isLoading, (loading) => {
           if (!loading) {
-            stop()
+            clearTimeout(timer)
+            if (stop) stop()
             resolve()
           }
         })
