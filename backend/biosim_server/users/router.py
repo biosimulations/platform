@@ -7,6 +7,7 @@ from biosim_server.common.auth.auth0_management import (
     delete_auth0_user,
     get_auth0_user,
     management_api_configured,
+    resend_auth0_verification_email,
     update_auth0_user,
 )
 from biosim_server.users.models import UpdateUserProfileRequest, UserProfile
@@ -69,6 +70,8 @@ async def update_me(
     updates = request.model_dump(exclude_unset=True)
     if not updates:
         return await _build_profile(user)
+    if "email" in updates and updates["email"]:
+        updates["verify_email"] = True
     try:
         auth0_user = await update_auth0_user(user.sub, **updates)
     except Exception as e:
@@ -76,11 +79,29 @@ async def update_me(
         raise HTTPException(status_code=502, detail="Failed to update profile via Auth0 Management API")
     return UserProfile(
         id=user.sub,
-        email=user.email,
+        email=auth0_user.get("email", user.email),
         provider=_provider_from_sub(user.sub),
         name=auth0_user.get("name"),
         email_verified=auth0_user.get("email_verified"),
     )
+
+
+@router.post(
+    "/me/resend-verification",
+    operation_id="resend-verification-email",
+    summary="Resend verification email to the authenticated user",
+)
+async def resend_verification(
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, str]:
+    _require_management_api()
+    try:
+        await resend_auth0_verification_email(user.sub)
+    except Exception as e:
+        logger.error(f"Failed to resend verification email for {user.sub}: {e}", exc_info=e)
+        raise HTTPException(status_code=502, detail="Failed to resend verification email via Auth0 Management API")
+    return {"message": "Verification email resent successfully"}
+
 
 
 @router.delete(
