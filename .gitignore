@@ -8,6 +8,8 @@ __pycache__/
 .cursor
 .agents-new
 .freebuff
+.postman
+postman/
 
 
 # C extensions

@@ -1674,9 +1674,9 @@ components:
       title: RunSimulationRequest
     RunSummary:
       properties:
-        biosimulationsRunId:
+        id:
           type: string
-          title: Biosimulationsrunid
+          title: Id
         name:
           type: string
           title: Name
@@ -1689,7 +1689,7 @@ components:
           title: Metadata
       type: object
       required:
-      - biosimulationsRunId
+      - id
       - name
       - run
       title: RunSummary
