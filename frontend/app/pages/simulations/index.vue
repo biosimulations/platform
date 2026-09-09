@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { ref, useTemplateRef } from 'vue'
+import { ref, computed, onMounted, useTemplateRef } from 'vue'
 import { upperFirst } from 'scule'
-import type {DropdownMenuItem, TableColumn} from '@nuxt/ui'
+import type { DropdownMenuItem, TableColumn } from '@nuxt/ui'
 import { useClipboard } from '@vueuse/core'
-import type {SimulationRuns, SimulationRun} from "~/models/simulators";
-import Loading from "~/components/Loading.vue";
-import type {TableFilterConfig, TableSort, TablePagination} from "~/models/filtering";
-import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
-import {normalize_text} from "~/functions/functions";
-import type {CoreRow} from "@tanstack/table-core";
+import type { SimulationRuns, SimulationRun } from '~/models/simulators'
+import Loading from '~/components/Loading.vue'
+import type { TableFilterConfig, TableSort, TablePagination } from '~/models/filtering'
+import type { BreadcrumbItem } from '#ui/components/Breadcrumb.vue'
+import { normalize_text } from '~/functions/functions'
+import type { CoreRow } from '@tanstack/table-core'
 
 const toast = useToast()
 const { copy } = useClipboard()
@@ -18,8 +18,8 @@ const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
 const breadcrumbs = ref<BreadcrumbItem[]>([])
 
 onMounted(async () => {
-  breadcrumbs.value = [{label: 'Home', to: '/', icon: 'i-lucide-home'}]
-  routes.forEach((route, _index) => {
+  breadcrumbs.value = [{ label: 'Home', to: '/', icon: 'i-lucide-home' }]
+  routes.forEach((route) => {
     const breadcrumb = {
       label: normalize_text(route),
       to: `/${route}`
@@ -65,6 +65,9 @@ const columns: (TableColumn<SimulationRun> & { accessorKey?: string })[] = [
 ]
 
 function getActionItems(row: CoreRow<SimulationRun>): DropdownMenuItem[] {
+  const targetId = row.original.biosimulationsRunId || row.original.id
+  const hasLegacyId = Boolean(row.original.biosimulationsRunId)
+
   return [
     {
       type: 'label',
@@ -74,7 +77,7 @@ function getActionItems(row: CoreRow<SimulationRun>): DropdownMenuItem[] {
       label: 'Copy Sharable Link',
       icon: 'i-lucide-copy',
       onSelect() {
-        copy(`${runtimeConfig.public.base_url}/runs/${row.original.biosimulationsRunId}`)
+        copy(`${runtimeConfig.public.base_url}/runs/${targetId}`)
 
         toast.add({
           title: 'Link copied to clipboard!',
@@ -83,13 +86,20 @@ function getActionItems(row: CoreRow<SimulationRun>): DropdownMenuItem[] {
         })
       }
     },
-    {
-      label: 'Export Run',
-      icon: 'i-lucide-download',
-      onSelect() {
-        window.open(`${runtimeConfig.public.legacy_api_url}/runs/${row.original.biosimulationsRunId}/download`, '_blank')
-      }
-    },
+    ...(hasLegacyId
+      ? [
+        {
+          label: 'Export Run',
+          icon: 'i-lucide-download',
+          onSelect() {
+            window.open(
+              `${runtimeConfig.public.biosimulations_api_url}/runs/${row.original.biosimulationsRunId}/download`,
+              '_blank'
+            )
+          }
+        }
+      ]
+      : []),
     {
       type: 'separator'
     },
@@ -97,28 +107,38 @@ function getActionItems(row: CoreRow<SimulationRun>): DropdownMenuItem[] {
       label: 'View Visualization',
       icon: 'i-lucide-chart-bar',
       onSelect() {
-        navigateTo(`/runs/${row.original.biosimulationsRunId}#visualization`)
+        navigateTo(`/runs/${targetId}#visualization`)
       }
     },
     {
       label: 'View Logs',
       icon: 'i-lucide-file-text',
       onSelect() {
-        navigateTo(`/runs/${row.original.biosimulationsRunId}#logs`)
+        navigateTo(`/runs/${targetId}#logs`)
       }
     },
     {
       label: 'Rerun Simulation',
       icon: 'i-lucide-rotate-ccw',
       onSelect() {
-        // Add corresponding function here
+        navigateTo({
+          path: '/simulations/run',
+          query: {
+            projectUrl: hasLegacyId
+              ? `${runtimeConfig.public.legacy_api_url}/runs/${row.original.biosimulationsRunId}/download`
+              : undefined,
+            simulator: row.original.simulator,
+            simulatorVersion: row.original.simulatorVersion,
+            runName: `${row.original.name} (rerun)`
+          }
+        })
       }
     },
     {
       label: 'Publish Simulation',
       icon: 'i-lucide-megaphone',
       onSelect() {
-        // Add corresponding function here
+        // Future publish endpoint integration
       }
     },
     {
@@ -127,14 +147,15 @@ function getActionItems(row: CoreRow<SimulationRun>): DropdownMenuItem[] {
     {
       label: 'Delete Run',
       icon: 'i-lucide-trash',
-      onSelect(_e: any) {
-        deleting_row_id.value = row.original.biosimulationsRunId
+      onSelect() {
+        deleting_row_id.value = row.original.id
       }
     }
   ]
 }
 
 function formatDate(dateString: string) {
+  if (!dateString) return 'N/A'
   return new Date(dateString).toLocaleString('en-US', {
     day: 'numeric',
     month: 'short',
@@ -146,11 +167,13 @@ function formatDate(dateString: string) {
 }
 
 function getStatusColor(status: string) {
-  return ({
-    SUCCEEDED: 'success' as const,
-    FAILED: 'error' as const,
-    CREATED: 'info' as const
-  })[status] || 'neutral'
+  return (
+    ({
+      SUCCEEDED: 'success' as const,
+      FAILED: 'error' as const,
+      CREATED: 'info' as const
+    })[status] || ('neutral' as const)
+  )
 }
 
 const headerColumns = computed(() =>
@@ -158,69 +181,86 @@ const headerColumns = computed(() =>
 )
 
 const table = useTemplateRef('table')
+
 const loading = ref(true)
 const error_encountered = ref<string | undefined>(undefined)
+
 const fetch_user = ref(false)
 const user_email = ref<string | undefined>(undefined)
 const user_input = useTemplateRef('user_email_input')
 const user_input_valid = ref(false)
+
 const table_filters = ref<TableFilterConfig>({
   _hidden_exist: false,
   filters: {
-    'name': {
+    name: {
       id: 'name',
       operator: undefined,
       value: undefined,
       _filterType: 'text',
-      _filterOptions: undefined,
+      _filterOptions: undefined
     },
-    'status': {
+    status: {
       id: 'status',
       operator: 'is_any',
       value: undefined,
       _filterType: 'enum',
-      _filterOptions: ['SUCCEEDED', 'FAILED', 'CREATED'],
+      _filterOptions: ['SUCCEEDED', 'FAILED', 'CREATED']
     },
-    'simulator': {
+    simulator: {
       id: 'simulator',
       operator: undefined,
       value: undefined,
       _filterType: 'text',
-      _filterOptions: undefined,
+      _filterOptions: undefined
     },
-    'submitted': {
+    submitted: {
       id: 'submitted',
       operator: undefined,
       value: undefined,
       _filterType: 'date',
-      _filterOptions: undefined,
-    },
+      _filterOptions: undefined
+    }
   }
 })
+
 const table_sort = ref({
   id: undefined,
   direction: undefined
 } as TableSort)
+
 const table_pagination = ref({
   page: 1,
   perPage: 25,
   _total: 0
 } as TablePagination)
-const fetched_data = ref<SimulationRuns>({runs: [], pagination: table_pagination.value} as SimulationRuns)
+
+const fetched_data = ref<SimulationRuns>({
+  runs: [],
+  pagination: table_pagination.value
+} as SimulationRuns)
+
+const deleting_row_id = ref<string | null>(null)
+
+// On-demand migration state
+const is_migrate_modal_open = ref(false)
+const migrate_input_id = ref('')
+const is_migrating = ref(false)
 
 async function fetch_runs() {
   if (fetch_user.value && !user_email.value) return
 
   loading.value = true
   error_encountered.value = undefined
-  fetched_data.value = {runs: [], pagination: table_pagination.value} as SimulationRuns
 
   const valid_filter_keys = Object.keys(table_filters.value?.filters).filter(filter => table_filters.value.filters[filter]?.value && table_filters.value.filters[filter]?.operator)
   const valid_filters = valid_filter_keys.map(filter_key => table_filters.value.filters[filter_key])
-  const trimmed_pagination = Object.keys(table_pagination.value).filter(key => !key.startsWith('_')).reduce((acc: Record<string, unknown>, key) => {
-    acc[key] = (table_pagination.value as Record<string, unknown>)[key]
-    return acc
-  }, {} as Record<string, unknown>)
+  const trimmed_pagination = Object.keys(table_pagination.value)
+    .filter(key => !key.startsWith('_'))
+    .reduce((acc: Record<string, unknown>, key) => {
+      acc[key] = (table_pagination.value as Record<string, unknown>)[key]
+      return acc
+    }, {} as Record<string, unknown>)
 
   if (fetched_data.value && table_pagination.value.perPage !== fetched_data.value.pagination.perPage) {
     table_pagination.value.page = 1
@@ -239,12 +279,49 @@ async function fetch_runs() {
     })
 
     table_pagination.value = fetched_data.value.pagination
-
   } catch (error: any) {
     error_encountered.value = error.message
     throw error
   } finally {
     loading.value = false
+  }
+}
+
+async function migrate_legacy_simulation() {
+  const runId = migrate_input_id.value.trim()
+  if (!runId) return
+
+  is_migrating.value = true
+
+  try {
+    await $fetch(`${runtimeConfig.public.api_url}/simulations/migrate`, {
+      method: 'POST',
+      body: {
+        biosimulationsRunId: runId,
+        email: user_email.value || undefined
+      }
+    })
+
+    toast.add({
+      title: 'Simulation Migrated',
+      description: `Successfully initiated migration for "${runId}".`,
+      color: 'success',
+      icon: 'i-lucide-circle-check'
+    })
+
+    is_migrate_modal_open.value = false
+    migrate_input_id.value = ''
+    await fetch_runs()
+  } catch (error: any) {
+    console.warn(`Migration notice for ${runId}:`, error)
+    toast.add({
+      title: 'Migration Notice',
+      description: error?.data?.detail || error?.message || `Migration endpoint will process once available.`,
+      color: 'info',
+      icon: 'i-lucide-info'
+    })
+  } finally {
+    is_migrating.value = false
   }
 }
 
@@ -266,13 +343,6 @@ function on_column_toggle() {
   table_filters.value._hidden_exist = !table.value?.tableApi.getIsAllColumnsVisible()
 }
 
-function _on_pagination_change(page: number, pageSize: number) {
-  table_pagination.value.page = page
-  table_pagination.value.perPage = pageSize
-
-  fetch_runs()
-}
-
 function hidden_cols_have_filters() {
   if (!table.value || !table_filters.value._hidden_exist) return false
 
@@ -288,7 +358,6 @@ function clear_hidden_filters() {
   const hidden_column_ids = hidden_columns.map(column => column.id)
   hidden_column_ids.forEach(column_id => clear_filter(column_id))
 
-  // Check if any of the hidden columns are the currently sorted one, and unset the sort
   if (table_sort.value.id && hidden_column_ids.includes(table_sort.value.id)) {
     table_sort.value.id = undefined
     table_sort.value.direction = undefined
@@ -298,7 +367,11 @@ function clear_hidden_filters() {
 }
 
 function change_sort(column_id: string) {
-  table_sort.value.direction = table_sort.value.id == column_id ? (table_sort.value.direction === 'asc' ? 'desc' : 'asc') : 'asc'
+  table_sort.value.direction = table_sort.value.id === column_id
+      ? table_sort.value.direction === 'asc'
+        ? 'desc'
+        : 'asc'
+      : 'asc'
   table_sort.value.id = column_id
 
   fetch_runs()
@@ -315,45 +388,49 @@ const checkValidity = () => {
   }
 }
 
-const deleting_row_id = ref<string | null>(null)
-
 async function confirm_delete(run: SimulationRun) {
+  const targetId = run.biosimulationsRunId || run.id
   try {
-    await $fetch(`${runtimeConfig.public.legacy_api_url}/runs/${run.biosimulationsRunId}`, { method: 'DELETE' })
+    await $fetch(`${runtimeConfig.public.legacy_api_url}/runs/${targetId}`, { method: 'DELETE' })
     toast.add({ title: 'Simulation run deleted.', color: 'success', icon: 'i-lucide-check' })
     deleting_row_id.value = null
     fetch_runs()
   } catch (err: any) {
-    toast.add({ title: 'Error deleting run', description: err.message, color: 'error', icon: 'i-lucide-alert-circle' })
+    toast.add({
+      title: 'Error deleting run',
+      description: err.message,
+      color: 'error',
+      icon: 'i-lucide-alert-circle'
+    })
   }
 }
 </script>
 
 <template>
   <section class="w-full min-h-[calc(100vh-var(--ui-header-height))] p-6 max-w-(--ui-container) mx-auto flex flex-col gap-4" :class="{'items-center justify-center': !fetched_data || error_encountered, 'items-start justify-start': !error_encountered}">
-    <UBreadcrumb class="mx-auto" :items="breadcrumbs"></UBreadcrumb>
+    <UBreadcrumb class="mx-auto" :items="breadcrumbs" />
     <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
-      <div class="background diamonds w-full h-full"></div>
+      <div class="background diamonds w-full h-full" />
       <h1 class="text-xl font-bold">Simulation Runs</h1>
       <p>Retrieve your own simulation run results or browse what others have submitted!</p>
     </div>
 
-    <Loading v-if="!fetched_data && !error_encountered" message="Fetching simulation runs..."/>
+    <Loading v-if="!fetched_data && !error_encountered" message="Fetching simulation runs..." />
 
-    <div class="w-full" v-if="fetched_data && !error_encountered">
-      <div class="w-full flex items-center justify-between gap-4">
+    <div v-if="fetched_data && !error_encountered" class="w-full">
+      <div class="w-full flex items-center justify-between gap-4 flex-wrap">
         <div class="w-max flex items-center gap-2">
           <p class="text-sm font-semibold" :class="{'text-muted': fetch_user, 'text-color': !fetch_user}">All Runs</p>
-          <USwitch v-model="fetch_user" :disabled="loading" @change="fetch_runs()"/>
+          <USwitch v-model="fetch_user" :disabled="loading" @change="fetch_runs()" />
           <p class="text-sm font-semibold" :class="{'text-muted': !fetch_user, 'text-color': fetch_user}">My Runs</p>
           <UInput
             v-if="fetch_user"
-            v-model="user_email"
             ref="user_email_input"
+            v-model="user_email"
             type="email"
-            @input="checkValidity"
             placeholder="Enter your email address"
             :ui="{ trailing: 'pe-1' }"
+            @input="checkValidity"
           >
             <template v-if="user_email && user_email.length" #trailing>
               <UButton
@@ -369,220 +446,300 @@ async function confirm_delete(run: SimulationRun) {
             </template>
           </UInput>
         </div>
-        <UDropdownMenu
-          :disabled="loading"
-          :content="{ align: 'end' }"
-          :items="
-              table?.tableApi
-              ?.getAllColumns()
-              .filter((column) => column.getCanHide())
-              .map((column) => ({
-                label: upperFirst(column.id),
-                type: 'checkbox' as const,
-                checked: column.getIsVisible(),
-                onUpdateChecked(checked: boolean) {
-                  table?.tableApi?.getColumn(column.id)?.toggleVisibility(checked)
-                  on_column_toggle()
-                },
-                onSelect(e: Event) {
-                  e.preventDefault()
-                }
-              }))">
+
+        <div class="flex items-center gap-2">
           <UButton
-            label="Columns"
+            label="Migrate Legacy Run"
             color="neutral"
             variant="outline"
-            trailing-icon="i-lucide-chevron-down" />
-        </UDropdownMenu>
-        <UButton
-          v-if="!loading && table_filters._hidden_exist && hidden_cols_have_filters()"
-          label="Clear Hidden Filters"
-          color="neutral"
-          variant="outline"
-          leading-icon="i-lucide-funnel-x"
-          @click="clear_hidden_filters()">
-        </UButton>
+            icon="i-lucide-arrow-right-left"
+            @click="is_migrate_modal_open = true"
+          />
+
+          <UDropdownMenu
+            :disabled="loading"
+            :content="{ align: 'end' }"
+            :items="
+              table?.tableApi
+                ?.getAllColumns()
+                .filter((column) => column.getCanHide())
+                .map((column) => ({
+                  label: upperFirst(column.id),
+                  type: 'checkbox' as const,
+                  checked: column.getIsVisible(),
+                  onUpdateChecked(checked: boolean) {
+                    table?.tableApi?.getColumn(column.id)?.toggleVisibility(checked)
+                    on_column_toggle()
+                  },
+                  onSelect(e: Event) {
+                    e.preventDefault()
+                  }
+                }))"
+          >
+            <UButton
+              label="Columns"
+              color="neutral"
+              variant="outline"
+              trailing-icon="i-lucide-chevron-down"
+            />
+          </UDropdownMenu>
+
+          <UButton
+            v-if="!loading && table_filters._hidden_exist && hidden_cols_have_filters()"
+            label="Clear Hidden Filters"
+            color="neutral"
+            variant="outline"
+            leading-icon="i-lucide-funnel-x"
+            @click="clear_hidden_filters()"
+          />
+        </div>
       </div>
 
-      <Loading class="mx-auto w-max py-4" v-if="loading" message="Fetching simulation runs..."/>
-      <UTable
-        v-if="!loading"
-        class="w-full"
-        ref="table"
-        :data="fetched_data.runs"
-        :columns="columns"
-        sticky>
-        <template v-for="column in headerColumns" :key="column.accessorKey" #[`${column.accessorKey}-header`]="{ column: tableColumn }">
-          <div class="flex items-center gap-2">
-            <UButton
-              color="neutral"
-              variant="ghost"
-              label="{{ tableColumn.columnDef.header }}"
-              :icon="table_sort.id === column.accessorKey ? (table_sort.direction === 'asc' ? 'i-lucide-arrow-up' : 'i-lucide-arrow-down') : 'i-lucide-arrow-up-down'"
-              class="-mx-2.5 cursor-pointer"
-              @click="change_sort(column.accessorKey)"
-            />
+      <!-- Results Table -->
+      <div class="w-full mt-6">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-lg font-bold text-color">Results</h2>
+          <span v-if="fetched_data" class="text-xs text-muted">
+            Total: {{ fetched_data.pagination._total ?? fetched_data.runs.length }}
+          </span>
+        </div>
 
-            <UPopover v-if="table_filters.filters[column.accessorKey]">
+        <Loading v-if="loading" class="mx-auto w-max py-4" message="Fetching simulation runs..." />
+
+        <div v-if="!loading && fetched_data.runs.length === 0" class="p-8 text-center text-muted border border-dashed border-gray-200 dark:border-gray-800 rounded-lg my-4">
+          <UIcon name="i-lucide-inbox" class="w-8 h-8 mx-auto mb-2 text-muted" />
+          <p class="font-medium">No simulation runs found</p>
+          <p class="text-xs text-muted mt-1">Submit a new simulation or adjust your filters above.</p>
+        </div>
+
+        <UTable
+          v-if="!loading && fetched_data.runs.length > 0"
+          ref="table"
+          class="w-full"
+          :data="fetched_data.runs"
+          :columns="columns"
+          sticky
+        >
+          <template v-for="column in headerColumns" :key="column.accessorKey" #[`${column.accessorKey}-header`]="{ column: tableColumn }">
+            <div class="flex items-center gap-2">
               <UButton
-                :color="table_filters.filters[column.accessorKey]!.value ? 'primary' : 'neutral'"
+                color="neutral"
                 variant="ghost"
-                class="cursor-pointer"
-                icon="i-lucide-filter"
+                :label="String(tableColumn.columnDef.header || '')"
+                :icon="table_sort.id === column.accessorKey ? (table_sort.direction === 'asc' ? 'i-lucide-arrow-up' : 'i-lucide-arrow-down') : 'i-lucide-arrow-up-down'"
+                class="-mx-2.5 cursor-pointer"
+                @click="change_sort(column.accessorKey)"
               />
-              <template #content>
-                <div class="p-2">
-                  <small><strong>Filter "{{ tableColumn.columnDef.header }}"</strong></small>
-                  <div class="flex flex-col gap-2 mt-2" v-if="table_filters.filters[column.accessorKey]!._filterType === 'text'">
-                    <USelectMenu placeholder="Select operator" v-model="table_filters.filters[column.accessorKey]!.operator" value-key="value" :items="[{ label: 'Contains', value: 'contains' }, { label: 'Equals', value: 'equals' }, { label: 'Starts With', value: 'starts_with' }, { label: 'Ends With', value: 'ends_with' }]"/>
-                    <UInput placeholder="Enter text..." v-model="table_filters.filters[column.accessorKey]!.value" :disabled="!table_filters.filters[column.accessorKey]!.operator"/>
-                    <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
-                      <UButton
-                        v-if="table_filters.filters[column.accessorKey]!.value"
-                        class="w-max whitespace-nowrap"
-                        color="error"
-                        size="sm"
-                        leading-icon="i-lucide-x"
-                        label="Clear Filter"
-                        @click="clear_filter(column.accessorKey)"
-                      />
-                      <UButton
-                        class="w-max whitespace-nowrap"
-                        :disabled="!table_filters.filters[column.accessorKey]!.value || !table_filters.filters[column.accessorKey]!.operator"
-                        color="primary"
-                        size="sm"
-                        leading-icon="i-lucide-check"
-                        label="Apply"
-                        @click="fetch_runs()"
-                      />
-                    </div>
-                  </div>
-                  <div class="flex flex-col gap-2 mt-2" v-if="table_filters.filters[column.accessorKey]!._filterType === 'enum'">
-                    <small class="font-semibold">Show results with these statuses:</small>
-                    <USelectMenu multiple :disabled="!table_filters.filters[column.accessorKey]!.operator" placeholder="Select statuses" v-model="table_filters.filters[column.accessorKey]!.value" :items="table_filters.filters[column.accessorKey]!._filterOptions"/>
-                    <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
-                      <UButton
-                        v-if="table_filters.filters[column.accessorKey]!.value"
-                        class="w-max whitespace-nowrap"
-                        color="error"
-                        size="sm"
-                        leading-icon="i-lucide-x"
-                        label="Clear Filter"
-                        @click="clear_filter(column.accessorKey)"
-                      />
-                      <UButton
-                        class="w-max whitespace-nowrap"
-                        :disabled="!table_filters.filters[column.accessorKey]!.value || !table_filters.filters[column.accessorKey]!.operator"
-                        color="primary"
-                        size="sm"
-                        leading-icon="i-lucide-check"
-                        label="Apply"
-                        @click="fetch_runs()"
-                      />
-                    </div>
-                  </div>
-                  <div class="flex flex-col gap-2 mt-2" v-if="table_filters.filters[column.accessorKey]!._filterType === 'date'">
-                    <USelectMenu placeholder="Select operator" v-model="table_filters.filters[column.accessorKey]!.operator" value-key="value" :items="[{ label: 'Before', value: 'before' }, { label: 'On', value: 'on' }, { label: 'After', value: 'after' }]"/>
-                    <UInputDate v-model="table_filters.filters[column.accessorKey]!.value" :disabled="!table_filters.filters[column.accessorKey]!.operator" />
-                    <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
-                      <UButton
-                        v-if="table_filters.filters[column.accessorKey]!.value"
-                        class="w-max whitespace-nowrap"
-                        color="error"
-                        size="sm"
-                        leading-icon="i-lucide-x"
-                        label="Clear Filter"
-                        @click="clear_filter(column.accessorKey)"
-                      />
-                      <UButton
-                        class="w-max whitespace-nowrap"
-                        :disabled="!table_filters.filters[column.accessorKey]!.value || !table_filters.filters[column.accessorKey]!.operator"
-                        color="primary"
-                        size="sm"
-                        leading-icon="i-lucide-check"
-                        label="Apply"
-                        @click="fetch_runs()"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </template>
-            </UPopover>
-          </div>
-        </template>
-        <template #biosimulationsRunId-cell="{ row }">
-          <NuxtLink
-            :to="`/runs/${row.getValue('biosimulationsRunId')}`"
-            class="font-medium text-primary hover:underline"
-          >
-            {{ row.getValue('biosimulationsRunId') }}
-          </NuxtLink>
-        </template>
-        <template #status-cell="{ row }">
-          <UBadge class="capitalize" variant="subtle" :color="getStatusColor(row.original.status)">{{ row.original.status }}</UBadge>
-        </template>
-        <template #submitted-cell="{ row }">
-          {{ formatDate(row.original.submitted) }}
-        </template>
-        <template #actions-cell="{ row }">
-          <div class="flex items-center justify-end">
-            <UPopover :open="deleting_row_id === row.original.biosimulationsRunId"
-                      @update:open="(val: boolean) => { if (!val && deleting_row_id === row.original.biosimulationsRunId) deleting_row_id = null }"
-                      :content="{ align: 'end' }">
-              <template #default>
-                <UDropdownMenu :content="{ align: 'end' }" :items="getActionItems(row)" aria-label="Actions dropdown">
-                  <UButton class="cursor-pointer" icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" aria-label="Actions dropdown" />
-                </UDropdownMenu>
-              </template>
-              <template #content>
-                <div class="p-4 flex flex-col gap-2 w-64 text-left">
-                  <p class="text-sm font-normal text-color">
-                    Are you sure you want to delete <strong>{{ row.original.name || row.original.id }}</strong>?
-                  </p>
-                  <div class="flex justify-end gap-2 mt-2">
-                    <UButton label="Cancel" color="neutral" variant="ghost" size="xs" @click="deleting_row_id = null" />
-                    <UButton label="Delete" color="error" variant="solid" size="xs" @click="confirm_delete(row.original)" />
-                  </div>
-                </div>
-              </template>
-            </UPopover>
-          </div>
-        </template>
-      </UTable>
 
-      <USeparator class="mb-4"></USeparator>
+              <UPopover v-if="table_filters.filters[column.accessorKey]">
+                <UButton
+                  :color="table_filters.filters[column.accessorKey]!.value ? 'primary' : 'neutral'"
+                  variant="ghost"
+                  class="cursor-pointer"
+                  icon="i-lucide-filter"
+                />
+                <template #content>
+                  <div class="p-2">
+                    <small><strong>Filter "{{ tableColumn.columnDef.header }}"</strong></small>
+                    <div v-if="table_filters.filters[column.accessorKey]!._filterType === 'text'" class="flex flex-col gap-2 mt-2">
+                      <USelectMenu v-model="table_filters.filters[column.accessorKey]!.operator" placeholder="Select operator" value-key="value" :items="[{ label: 'Contains', value: 'contains' }, { label: 'Equals', value: 'equal' }, { label: 'Starts With', value: 'starts_with' }, { label: 'Ends With', value: 'ends_with' }]" />
+                      <UInput v-model="table_filters.filters[column.accessorKey]!.value" placeholder="Enter text..." :disabled="!table_filters.filters[column.accessorKey]!.operator" />
+                      <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
+                        <UButton
+                          v-if="table_filters.filters[column.accessorKey]!.value"
+                          class="w-max whitespace-nowrap"
+                          color="error"
+                          size="sm"
+                          leading-icon="i-lucide-x"
+                          label="Clear Filter"
+                          @click="clear_filter(column.accessorKey)"
+                        />
+                        <UButton
+                          class="w-max whitespace-nowrap"
+                          :disabled="!table_filters.filters[column.accessorKey]!.value || !table_filters.filters[column.accessorKey]!.operator"
+                          color="primary"
+                          size="sm"
+                          leading-icon="i-lucide-check"
+                          label="Apply"
+                          @click="fetch_runs()"
+                        />
+                      </div>
+                    </div>
+                    <div v-if="table_filters.filters[column.accessorKey]!._filterType === 'enum'" class="flex flex-col gap-2 mt-2">
+                      <small class="font-semibold">Show results with these statuses:</small>
+                      <USelectMenu v-model="table_filters.filters[column.accessorKey]!.value" multiple :disabled="!table_filters.filters[column.accessorKey]!.operator" placeholder="Select statuses" :items="table_filters.filters[column.accessorKey]!._filterOptions" />
+                      <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
+                        <UButton
+                          v-if="table_filters.filters[column.accessorKey]!.value"
+                          class="w-max whitespace-nowrap"
+                          color="error"
+                          size="sm"
+                          leading-icon="i-lucide-x"
+                          label="Clear Filter"
+                          @click="clear_filter(column.accessorKey)"
+                        />
+                        <UButton
+                          class="w-max whitespace-nowrap"
+                          :disabled="!table_filters.filters[column.accessorKey]!.value || !table_filters.filters[column.accessorKey]!.operator"
+                          color="primary"
+                          size="sm"
+                          leading-icon="i-lucide-check"
+                          label="Apply"
+                          @click="fetch_runs()"
+                        />
+                      </div>
+                    </div>
+                    <div v-if="table_filters.filters[column.accessorKey]!._filterType === 'date'" class="flex flex-col gap-2 mt-2">
+                      <USelectMenu v-model="table_filters.filters[column.accessorKey]!.operator" placeholder="Select operator" value-key="value" :items="[{ label: 'Before', value: 'before' }, { label: 'On', value: 'on' }, { label: 'After', value: 'after' }]" />
+                      <UInputDate v-model="table_filters.filters[column.accessorKey]!.value" :disabled="!table_filters.filters[column.accessorKey]!.operator" />
+                      <div class="w-full flex items-center gap-4" :class="{'justify-between': table_filters.filters[column.accessorKey]!.value, 'justify-end': !table_filters.filters[column.accessorKey]!.value}">
+                        <UButton
+                          v-if="table_filters.filters[column.accessorKey]!.value"
+                          class="w-max whitespace-nowrap"
+                          color="error"
+                          size="sm"
+                          leading-icon="i-lucide-x"
+                          label="Clear Filter"
+                          @click="clear_filter(column.accessorKey)"
+                        />
+                        <UButton
+                          class="w-max whitespace-nowrap"
+                          :disabled="!table_filters.filters[column.accessorKey]!.value || !table_filters.filters[column.accessorKey]!.operator"
+                          color="primary"
+                          size="sm"
+                          leading-icon="i-lucide-check"
+                          label="Apply"
+                          @click="fetch_runs()"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </UPopover>
+            </div>
+          </template>
 
-      <div v-if="fetched_data" class="w-full flex items-center justify-between gap-4">
-        <p class="text-muted ml-3">Showing results {{ (fetched_data.pagination.page - 1) * fetched_data.pagination.perPage + 1 }} - {{ Math.min(fetched_data.pagination.page * fetched_data.pagination.perPage, fetched_data.pagination._total ?? 0) }} of {{ fetched_data.pagination._total ?? 0 }}</p>
-        <UPagination
-          v-model="fetched_data.pagination.page"
-          :total="fetched_data.pagination._total ?? 100"
-          :items-per-page="fetched_data.pagination.perPage"
-          :sibling-count="1"
-          show-edges
-          @update:page="change_pagination($event)"
-        />
-        <div class="w-max flex items-center gap-2">
-          <p>Results Per Page:</p>
-          <USelect :loading="loading" :disabled="loading" color="neutral" variant="outline" v-model="table_pagination.perPage" @change="fetch_runs()" :items="[5, 25, 50, 100]" />
+          <template #biosimulationsRunId-cell="{ row }">
+            <NuxtLink
+              :to="`/runs/${row.original.biosimulationsRunId || row.original.id}`"
+              class="font-medium text-primary hover:underline"
+            >
+              {{ row.original.biosimulationsRunId || row.original.id }}
+            </NuxtLink>
+          </template>
+
+          <template #status-cell="{ row }">
+            <UBadge class="capitalize" variant="subtle" :color="getStatusColor(row.original.status)">
+              {{ row.original.status }}
+            </UBadge>
+          </template>
+
+          <template #submitted-cell="{ row }">
+            {{ formatDate(row.original.submitted) }}
+          </template>
+
+          <template #actions-cell="{ row }">
+            <div class="flex items-center justify-end">
+              <UPopover
+                :open="deleting_row_id === row.original.id"
+                :content="{ align: 'end' }"
+                @update:open="(val: boolean) => { if (!val && deleting_row_id === row.original.id) deleting_row_id = null }"
+              >
+                <template #default>
+                  <UDropdownMenu :content="{ align: 'end' }" :items="getActionItems(row)" aria-label="Actions dropdown">
+                    <UButton class="cursor-pointer" icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" aria-label="Actions dropdown" />
+                  </UDropdownMenu>
+                </template>
+                <template #content>
+                  <div class="p-4 flex flex-col gap-2 w-64 text-left">
+                    <p class="text-sm font-normal text-color">
+                      Are you sure you want to delete <strong>{{ row.original.name || row.original.id }}</strong>?
+                    </p>
+                    <div class="flex justify-end gap-2 mt-2">
+                      <UButton label="Cancel" color="neutral" variant="ghost" size="xs" @click="deleting_row_id = null" />
+                      <UButton label="Delete" color="error" variant="solid" size="xs" @click="confirm_delete(row.original)" />
+                    </div>
+                  </div>
+                </template>
+              </UPopover>
+            </div>
+          </template>
+        </UTable>
+
+        <USeparator class="my-4" />
+
+        <div v-if="fetched_data && fetched_data.runs.length > 0" class="w-full flex items-center justify-between gap-4 flex-wrap">
+          <p class="text-muted ml-3">
+            Showing results {{ (fetched_data.pagination.page - 1) * fetched_data.pagination.perPage + 1 }} - {{ Math.min(fetched_data.pagination.page * fetched_data.pagination.perPage, fetched_data.pagination._total ?? 0) }} of {{ fetched_data.pagination._total ?? 0 }}
+          </p>
+          <UPagination
+            v-model="fetched_data.pagination.page"
+            :total="fetched_data.pagination._total ?? 100"
+            :items-per-page="fetched_data.pagination.perPage"
+            :sibling-count="1"
+            show-edges
+            @update:page="change_pagination($event)"
+          />
+          <div class="w-max flex items-center gap-2">
+            <p>Results Per Page:</p>
+            <USelect v-model="table_pagination.perPage" :loading="loading" :disabled="loading" color="neutral" variant="outline" :items="[5, 25, 50, 100]" @change="fetch_runs()" />
+          </div>
         </div>
       </div>
     </div>
 
-    <ErrorPage v-if="error_encountered" message="An error occurred while fetching simulation runs" :error="error_encountered" @refresh="fetch_runs()"/>
+    <!-- On-Demand Migration Modal -->
+    <UModal
+      v-model:open="is_migrate_modal_open"
+      title="Migrate Legacy Run"
+      description="Enter a legacy 24-character run ID to pull its metadata and outputs into the platform database."
+    >
+      <template #body>
+        <div class="flex flex-col gap-4 p-4">
+          <div>
+            <label class="block text-sm font-medium mb-1">Legacy Run ID</label>
+            <UInput
+              v-model="migrate_input_id"
+              placeholder="e.g. 61fea483f499ccf25faafc4d"
+              class="w-full"
+              :disabled="is_migrating"
+            />
+          </div>
+          <p v-if="fetch_user && user_email" class="text-xs text-muted">
+            This run will be associated with: <strong>{{ user_email }}</strong>
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full p-4 pt-0">
+          <UButton label="Cancel" color="neutral" variant="ghost" :disabled="is_migrating" @click="is_migrate_modal_open = false" />
+          <UButton
+            label="Migrate Run"
+            color="primary"
+            icon="i-lucide-arrow-right-left"
+            :loading="is_migrating"
+            :disabled="!migrate_input_id.trim()"
+            @click="migrate_legacy_simulation"
+          />
+        </div>
+      </template>
+    </UModal>
+
+    <ErrorPage v-if="error_encountered" message="An error occurred while fetching simulation runs" :error="error_encountered" @refresh="fetch_runs()" />
   </section>
 </template>
+
 <style>
-  tr:hover {
-    background-color: #fbfbfb !important;
-    cursor: pointer;
-  }
+tr:hover {
+  background-color: #fbfbfb !important;
+  cursor: pointer;
+}
 
-  td, th {
-    padding: 0.5rem 1rem !important;
-  }
+td, th {
+  padding: 0.5rem 1rem !important;
+}
 
-  td:last-of-type {
-    width: 100%;
-  }
+td:last-of-type {
+  width: 100%;
+}
 </style>
