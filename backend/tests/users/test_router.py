@@ -63,6 +63,11 @@ def test_patch_me_requires_authentication() -> None:
     assert resp.status_code == 401
 
 
+def test_patch_me_rejects_empty_name(authenticated_user: AuthenticatedUser) -> None:
+    resp = client.patch("/api/v1/me", json={"name": ""})
+    assert resp.status_code == 422
+
+
 @patch("biosim_server.users.router.management_api_configured", return_value=False)
 def test_patch_me_503_when_management_api_unconfigured(
     _mock_configured: AsyncMock, authenticated_user: AuthenticatedUser

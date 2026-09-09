@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from biosim_server.api.main import app
-from biosim_server.biosim_omex import OmexDatabaseServiceMongo
+from biosim_server.biosim_omex import OmexDatabaseServiceMongo, OmexFile
 from biosim_server.biosim_runs import BiosimServiceRest, DatabaseServiceMongo
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
@@ -16,7 +16,9 @@ from biosim_server.common.auth import AuthenticatedUser, get_current_user
 from biosim_server.common.storage import FileServiceGCS
 from biosim_server.config import get_settings
 from biosim_server.version import __version__
+from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
+
 from temporalio.client import Client
 from temporalio.worker import Worker
 from tests.biosim_verify.test_omex_verify_workflows import assert_omex_verify_results
@@ -87,14 +89,51 @@ async def test_ready_when_mongo_down(mock_get_mongo_client: MagicMock, mock_get_
         assert body["checks"]["mongodb"] is False
 
 
-@pytest.mark.asyncio
-async def test_get_output_not_found(omex_verify_workflow_input: OmexVerifyWorkflowInput,
-                                    omex_verify_workflow_output: VerifyWorkflowOutput) -> None:
+@patch("biosim_server.api.main.get_temporal_client")
+def test_get_output_not_found(mock_get_temporal: MagicMock) -> None:
+    """GET /verify/{workflow_id} returns 404 when the Temporal query fails."""
+    temporal = MagicMock()
+    handle = AsyncMock()
+    handle.query.side_effect = Exception("Workflow not found")
+    temporal.get_workflow_handle.return_value = handle
+    mock_get_temporal.return_value = temporal
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
-        # test with non-existent verification_id
-        response = await test_client.get("/verify_omex/non-existent-id")
-        assert response.status_code == 404
+    response = TestClient(app).get("/verify/non-existent-id")
+    assert response.status_code == 404
+    assert "non-existent-id" in response.json()["detail"]
+
+
+@patch("biosim_server.api.main.get_cached_omex_file_from_upload", new_callable=AsyncMock)
+@patch("biosim_server.api.main.get_biosim_service")
+@patch("biosim_server.api.main.get_omex_database_service")
+@patch("biosim_server.api.main.get_file_service")
+def test_verify_omex_unknown_simulator(
+    mock_get_file: MagicMock,
+    mock_get_omex_db: MagicMock,
+    mock_get_biosim: MagicMock,
+    mock_get_cached: AsyncMock,
+) -> None:
+    """POST /verify/omex returns 400 when a requested simulator is not known."""
+    mock_get_file.return_value = MagicMock()
+    mock_get_omex_db.return_value = MagicMock()
+    mock_get_cached.return_value = OmexFile(
+        file_hash_md5="abc123",
+        uploaded_filename="t.omex",
+        bucket_name="test-bucket",
+        omex_gcs_path="omex/abc123/t.omex",
+        file_size=1,
+    )
+    biosim = AsyncMock()
+    biosim.get_simulator_versions.return_value = []
+    mock_get_biosim.return_value = biosim
+
+    response = TestClient(app).post(
+        "/verify/omex",
+        files={"uploaded_file": ("t.omex", b"not-used", "application/zip")},
+        params={"simulators": "unknown-sim"},
+    )
+    assert response.status_code == 400
+    assert "unknown-sim" in response.json()["detail"]
 
 
 @pytest.mark.integration
