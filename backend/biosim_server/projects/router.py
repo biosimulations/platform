@@ -16,6 +16,8 @@ from pydantic import ValidationError
 
 from biosim_server.config import get_settings
 from biosim_server.common.upstream import fetch_upstream_json, upstream_url
+from biosim_server.pages.models import ProjectsPagePayload
+from biosim_server.pages.service import assemble_project_page
 from biosim_server.summaries.mapping import map_project_summary
 from biosim_server.summaries.models import ProjectSummary
 from biosim_server.dependencies import get_http_client, get_project_database_service
@@ -147,3 +149,20 @@ async def get_project_summary(
         raise HTTPException(
             502, "The upstream service returned an unexpected project summary."
         ) from exc
+
+
+@router.get(
+    "/{project_id}/page",
+    response_model=ProjectsPagePayload,
+    operation_id="get-project-page",
+    summary="Platform-owned project page aggregation",
+    responses={
+        502: {"description": "The upstream service failed or returned an invalid page resource."},
+        504: {"description": "Timed out while contacting the upstream service."},
+    },
+)
+async def get_project_page(
+    project_id: str,
+    client: httpx.AsyncClient = Depends(get_http_client),
+) -> ProjectsPagePayload:
+    return await assemble_project_page(client, project_id)

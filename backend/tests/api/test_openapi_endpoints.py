@@ -34,10 +34,12 @@ _CORE_PATHS = frozenset({
     "/simulations/{processing_id}/logs",
     "/simulations/{processing_id}/cancel",
     "/runs/{run_id}/summary",
+    "/runs/{run_id}/page",
     "/projects",
     "/projects/reindex",
     "/projects/stats",
     "/projects/{project_id}/summary",
+    "/projects/{project_id}/page",
     "/api/v1/me",
     "/api/v1/demo/public",
     "/api/v1/demo/private/me",
@@ -116,10 +118,12 @@ AUTH_MODE: dict[str, AuthMode] = {
     "get-simulation-logs": AuthMode.NONE,
     "cancel-simulation-run": AuthMode.REQUIRED,
     "get-run-summary": AuthMode.NONE,
+    "get-run-page": AuthMode.NONE,
     "list-projects": AuthMode.NONE,
     "reindex-projects": AuthMode.REINDEX_TOKEN,
     "list-project-stats": AuthMode.NONE,
     "get-project-summary": AuthMode.NONE,
+    "get-project-page": AuthMode.NONE,
     "get-current-user": AuthMode.REQUIRED,
     "update-current-user": AuthMode.REQUIRED,
     "delete-current-user": AuthMode.REQUIRED,
@@ -141,7 +145,9 @@ VALIDATION_SKIP: dict[str, str] = {
     "delete-simulation-run": "path-only; unauthenticated probe is 401",
     "cancel-simulation-run": "path-only; unauthenticated probe is 401",
     "get-run-summary": "path-only; unauthenticated probe uses encoded-dot 404",
+    "get-run-page": "path-only; unauthenticated probe uses encoded-dot 404",
     "get-project-summary": "path-only; unauthenticated probe uses encoded-dot 404",
+    "get-project-page": "path-only; unauthenticated probe uses encoded-dot 404",
     "reindex-projects": "no body; gated by static token, not Pydantic",
     "get-current-user": "no request body",
     "delete-current-user": "no request body",
@@ -217,6 +223,10 @@ def _probe_get_simulation_logs(client: TestClient) -> None:
         _assert_status(client.get("/simulations/probe-id/logs"), 503)
 
 
+def _probe_get_run_page(client: TestClient) -> None:
+    _assert_status(client.get("/runs/%2E/page"), 404)
+
+
 def _probe_get_run_summary(client: TestClient) -> None:
     _assert_status(client.get("/runs/%2E/summary"), 404)
 
@@ -235,6 +245,10 @@ def _probe_reindex_projects(client: TestClient) -> None:
 def _probe_list_project_stats(client: TestClient) -> None:
     with patch("biosim_server.projects.router.get_project_database_service", return_value=None):
         _assert_status(client.get("/projects/stats"), 503)
+
+
+def _probe_get_project_page(client: TestClient) -> None:
+    _assert_status(client.get("/projects/%2E/page"), 404)
 
 
 def _probe_get_project_summary(client: TestClient) -> None:
@@ -301,10 +315,12 @@ UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "get-simulation-results": _probe_get_simulation_results,
     "get-simulation-logs": _probe_get_simulation_logs,
     "get-run-summary": _probe_get_run_summary,
+    "get-run-page": _probe_get_run_page,
     "list-projects": _probe_list_projects,
     "reindex-projects": _probe_reindex_projects,
     "list-project-stats": _probe_list_project_stats,
     "get-project-summary": _probe_get_project_summary,
+    "get-project-page": _probe_get_project_page,
     "demo-public": _probe_demo_public,
     "root__get": _probe_root,
     "get_version_version_get": _probe_version,
@@ -426,3 +442,17 @@ def test_validation_error_probe(operation: Operation, client: TestClient) -> Non
         assert operation.operation_id in VALIDATION_SKIP
         return
     runner(client)
+
+
+def test_page_response_schemas_and_auth() -> None:
+    spec = app.openapi()
+    for path, model in [
+        ("/projects/{project_id}/page", "ProjectsPagePayload"),
+        ("/runs/{run_id}/page", "RunsPagePayload"),
+    ]:
+        operation = spec["paths"][path]["get"]
+        assert not operation.get("security")
+        assert AUTH_MODE[operation["operationId"]] == AuthMode.NONE
+        assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+            "$ref": f"#/components/schemas/{model}",
+        }

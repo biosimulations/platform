@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from biosim_server.biosim_runs import BiosimulatorVersion
 from biosim_server.common.upstream import fetch_upstream_json, upstream_url
+from biosim_server.pages.models import RunsPagePayload
+from biosim_server.pages.service import assemble_run_page
 from biosim_server.summaries.mapping import map_run_summary
 from biosim_server.summaries.models import RunSummary
 from biosim_server.dependencies import (
@@ -465,3 +467,20 @@ def _conglomerate_status_from_records(
         for record in records
     ]
     return ConglomerateStatus(processing_id=processing_id, jobs=jobs)
+
+
+@run_summary_router.get(
+    "/{run_id}/page",
+    response_model=RunsPagePayload,
+    operation_id="get-run-page",
+    summary="Platform-owned run page aggregation",
+    responses={
+        502: {"description": "The upstream service failed or returned an invalid page resource."},
+        504: {"description": "Timed out while contacting the upstream service."},
+    },
+)
+async def get_run_page(
+    run_id: str,
+    client: httpx.AsyncClient = Depends(get_http_client),
+) -> RunsPagePayload:
+    return await assemble_run_page(client, run_id)

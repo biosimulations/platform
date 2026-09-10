@@ -35,6 +35,16 @@ async def fetch_upstream_json(
     client: httpx.AsyncClient, path: str, *, resource: str
 ) -> dict[str, Any]:
     """Fetch one JSON object without caller headers or query parameters."""
+    payload = await fetch_upstream_json_value(client, path, resource=resource)
+    if not isinstance(payload, dict):
+        raise HTTPException(502, f"The upstream service returned an unexpected {resource}.")
+    return payload
+
+
+async def fetch_upstream_json_value(
+    client: httpx.AsyncClient, path: str, *, resource: str
+) -> dict[str, Any] | list[Any]:
+    """Fetch an object or array with the same isolated request and error policy."""
     try:
         response = await client.get(path)
     except httpx.TimeoutException as exc:
@@ -58,6 +68,6 @@ async def fetch_upstream_json(
         payload = response.json()
     except ValueError as exc:
         raise HTTPException(502, detail) from exc
-    if not isinstance(payload, dict):
+    if not isinstance(payload, (dict, list)):
         raise HTTPException(502, detail)
     return payload

@@ -293,6 +293,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /runs/{run_id}/page:
+    get:
+      tags:
+      - Runs
+      summary: Platform-owned run page aggregation
+      operationId: get-run-page
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunsPagePayload'
+        '502':
+          description: The upstream service failed or returned an invalid page resource.
+        '504':
+          description: Timed out while contacting the upstream service.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /projects:
     get:
       tags:
@@ -449,6 +479,36 @@ paths:
         '502':
           description: The upstream service failed, was unreachable, or returned an
             invalid summary.
+        '504':
+          description: Timed out while contacting the upstream service.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /projects/{project_id}/page:
+    get:
+      tags:
+      - Projects
+      summary: Platform-owned project page aggregation
+      operationId: get-project-page
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectsPagePayload'
+        '502':
+          description: The upstream service failed or returned an invalid page resource.
         '504':
           description: Timed out while contacting the upstream service.
         '422':
@@ -1434,6 +1494,646 @@ components:
       - sedml_files
       title: OmexContent
       description: Parsed content from an OMEX archive.
+    PageAlgorithm:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      title: PageAlgorithm
+    PageCurve:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        xDataGenerator:
+          anyOf:
+          - type: string
+          - $ref: '#/components/schemas/PageGenerator'
+          title: Xdatagenerator
+        yDataGenerator:
+          anyOf:
+          - type: string
+          - $ref: '#/components/schemas/PageGenerator'
+          title: Ydatagenerator
+        style:
+          anyOf:
+          - $ref: '#/components/schemas/PageCurveStyle'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - xDataGenerator
+      - yDataGenerator
+      title: PageCurve
+    PageCurveStyle:
+      properties:
+        base:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base
+        line:
+          anyOf:
+          - $ref: '#/components/schemas/PageLineStyle'
+          - type: 'null'
+        marker:
+          anyOf:
+          - $ref: '#/components/schemas/PageMarkerStyle'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      title: PageCurveStyle
+    PageDataSet:
+      properties:
+        id:
+          type: string
+          title: Id
+        label:
+          type: string
+          title: Label
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - label
+      title: PageDataSet
+    PageDataSetLog:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+        output:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output
+      additionalProperties: false
+      type: object
+      title: PageDataSetLog
+    PageDocumentLog:
+      properties:
+        status:
+          type: string
+          title: Status
+        output:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output
+        algorithm:
+          anyOf:
+          - $ref: '#/components/schemas/PageAlgorithm'
+          - type: 'null'
+        skipReason:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        exception:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        location:
+          type: string
+          title: Location
+        tasks:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageTaskLog'
+            type: array
+          - type: 'null'
+          title: Tasks
+        outputs:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageOutputLog'
+            type: array
+          - type: 'null'
+          title: Outputs
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - location
+      title: PageDocumentLog
+    PageExecutionReason:
+      properties:
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+      additionalProperties: false
+      type: object
+      title: PageExecutionReason
+    PageFile:
+      properties:
+        format:
+          type: string
+          title: Format
+        location:
+          type: string
+          title: Location
+        size:
+          type: integer
+          title: Size
+        url:
+          type: string
+          title: Url
+      additionalProperties: false
+      type: object
+      required:
+      - format
+      - location
+      - size
+      - url
+      title: PageFile
+    PageGenerator:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      title: PageGenerator
+    PageIdentifier:
+      properties:
+        uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uri
+        label:
+          type: string
+          title: Label
+      additionalProperties: false
+      type: object
+      required:
+      - label
+      title: PageIdentifier
+    PageLineStyle:
+      properties:
+        color:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Color
+        thickness:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Thickness
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+      additionalProperties: false
+      type: object
+      title: PageLineStyle
+    PageLinkedIdentifier:
+      properties:
+        uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uri
+        label:
+          type: string
+          title: Label
+      additionalProperties: false
+      type: object
+      required:
+      - label
+      title: PageLinkedIdentifier
+    PageMarkerStyle:
+      properties:
+        fillColor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fillcolor
+        lineColor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Linecolor
+        lineThickness:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Linethickness
+        size:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Size
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+      additionalProperties: false
+      type: object
+      title: PageMarkerStyle
+    PageOutput:
+      properties:
+        _type:
+          type: string
+          title: Type
+        id:
+          type: string
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        xScale:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Xscale
+        yScale:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Yscale
+        curves:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageCurve'
+            type: array
+          - type: 'null'
+          title: Curves
+        dataSets:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageDataSet'
+            type: array
+          - type: 'null'
+          title: Datasets
+      additionalProperties: false
+      type: object
+      required:
+      - _type
+      - id
+      title: PageOutput
+    PageOutputLog:
+      properties:
+        status:
+          type: string
+          title: Status
+        output:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output
+        algorithm:
+          anyOf:
+          - $ref: '#/components/schemas/PageAlgorithm'
+          - type: 'null'
+        skipReason:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        exception:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        id:
+          type: string
+          title: Id
+        dataSets:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageDataSetLog'
+            type: array
+          - type: 'null'
+          title: Datasets
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - id
+      title: PageOutputLog
+    PageProject:
+      properties:
+        id:
+          type: string
+          title: Id
+        created:
+          type: string
+          title: Created
+        updated:
+          type: string
+          title: Updated
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - created
+      - updated
+      title: PageProject
+    PageProjectRun:
+      properties:
+        name:
+          type: string
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        abstract:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Abstract
+        creators:
+          items:
+            $ref: '#/components/schemas/PageIdentifier'
+          type: array
+          title: Creators
+        keywords:
+          items:
+            $ref: '#/components/schemas/PageIdentifier'
+          type: array
+          title: Keywords
+        thumbnails:
+          items:
+            type: string
+          type: array
+          title: Thumbnails
+        projectSize:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Projectsize
+        resultsSize:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Resultssize
+        id:
+          type: string
+          title: Id
+        citations:
+          items:
+            $ref: '#/components/schemas/PageLinkedIdentifier'
+          type: array
+          title: Citations
+        encodes:
+          items:
+            $ref: '#/components/schemas/PageLinkedIdentifier'
+          type: array
+          title: Encodes
+        simulator:
+          $ref: '#/components/schemas/PageSimulator'
+        modelFormats:
+          items:
+            type: string
+          type: array
+          title: Modelformats
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - creators
+      - keywords
+      - thumbnails
+      - id
+      - citations
+      - encodes
+      - simulator
+      - modelFormats
+      title: PageProjectRun
+    PageRunInfo:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        simulator:
+          type: string
+          title: Simulator
+        simulatorVersion:
+          type: string
+          title: Simulatorversion
+        submitted:
+          type: string
+          title: Submitted
+        updated:
+          type: string
+          title: Updated
+        status:
+          type: string
+          title: Status
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - name
+      - simulator
+      - simulatorVersion
+      - submitted
+      - updated
+      - status
+      title: PageRunInfo
+    PageRunSummary:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        abstract:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Abstract
+        creators:
+          items:
+            $ref: '#/components/schemas/PageIdentifier'
+          type: array
+          title: Creators
+        keywords:
+          items:
+            $ref: '#/components/schemas/PageIdentifier'
+          type: array
+          title: Keywords
+        thumbnails:
+          items:
+            type: string
+          type: array
+          title: Thumbnails
+        projectSize:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Projectsize
+        resultsSize:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Resultssize
+      additionalProperties: false
+      type: object
+      required:
+      - creators
+      - keywords
+      - thumbnails
+      title: PageRunSummary
+    PageSimulationLog:
+      properties:
+        status:
+          type: string
+          title: Status
+        output:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output
+        algorithm:
+          anyOf:
+          - $ref: '#/components/schemas/PageAlgorithm'
+          - type: 'null'
+        skipReason:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        exception:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        sedDocuments:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageDocumentLog'
+            type: array
+          - type: 'null'
+          title: Seddocuments
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      title: PageSimulationLog
+    PageSimulator:
+      properties:
+        name:
+          type: string
+          title: Name
+        version:
+          type: string
+          title: Version
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - version
+      title: PageSimulator
+    PageSpecification:
+      properties:
+        id:
+          type: string
+          title: Id
+        outputs:
+          items:
+            $ref: '#/components/schemas/PageOutput'
+          type: array
+          title: Outputs
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - outputs
+      title: PageSpecification
+    PageTaskLog:
+      properties:
+        status:
+          type: string
+          title: Status
+        output:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output
+        algorithm:
+          anyOf:
+          - $ref: '#/components/schemas/PageAlgorithm'
+          - type: 'null'
+        skipReason:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        exception:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        id:
+          type: string
+          title: Id
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - id
+      title: PageTaskLog
     ProjectQueryStat:
       properties:
         target:
@@ -1531,6 +2231,30 @@ components:
       - updated
       - simulationRun
       title: ProjectSummary
+    ProjectsPagePayload:
+      properties:
+        project:
+          $ref: '#/components/schemas/PageProject'
+        simulationRun:
+          $ref: '#/components/schemas/PageProjectRun'
+        files:
+          items:
+            $ref: '#/components/schemas/PageFile'
+          type: array
+          title: Files
+        specifications:
+          items:
+            $ref: '#/components/schemas/PageSpecification'
+          type: array
+          title: Specifications
+      additionalProperties: false
+      type: object
+      required:
+      - project
+      - simulationRun
+      - files
+      - specifications
+      title: ProjectsPagePayload
     PublicMessage:
       properties:
         message:
@@ -1693,6 +2417,35 @@ components:
       - name
       - run
       title: RunSummary
+    RunsPagePayload:
+      properties:
+        info:
+          $ref: '#/components/schemas/PageRunInfo'
+        summary:
+          $ref: '#/components/schemas/PageRunSummary'
+        files:
+          items:
+            $ref: '#/components/schemas/PageFile'
+          type: array
+          title: Files
+        specifications:
+          items:
+            $ref: '#/components/schemas/PageSpecification'
+          type: array
+          title: Specifications
+        logs:
+          anyOf:
+          - $ref: '#/components/schemas/PageSimulationLog'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - info
+      - summary
+      - files
+      - specifications
+      - logs
+      title: RunsPagePayload
     SimulationJobStatus:
       properties:
         job_id:

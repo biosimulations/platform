@@ -68,3 +68,33 @@ rejection. Its `fetch_upstream_json` helper fetches JSON inputs for owned models
 it is not a passthrough and is not permission to re-host arbitrary legacy
 endpoints. Any future migration must define its model, centralized mapping,
 OpenAPI contract, drift tests, and consumer migration explicitly.
+
+## Platform-owned page aggregation
+
+`GET /projects/{project_id}/page` and `GET /runs/{run_id}/page` are
+platform-owned aggregation endpoints, not passthroughs. Their typed contracts
+live in `biosim_server/pages`; private upstream models keep page-only run fields
+out of the existing public summary models. Both `/summary` endpoints remain
+available with unchanged contracts and authentication behavior.
+
+The project page makes three direct upstream requests: project summary, then
+files and specifications concurrently using the embedded simulation run ID.
+The run page makes four: run summary, then files, specifications, and logs
+concurrently. Neither endpoint calls the platform's own summary routes or
+requires database access or authentication.
+
+Only satellite 404s produce empty files/specifications or null logs. Identity
+404s fail the page; upstream outages, malformed responses, and timeouts retain
+sanitized gateway errors. Metadata comes only from the first record, and project
+model formats are derived from full specifications before public projection.
+Caller query parameters, headers, and credentials are not forwarded.
+
+In-progress runs may omit or null `projectSize`/`resultsSize`; both page
+payloads serialize those as null instead of failing. Citation and encodes
+identifiers accept a null `uri`, matching the summary `LabeledIdentifier`
+contract. Project-page identity parse does not require `submitted`, `updated`,
+or run `status`, because those fields are absent from the project page output.
+Run-page `info` still requires them.
+
+The frontend continues using `legacy_api_url` until a later frontend-specific
+PR. This change adds the page APIs and does not migrate frontend consumers.

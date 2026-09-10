@@ -62,3 +62,35 @@ async def test_transport_errors(exception: type[httpx.RequestError], status: int
             await fetch_upstream_json(client, "/summary", resource="run summary")
     assert error.value.status_code == status
     assert "internal" not in error.value.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [{"value": 1}, [], [{"value": 1}]])
+async def test_object_and_array_helpers(body: object) -> None:
+    from biosim_server.common.upstream import fetch_upstream_json_value
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)),
+        base_url="https://upstream.test",
+    ) as client:
+        assert await fetch_upstream_json_value(client, "/resource", resource="resource") == body
+        if isinstance(body, dict):
+            assert await fetch_upstream_json(client, "/resource", resource="resource") == body
+        else:
+            with pytest.raises(HTTPException) as error:
+                await fetch_upstream_json(client, "/resource", resource="resource")
+            assert error.value.status_code == 502
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [b"invalid", b"null", b'"text"', b"1", b"true"])
+async def test_value_helper_rejects_scalars_and_invalid_json(body: bytes) -> None:
+    from biosim_server.common.upstream import fetch_upstream_json_value
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body)),
+        base_url="https://upstream.test",
+    ) as client:
+        with pytest.raises(HTTPException) as error:
+            await fetch_upstream_json_value(client, "/resource", resource="resource")
+    assert error.value.status_code == 502
