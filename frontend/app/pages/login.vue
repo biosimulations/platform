@@ -1,10 +1,6 @@
 <script setup lang="ts">
 import { useAuth0 } from '@auth0/auth0-vue'
 
-definePageMeta({
-  middleware: 'guest'
-})
-
 const route = useRoute()
 const config = useRuntimeConfig()
 const { loginWithRedirect, isAuthenticated, user, logout } = useAuth0()

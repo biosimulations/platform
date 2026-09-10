@@ -4,11 +4,9 @@ import { useAuth0 } from '@auth0/auth0-vue'
 const config = useRuntimeConfig()
 const {
   user,
-  isAuthenticated,
   isLoading,
   checkSession,
   getAccessTokenSilently,
-  loginWithRedirect,
   logout,
 } = useAuth0()
 
@@ -82,8 +80,7 @@ async function sendPasswordResetLink() {
   } catch (err: any) {
     console.error('Failed to send password reset email:', err)
     passwordResetStatus.value = 'error'
-    passwordResetMessage.value =
-      err?.data?.message || err?.message || 'Failed to send password reset email. Please try again later.'
+    passwordResetMessage.value = err?.data?.message || err?.message || 'Failed to send password reset email. Please try again later.'
   }
 }
 
@@ -113,10 +110,7 @@ async function resendVerificationEmail() {
   } catch (err: any) {
     console.error('Failed to resend verification email:', err)
     verificationStatus.value = 'error'
-    verificationMessage.value =
-      err?.data?.detail ||
-      err?.message ||
-      'Unable to send verification email automatically. Please check your spam folder or contact support if you need assistance.'
+    verificationMessage.value = err?.data?.detail || err?.message || 'Unable to send verification email automatically. Please check your spam folder or contact support if you need assistance.'
   }
 }
 
@@ -156,10 +150,7 @@ async function submitChangeEmail() {
   } catch (err: any) {
     console.error('Failed to change email:', err)
     emailStatus.value = 'error'
-    emailErrorMessage.value =
-      err?.data?.detail ||
-      err?.message ||
-      'Failed to update email address. Please make sure the email is valid and not already in use.'
+    emailErrorMessage.value = err?.data?.detail || err?.message || 'Failed to update email address. Please make sure the email is valid and not already in use.'
   }
 }
 
@@ -227,30 +218,6 @@ useSeoMeta({
         <USkeleton class="h-48 rounded-2xl" />
         <USkeleton class="h-48 rounded-2xl" />
       </div>
-    </div>
-
-    <!-- Unauthenticated State -->
-    <div v-else-if="!isAuthenticated" class="text-center py-16">
-      <UCard class="max-w-md mx-auto text-center p-6 sm:p-8">
-        <div class="w-14 h-14 rounded-2xl bg-primary-50 dark:bg-primary-950/60 text-primary-600 dark:text-primary-400 flex items-center justify-center mx-auto mb-4 ring-1 ring-primary-500/20">
-          <UIcon name="i-lucide-user" class="w-7 h-7" />
-        </div>
-        <h2 class="text-xl font-bold text-gray-900 dark:text-white">Account Access Required</h2>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">
-          Please log in to manage your account details and preferences.
-        </p>
-        <div class="mt-5">
-          <UButton
-            label="Log In"
-            icon="i-lucide-log-in"
-            color="primary"
-            size="md"
-            block
-            @click="loginWithRedirect()"
-            class="cursor-pointer justify-center"
-          />
-        </div>
-      </UCard>
     </div>
 
     <!-- Authenticated Account Content -->
