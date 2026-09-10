@@ -9,6 +9,9 @@ import type { TableFilterConfig, TableSort, TablePagination } from '~/models/fil
 import type { BreadcrumbItem } from '#ui/components/Breadcrumb.vue'
 import { normalize_text } from '~/functions/functions'
 import type { CoreRow } from '@tanstack/table-core'
+import { useAuth0 } from '@auth0/auth0-vue'
+
+const { user, isAuthenticated } = useAuth0()
 
 const toast = useToast()
 const { copy } = useClipboard()
@@ -186,9 +189,6 @@ const loading = ref(true)
 const error_encountered = ref<string | undefined>(undefined)
 
 const fetch_user = ref(false)
-const user_email = ref<string | undefined>(undefined)
-const user_input = useTemplateRef('user_email_input')
-const user_input_valid = ref(false)
 
 const table_filters = ref<TableFilterConfig>({
   _hidden_exist: false,
@@ -248,7 +248,7 @@ const migrate_input_id = ref('')
 const is_migrating = ref(false)
 
 async function fetch_runs() {
-  if (fetch_user.value && !user_email.value) return
+  if (fetch_user.value && !isAuthenticated) return
 
   loading.value = true
   error_encountered.value = undefined
@@ -271,7 +271,7 @@ async function fetch_runs() {
       method: 'POST',
       body: {
         type: fetch_user.value ? 'user' : 'all',
-        user: fetch_user.value ? user_email.value : undefined,
+        user: fetch_user.value ? user.value?.email : undefined,
         sort: table_sort.value,
         filters: valid_filters,
         pagination: trimmed_pagination
@@ -298,7 +298,7 @@ async function migrate_legacy_simulation() {
       method: 'POST',
       body: {
         biosimulationsRunId: runId,
-        email: user_email.value || undefined
+        email: user.value?.email || undefined
       }
     })
 
@@ -382,12 +382,6 @@ function change_pagination(new_page: number) {
   fetch_runs()
 }
 
-const checkValidity = () => {
-  if (user_input.value?.inputRef?.value) {
-    user_input_valid.value = user_input.value!.inputRef.validity.valid
-  }
-}
-
 async function confirm_delete(run: SimulationRun) {
   const targetId = run.biosimulationsRunId || run.id
   try {
@@ -421,30 +415,10 @@ async function confirm_delete(run: SimulationRun) {
       <div class="w-full flex items-center justify-between gap-4 flex-wrap">
         <div class="w-max flex items-center gap-2">
           <p class="text-sm font-semibold" :class="{'text-muted': fetch_user, 'text-color': !fetch_user}">All Runs</p>
-          <USwitch v-model="fetch_user" :disabled="loading" @change="fetch_runs()" />
-          <p class="text-sm font-semibold" :class="{'text-muted': !fetch_user, 'text-color': fetch_user}">My Runs</p>
-          <UInput
-            v-if="fetch_user"
-            ref="user_email_input"
-            v-model="user_email"
-            type="email"
-            placeholder="Enter your email address"
-            :ui="{ trailing: 'pe-1' }"
-            @input="checkValidity"
-          >
-            <template v-if="user_email && user_email.length" #trailing>
-              <UButton
-                color="primary"
-                variant="solid"
-                :disabled="!user_input_valid"
-                size="xs"
-                :loading="loading"
-                icon="i-lucide-send"
-                aria-label="Fetch runs"
-                @click="fetch_runs"
-              />
-            </template>
-          </UInput>
+          <UTooltip :delay-duration="0" :text="!isAuthenticated ? 'You must be logged in to fetch your runs' : undefined">
+            <USwitch v-model="fetch_user" :disabled="loading || !isAuthenticated" @change="fetch_runs()" />
+          </UTooltip>
+          <p class="text-sm font-semibold cursor-default pointer-events-none select-none" :class="{'text-muted': !fetch_user, 'text-color': fetch_user}">My Runs</p>
         </div>
 
         <div class="flex items-center gap-2">
@@ -705,8 +679,8 @@ async function confirm_delete(run: SimulationRun) {
               :disabled="is_migrating"
             />
           </div>
-          <p v-if="fetch_user && user_email" class="text-xs text-muted">
-            This run will be associated with: <strong>{{ user_email }}</strong>
+          <p v-if="fetch_user && user?.email" class="text-xs text-muted">
+            This run will be associated with: <strong>{{ user?.email }}</strong>
           </p>
         </div>
       </template>
