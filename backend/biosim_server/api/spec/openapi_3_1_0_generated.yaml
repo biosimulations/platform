@@ -1541,8 +1541,10 @@ components:
           title: Ydatagenerator
         style:
           anyOf:
+          - type: string
           - $ref: '#/components/schemas/PageCurveStyle'
           - type: 'null'
+          title: Style
       additionalProperties: false
       type: object
       required:

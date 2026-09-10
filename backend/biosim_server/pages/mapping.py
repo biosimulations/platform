@@ -83,7 +83,7 @@ class _UpstreamCurve(_UpstreamModel):
     name: str | None = None
     x_data_generator: str | _UpstreamGenerator
     y_data_generator: str | _UpstreamGenerator
-    style: _UpstreamCurveStyle | None = None
+    style: str | _UpstreamCurveStyle | None = None
 
 
 class _UpstreamDataSet(_UpstreamModel):

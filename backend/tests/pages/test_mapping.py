@@ -228,10 +228,12 @@ def test_unpublished_run_needs_no_project_and_generator_name_is_optional() -> No
     curve = specifications[0]["outputs"][0]["curves"][0]
     curve["xDataGenerator"] = {"id": "time"}
     curve["yDataGenerator"] = "value"
+    curve["style"] = "style1"
     owned = map_run_page(parse_run(raw), [], specifications, None).model_dump(by_alias=True)
     projected = owned["specifications"][0]["outputs"][0]["curves"][0]
     assert projected["xDataGenerator"] == {"id": "time", "name": None}
     assert projected["yDataGenerator"] == "value"
+    assert projected["style"] == "style1"
     assert owned["info"]["id"] == raw["id"]
 
 

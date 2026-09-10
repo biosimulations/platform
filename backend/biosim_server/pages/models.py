@@ -56,7 +56,7 @@ class PageCurve(PageModel):
     name: str | None = None
     x_data_generator: str | PageGenerator
     y_data_generator: str | PageGenerator
-    style: PageCurveStyle | None = None
+    style: str | PageCurveStyle | None = None
 
 
 class PageDataSet(PageModel):

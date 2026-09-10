@@ -87,7 +87,9 @@ Only satellite 404s produce empty files/specifications or null logs. Identity
 404s fail the page; upstream outages, malformed responses, and timeouts retain
 sanitized gateway errors. Metadata comes only from the first record, and project
 model formats are derived from full specifications before public projection.
-Caller query parameters, headers, and credentials are not forwarded.
+Curve `style` may be an inline object or a SED-ML style id string, matching the
+existing data-generator union. Caller query parameters, headers, and credentials
+are not forwarded.
 
 In-progress runs may omit or null `projectSize`/`resultsSize`; both page
 payloads serialize those as null instead of failing. Citation and encodes
