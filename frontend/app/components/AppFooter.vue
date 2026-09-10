@@ -58,7 +58,13 @@ const categories: FooterColumnCategory[] = [
     title: 'Developers & APIs',
     links: [
       {
-        label: 'BioSimulations REST API',
+        label: 'New BioSimulations REST API',
+        to: 'https://api.biosim.biosimulations.org',
+        icon: 'i-lucide-sparkle',
+        external: true
+      },
+      {
+        label: 'Legacy BioSimulations REST API',
         to: 'https://api.biosimulations.org',
         icon: 'i-lucide-server',
         external: true
@@ -76,7 +82,7 @@ const categories: FooterColumnCategory[] = [
         external: true,
         badge: 'New'
       },
-      {
+      /*{
         label: 'Validate a Model',
         to: '/utilities/validate-model',
         icon: 'i-lucide-file-check'
@@ -91,7 +97,7 @@ const categories: FooterColumnCategory[] = [
         to: 'https://github.com/biosimulations/biosimulations',
         icon: 'i-simple-icons-github',
         external: true
-      }
+      }*/
     ]
   },
   {
@@ -145,11 +151,11 @@ const categories: FooterColumnCategory[] = [
 </script>
 
 <template>
-  <footer class="border-t border-slate-200/80 dark:border-slate-800/80 bg-slate-50/75 dark:bg-slate-950/60 backdrop-blur-sm">
+  <footer class="border-t border-slate-200/80 bg-slate-50/75 backdrop-blur-sm">
     <UContainer class="py-12 sm:py-16">
       <!-- Call to Action Banner -->
       <div
-        class="relative overflow-hidden rounded-2xl border border-blue-200/60 dark:border-blue-900/40 bg-gradient-to-r from-blue-500/10 via-cyan-500/5 to-amber-500/10 dark:from-blue-950/40 dark:via-slate-900/30 dark:to-amber-950/30 p-6 sm:p-8 lg:p-10 mb-12 shadow-xs"
+        class="relative overflow-hidden rounded-2xl border border-blue-200/60 bg-linear-to-r from-blue-500/10 via-cyan-500/5 to-amber-500/10 p-6 sm:p-8 lg:p-10 mb-12 shadow-xs"
       >
         <div class="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
           <div class="space-y-2 max-w-2xl">
@@ -159,10 +165,10 @@ const categories: FooterColumnCategory[] = [
                 Reproducible Biomedical Modeling
               </UBadge>
             </div>
-            <h2 class="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+            <h2 class="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
               Ready to run or publish biological simulations?
             </h2>
-            <p class="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
+            <p class="text-sm sm:text-base text-slate-600 leading-relaxed">
               Execute standardized models in the cloud with community-validated tools, or search thousands of published simulation projects in BioSim DB.
             </p>
           </div>
@@ -183,7 +189,7 @@ const categories: FooterColumnCategory[] = [
               size="lg"
               icon="i-lucide-database"
               label="Browse BioSim DB"
-              class="font-medium bg-white/60 dark:bg-slate-900/60"
+              class="font-medium bg-white/60"
             />
             <UButton
               to="https://docs.biosimulations.org"
@@ -212,7 +218,7 @@ const categories: FooterColumnCategory[] = [
             />
           </NuxtLink>
 
-          <p class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+          <p class="text-sm text-slate-600 leading-relaxed">
             BioSimulations is an open platform for discovering, executing, and standardizing biological simulations and computational models across diverse biological frameworks.
           </p>
 
@@ -221,7 +227,7 @@ const categories: FooterColumnCategory[] = [
             <NuxtLink
               to="https://status.biosimulations.org"
               target="_blank"
-              class="inline-flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 transition-colors"
+              class="inline-flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 transition-colors"
             >
               <span class="relative flex size-2">
                 <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
@@ -233,14 +239,14 @@ const categories: FooterColumnCategory[] = [
           </div>
 
           <!-- Academic Affiliation -->
-          <div class="pt-3 border-t border-slate-200/60 dark:border-slate-800/60 text-xs text-slate-500 dark:text-slate-400 space-y-1.5">
-            <p class="font-medium text-slate-700 dark:text-slate-300">
+          <div class="pt-3 border-t border-slate-200/60 text-xs text-slate-500 space-y-1.5">
+            <p class="font-medium text-slate-700">
               Center for Reproducible Biomedical Modeling
             </p>
             <p>
               Developed collaboratively by the Karr Lab (Icahn School of Medicine at Mount Sinai), CCAM (UConn Health), and the University of Washington.
             </p>
-            <p class="text-[11px] text-slate-400 dark:text-slate-500">
+            <p class="text-[11px] text-slate-400">
               Supported by the National Institutes of Health (NIH NIBIB &amp; NIGMS) and the National Science Foundation (NSF).
             </p>
           </div>
@@ -249,7 +255,7 @@ const categories: FooterColumnCategory[] = [
         <!-- 3 Links Columns -->
         <div class="xl:col-span-8 grid grid-cols-1 sm:grid-cols-3 gap-8 sm:gap-6">
           <div v-for="category in categories" :key="category.title" class="space-y-3">
-            <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-900 dark:text-slate-200">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-900">
               {{ category.title }}
             </h3>
 
@@ -259,13 +265,13 @@ const categories: FooterColumnCategory[] = [
                   :to="link.to"
                   :target="link.external ? '_blank' : undefined"
                   :rel="link.external ? 'noopener noreferrer' : undefined"
-                  class="group flex items-center justify-between text-slate-600 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 transition-colors py-0.5"
+                  class="group flex items-center justify-between text-slate-600 hover:text-blue-600 dark:hover:text-blue-400 transition-colors py-0.5"
                 >
                   <span class="flex items-center gap-2 truncate">
                     <UIcon
                       v-if="link.icon"
                       :name="link.icon"
-                      class="size-4 shrink-0 text-slate-400 group-hover:text-blue-500 dark:text-slate-500 dark:group-hover:text-blue-400 transition-colors"
+                      class="size-4 shrink-0 text-slate-400 group-hover:text-blue-500 dark:group-hover:text-blue-400 transition-colors"
                     />
                     <span class="truncate">{{ link.label }}</span>
                   </span>
@@ -283,7 +289,7 @@ const categories: FooterColumnCategory[] = [
                     <UIcon
                       v-if="link.external"
                       name="i-lucide-arrow-up-right"
-                      class="size-3 text-slate-400 dark:text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      class="size-3 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity"
                     />
                   </span>
                 </NuxtLink>
@@ -294,13 +300,7 @@ const categories: FooterColumnCategory[] = [
       </div>
 
       <!-- Bottom Bar: Legal & Attribution & External Links -->
-      <div class="pt-8 border-t border-slate-200/80 dark:border-slate-800/80 flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-500 dark:text-slate-400">
-        <div class="flex flex-wrap items-center justify-center md:justify-start gap-x-3 gap-y-1 text-center md:text-left">
-          <span>&copy; {{ currentYear }} BioSimulations.</span>
-          <span class="hidden sm:inline">&bull;</span>
-          <span>Released under the <a href="https://github.com/biosimulations/biosimulations/blob/dev/LICENSE" target="_blank" rel="noopener noreferrer" class="hover:underline hover:text-slate-700 dark:hover:text-slate-300">MIT Open Source License</a>.</span>
-        </div>
-
+      <div class="pt-8 border-t border-slate-200/80 flex flex-col md:flex-row items-center justify-center gap-4 text-xs text-slate-500">
         <div class="flex items-center gap-1.5">
           <UButton
             to="https://github.com/biosimulations/biosimulations"
