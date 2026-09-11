@@ -66,6 +66,8 @@ from tests.fixtures.keycloak.client import (  # noqa: F401
     alice_token,
     bob_token,
     charlie_token,
+    alice_token_namespaced_email,
+    alice_token_no_email_claim,
 )
 
 
