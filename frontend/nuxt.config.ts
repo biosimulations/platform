@@ -130,6 +130,7 @@ export default defineNuxtConfig({
     '/profile': { ssr: false },
     '/verified': { ssr: false },
     '/simulations': { ssr: false },
+    '/simulations/**': { ssr: false },
   },
 
   compatibilityDate: '2025-01-15',
