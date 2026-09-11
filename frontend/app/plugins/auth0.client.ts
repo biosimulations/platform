@@ -13,4 +13,30 @@ export default defineNuxtPlugin((nuxtApp) => {
     },
   })
   nuxtApp.vueApp.use(auth0)
+
+  // Intercept all outgoing HTTP requests: enable credentials and attach Bearer token when logged in
+  globalThis.$fetch = $fetch.create({
+    async onRequest({ options }) {
+      options.credentials = 'include'
+
+      if (auth0.isAuthenticated.value) {
+        try {
+          const token = await auth0.getAccessTokenSilently({
+            authorizationParams: {
+              audience: config.public.auth0Audience,
+            },
+          })
+          if (token) {
+            const headers = new Headers(options.headers)
+            if (!headers.has('Authorization')) {
+              headers.set('Authorization', `Bearer ${token}`)
+            }
+            options.headers = headers
+          }
+        } catch {
+          // Non-fatal if token retrieval fails; proceeds unauthenticated
+        }
+      }
+    },
+  })
 })
