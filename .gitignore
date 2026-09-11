@@ -3,6 +3,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 .idea
+.junie
+.vscode
+.cursor
+.agents-new
+.freebuff
+.postman
+postman/
+
 
 # C extensions
 *.so

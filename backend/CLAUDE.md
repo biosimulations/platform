@@ -238,7 +238,22 @@ pytest -m "not integration"
 
 ## Deploy
 
-Backend release steps (run from repo root unless noted):
+**`biosim-gke` is GitOps-managed by Flux CD — merging a commit is the deploy.**
+Flux watches this repo's `main` and reconciles `kustomize/overlays/biosim-gke`
+into the cluster, so `kubectl apply` there is wrong: it would be reverted on the
+next reconcile. Flux's own config lives in `UCHHPC/k8s-config` under
+`gke/fluxcd/` (that repo's README covers install and day-2 operations).
+
+The other overlays (`biosim-rke`, `biosim-local`) are **not** under Flux and are
+still applied by hand.
+
+> **Never merge an overlay bump before the image is published.** `api` uses
+> `strategy: Recreate` at one replica, so pointing the overlay at a tag that
+> doesn't exist in GHCR tears down the running pod and takes the API down —
+> there is no old pod left serving. (`frontend` is a RollingUpdate at 2
+> replicas and degrades gracefully by comparison.) A release build that fails
+> its GHCR push leaves the git tag and the GitHub Release in place, so neither
+> is proof the image exists — check the release run's job conclusion.
 
 > **Workflow-restructuring releases require a worker drain.** A release that
 > changes the activity sequence inside a Temporal workflow (e.g. PR #52, which
@@ -252,40 +267,71 @@ Backend release steps (run from repo root unless noted):
 > / `query_workflow`. See `docs/workflows-architecture.md` → "Deploy
 > considerations" for the full rationale and the longer-term `workflow.patched`
 > pattern.
+>
+> Under Flux this needs an extra step, since merging the overlay bump would
+> otherwise roll the worker immediately: `flux suspend kustomization
+> platform-biosim-gke` before merging, drain, then `flux resume`.
 
-1. **Bump version + tag** (bumps `version.py` + `pyproject.toml`, commits, tags `backend-vX.Y.Z`):
+Release steps (run from repo root unless noted). **Two PRs, in this order** —
+the release and the deploy are no longer one commit:
+
+1. **Release PR — bump the version only.** The script updates `version.py`,
+   `pyproject.toml`, and the `uv.lock` entry, then commits and tags:
    ```bash
    bash backend/scripts/bump-backend.sh patch      # or minor|major|X.Y.Z
    ```
-2. **Update kustomize overlays** — set `newTag: backend-X.Y.Z` in each overlay's `kustomization.yaml`:
-   - `kustomize/overlays/biosim-gke/kustomization.yaml`
-   - `kustomize/overlays/biosim-rke/kustomization.yaml`
-   - `kustomize/overlays/biosim-local/kustomization.yaml` (see arm64 note below)
-
-   Commit these alongside the bump (the script commits only the version files).
-3. **Push the branch + tag** to build and publish images via CI:
+   It tags the **branch** commit, so delete that tag (`git tag -d
+   backend-vX.Y.Z`) and re-tag the merge commit on `main` in the next step.
+   Open the PR with just the version files; leave the overlays alone for now.
+2. **Tag `main` and push** once the PR is merged:
    ```bash
-   git push origin <branch>
+   git tag backend-vX.Y.Z <merge-commit-sha>
    git push origin backend-vX.Y.Z
    ```
    The `release` workflow (`.github/workflows/release.yaml`) builds + pushes
    `platform-{api,worker}:backend-X.Y.Z` to GHCR (**amd64-only**) and cuts a
-   GitHub Release. Watch it under the repo's Actions tab.
+   GitHub Release. A `plan` job first checks the tag matches `version.py`.
 
    > **arm64 / `biosim-local`:** CI publishes amd64 only. If you need an arm64
    > layer at `backend-X.Y.Z` (e.g. for the `biosim-local` overlay on Apple
    > silicon), build it locally instead: `bash kustomize/scripts/build_and_push.sh backend X.Y.Z`
    > (multi-arch). Or keep `biosim-local` pinned to an older multi-arch tag.
-4. **Apply to cluster** (example for biosim-gke) once images are published:
+3. **Verify the images published.** The job conclusion is the gate:
+   ```bash
+   gh run list --workflow release.yaml --limit 1
+   ```
+   The GHCR packages are private, so an anonymous manifest check returns 403
+   for published and missing tags alike and proves nothing.
+4. **Deploy PR — bump `newTag: backend-X.Y.Z`** in each overlay you're
+   deploying:
+   - `kustomize/overlays/biosim-gke/kustomization.yaml` — **merging is the
+     deploy**; Flux applies it within a minute
+   - `kustomize/overlays/biosim-rke/kustomization.yaml` — apply by hand
+   - `kustomize/overlays/biosim-local/kustomization.yaml` — apply by hand
+
+   Edit the `newTag` lines directly; `kustomize edit set image` reorders the
+   whole block and adds redundant `newName` entries.
+5. **Verify.** For biosim-gke:
    ```bash
    export KUBECONFIG=<path-to-kubeconfig>
-   cd kustomize/overlays/biosim-gke
-   kubectl kustomize . | kubectl apply -f -
+   flux get kustomizations -A                              # READY=True at the new revision
+   kubectl -n biosim-gke rollout status deploy/api
+   curl -s https://api.biosim.biosimulations.org/version
    ```
-5. **Verify**:
+   To skip the poll interval: `flux reconcile kustomization platform-biosim-gke --with-source`.
+
+   For the hand-applied overlays:
    ```bash
-   kubectl get pods -n biosim-gke
+   export KUBECONFIG=<path-to-kubeconfig>
+   kubectl kustomize kustomize/overlays/biosim-rke | kubectl apply -f -
+   kubectl get pods -n biosim-rke
    ```
+
+**Rollback (biosim-gke):** revert the deploy commit on `main`. Flux restores the
+previous state on the next reconcile. For an urgent hand-patch, `flux suspend
+kustomization platform-biosim-gke` first — anything applied by hand while it is
+running gets reverted, and anything applied while suspended gets reverted at
+`flux resume` unless it is also committed.
 
 ## Important Notes
 

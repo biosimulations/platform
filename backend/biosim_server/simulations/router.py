@@ -3,10 +3,18 @@ import uuid
 from datetime import timedelta
 from typing import Optional
 
+import httpx
+from pydantic import ValidationError
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from biosim_server.biosim_runs import BiosimulatorVersion
+from biosim_server.common.upstream import fetch_upstream_json, upstream_url
+from biosim_server.pages.models import RunsPagePayload
+from biosim_server.pages.service import assemble_run_page
+from biosim_server.summaries.mapping import map_run_summary
+from biosim_server.summaries.models import RunSummary
 from biosim_server.dependencies import (
+    get_http_client,
     get_temporal_client,
     get_biosim_service,
     get_omex_database_service,
@@ -33,6 +41,40 @@ from biosim_server.common.auth.roles import ADMIN_ROLE, PUBLISHER_ROLE, require_
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/simulations", tags=["Simulations"])
+
+# A second router in this module: the run-summary contract is keyed by the
+# upstream biosimulations.org *run* id, not by our processing_id, so it cannot
+# live under the /simulations prefix.
+run_summary_router = APIRouter(prefix="/runs", tags=["Runs"])
+
+
+@run_summary_router.get(
+    "/{run_id}/summary",
+    response_model=RunSummary,
+    operation_id="get-run-summary",
+    summary="Platform-owned run summary",
+    responses={
+        502: {"description": "The upstream service failed, was unreachable, or returned an invalid summary."},
+        504: {"description": "Timed out while contacting the upstream service."},
+    },
+)
+async def get_run_summary(
+    run_id: str,
+    client: httpx.AsyncClient = Depends(get_http_client),
+) -> RunSummary:
+    """Return a public typed summary; upstream drift is a sanitized gateway error."""
+    payload = await fetch_upstream_json(
+        client,
+        upstream_url("runs", run_id, "summary"),
+        resource="run summary",
+    )
+    try:
+        return map_run_summary(payload)
+    except ValidationError as exc:
+        logger.warning("Invalid upstream run summary: %s", exc.errors(include_input=False))
+        raise HTTPException(
+            502, "The upstream service returned an unexpected run summary."
+        ) from exc
 
 
 @router.post(
@@ -425,3 +467,20 @@ def _conglomerate_status_from_records(
         for record in records
     ]
     return ConglomerateStatus(processing_id=processing_id, jobs=jobs)
+
+
+@run_summary_router.get(
+    "/{run_id}/page",
+    response_model=RunsPagePayload,
+    operation_id="get-run-page",
+    summary="Platform-owned run page aggregation",
+    responses={
+        502: {"description": "The upstream service failed or returned an invalid page resource."},
+        504: {"description": "Timed out while contacting the upstream service."},
+    },
+)
+async def get_run_page(
+    run_id: str,
+    client: httpx.AsyncClient = Depends(get_http_client),
+) -> RunsPagePayload:
+    return await assemble_run_page(client, run_id)

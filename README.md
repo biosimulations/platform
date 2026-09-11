@@ -77,10 +77,12 @@ bash kustomize/scripts/build_and_push.sh frontend
 # Coordinated full release — both services at the same version
 bash kustomize/scripts/build_and_push.sh all 0.5.0
 
-# Apply an overlay
+# Apply an overlay that is NOT under GitOps (biosim-rke, biosim-local)
 export KUBECONFIG=<path-to-kubeconfig>
-kubectl kustomize kustomize/overlays/biosim-gke | kubectl apply -f -
+kubectl kustomize kustomize/overlays/biosim-rke | kubectl apply -f -
 ```
+
+**Deploying to `biosim-gke` is a git commit, not a `kubectl apply`.** That overlay is reconciled by Flux CD from `main`, so bumping an image tag in `kustomize/overlays/biosim-gke/kustomization.yaml` and merging it deploys within a minute; anything applied by hand is reverted on the next reconcile. Publish the image first — `api` runs `strategy: Recreate` at one replica, so an unpublished tag takes the API down. Full procedure in [`backend/CLAUDE.md`](./backend/CLAUDE.md) → Deploy and [`frontend/CLAUDE.md`](./frontend/CLAUDE.md) → Deploy.
 
 ## License
 

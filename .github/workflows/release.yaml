@@ -1,8 +1,14 @@
 name: release
 
 # Builds and pushes service images to GHCR, and (on tag pushes) cuts a GitHub
-# Release. Deploy to clusters stays a manual `kubectl apply` step — see
-# backend/CLAUDE.md "Deploy".
+# Release. This workflow publishes images only — it does not deploy them.
+#
+# biosim-gke is reconciled by Flux CD, so deploying is a second PR that bumps
+# the image tag in kustomize/overlays/biosim-gke/. Wait for this workflow to
+# succeed before merging that PR: a failed push still leaves the git tag and
+# the Release behind, and api runs strategy: Recreate at one replica, so an
+# unpublished tag takes the API down. biosim-rke and biosim-local are applied
+# by hand. See backend/CLAUDE.md "Deploy".
 #
 # Triggers:
 #   - Push a version tag:
