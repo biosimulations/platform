@@ -4,6 +4,7 @@ import hashlib
 import logging
 
 import aiohttp
+from typing import Optional
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 from biosim_server.biosim_omex.omex_storage import get_cached_omex_file_from_raw
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/compatibility", tags=["Compatibility"])
 )
 async def check_compatibility(
     uploaded_file: UploadFile | None = File(None, description="OMEX/COMBINE archive to check for compatibility"),
-    archive_url: str | None = Query(None, description="URL to an OMEX/COMBINE archive (alternative to file upload)"),
+    archive_url: Optional[str] | None = Query(None, description="URL to an OMEX/COMBINE archive (alternative to file upload)"),
     verbose: bool = Query(False, description="Include per-version algorithm and ontology details"),
 ) -> CompatibilityResponse:
     """Check which simulators can run the given OMEX archive.

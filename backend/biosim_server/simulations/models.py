@@ -39,7 +39,7 @@ class SimulationJobStatus(BaseModel):
 
 class ConglomerateStatus(BaseModel):
     processing_id: str                           # Temporal parent workflow ID
-    jobs: list[SimulationJobStatus]
+    jobs: list[SimulationJobStatus]             # List of simulation job statuses - change name to job_statuses
 
 
 def _utcnow() -> datetime:

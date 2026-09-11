@@ -1,22 +1,41 @@
 openapi: 3.1.0
 info:
   title: biosim-server
-  version: 0.3.1
+  version: 0.10.0
 paths:
   /compatibility/check:
     post:
       tags:
       - Compatibility
       summary: Check OMEX archive compatibility with simulators
-      description: Upload an OMEX archive to find compatible simulators based on model
-        format and algorithm requirements.
+      description: Upload an OMEX archive or provide a URL to find compatible simulators
+        based on model format and algorithm requirements.
       operationId: check-compatibility
+      parameters:
+      - name: archive_url
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: URL to an OMEX/COMBINE archive (alternative to file upload)
+          title: Archive Url
+        description: URL to an OMEX/COMBINE archive (alternative to file upload)
+      - name: verbose
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include per-version algorithm and ontology details
+          default: false
+          title: Verbose
+        description: Include per-version algorithm and ontology details
       requestBody:
         content:
           multipart/form-data:
             schema:
               $ref: '#/components/schemas/Body_check-compatibility'
-        required: true
       responses:
         '200':
           description: Successful Response
@@ -30,6 +49,570 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /simulations/run:
+    post:
+      tags:
+      - Simulations
+      summary: Run simulations for an OMEX archive across selected simulators
+      operationId: run-simulations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunSimulationRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConglomerateStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /simulations/runs:
+    post:
+      tags:
+      - Simulations
+      summary: List simulation runs (owner-scoped, paginated, sortable, filterable)
+      operationId: list-simulation-runs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListSimulationRunsRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSimulationRunsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /simulations/{processing_id}:
+    get:
+      tags:
+      - Simulations
+      summary: Get status of a simulation run
+      operationId: get-simulation-status
+      parameters:
+      - name: processing_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Processing Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConglomerateStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Simulations
+      summary: 'Delete a simulation run''s records (admin: any run; publisher: own
+        runs only)'
+      operationId: delete-simulation-run
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: processing_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Processing Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /simulations/{processing_id}/status:
+    get:
+      tags:
+      - Simulations
+      summary: Get status of a simulation run (explicit sub-resource, same data as
+        GET /{id})
+      operationId: get-simulation-status-explicit
+      parameters:
+      - name: processing_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Processing Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConglomerateStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /simulations/{processing_id}/results:
+    get:
+      tags:
+      - Simulations
+      summary: Get the result-dataset catalog for each job in a simulation run
+      operationId: get-simulation-results
+      parameters:
+      - name: processing_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Processing Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationRunResults'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /simulations/{processing_id}/logs:
+    get:
+      tags:
+      - Simulations
+      summary: Get simulator logs for each job in a simulation run
+      operationId: get-simulation-logs
+      parameters:
+      - name: processing_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Processing Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationRunLogs'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /simulations/{processing_id}/cancel:
+    post:
+      tags:
+      - Simulations
+      summary: Cancel a simulation run (owner or admin)
+      operationId: cancel-simulation-run
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: processing_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Processing Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConglomerateStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /runs/{run_id}/summary:
+    get:
+      tags:
+      - Runs
+      summary: Platform-owned run summary
+      description: Return a public typed summary; upstream drift is a sanitized gateway
+        error.
+      operationId: get-run-summary
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunSummary'
+        '502':
+          description: The upstream service failed, was unreachable, or returned an
+            invalid summary.
+        '504':
+          description: Timed out while contacting the upstream service.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /runs/{run_id}/page:
+    get:
+      tags:
+      - Runs
+      summary: Platform-owned run page aggregation
+      operationId: get-run-page
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunsPagePayload'
+        '502':
+          description: The upstream service failed or returned an invalid page resource.
+        '504':
+          description: Timed out while contacting the upstream service.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /projects:
+    get:
+      tags:
+      - Projects
+      summary: Search published projects (paginated slim results)
+      operationId: list-projects
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          description: 1-indexed page number.
+          default: 1
+          title: Page
+        description: 1-indexed page number.
+      - name: perPage
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          description: Results per page.
+          default: 20
+          title: Perpage
+        description: Results per page.
+      - name: filters
+        in: query
+        required: false
+        schema:
+          type: string
+          description: JSON array of {target, allowable_values}.
+          default: ''
+          title: Filters
+        description: JSON array of {target, allowable_values}.
+      - name: searchTerm
+        in: query
+        required: false
+        schema:
+          type: string
+          description: Free-text search across title/abstract/description.
+          default: ''
+          title: Searchterm
+        description: Free-text search across title/abstract/description.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectStubPage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /projects/reindex:
+    post:
+      tags:
+      - Projects
+      summary: Rebuild the platform project search index from source collections
+      operationId: reindex-projects
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: integer
+                title: Response Reindex-Projects
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /projects/stats:
+    get:
+      tags:
+      - Projects
+      summary: Facet counts (tags & categories) for a project search
+      operationId: list-project-stats
+      parameters:
+      - name: filters
+        in: query
+        required: false
+        schema:
+          type: string
+          description: JSON array of {target, allowable_values}.
+          default: ''
+          title: Filters
+        description: JSON array of {target, allowable_values}.
+      - name: searchTerm
+        in: query
+        required: false
+        schema:
+          type: string
+          description: Free-text search across title/abstract/description.
+          default: ''
+          title: Searchterm
+        description: Free-text search across title/abstract/description.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectQueryStat'
+                title: Response List-Project-Stats
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /projects/{project_id}/summary:
+    get:
+      tags:
+      - Projects
+      summary: Platform-owned project summary
+      description: Return a public typed summary; upstream drift is a sanitized gateway
+        error.
+      operationId: get-project-summary
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSummary'
+        '502':
+          description: The upstream service failed, was unreachable, or returned an
+            invalid summary.
+        '504':
+          description: Timed out while contacting the upstream service.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /projects/{project_id}/page:
+    get:
+      tags:
+      - Projects
+      summary: Platform-owned project page aggregation
+      operationId: get-project-page
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectsPagePayload'
+        '502':
+          description: The upstream service failed or returned an invalid page resource.
+        '504':
+          description: Timed out while contacting the upstream service.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/me:
+    get:
+      tags:
+      - Users
+      summary: Get the authenticated user's profile
+      operationId: get-current-user
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+      security:
+      - HTTPBearer: []
+    delete:
+      tags:
+      - Users
+      summary: Delete the authenticated user's account
+      operationId: delete-current-user
+      responses:
+        '204':
+          description: Successful Response
+      security:
+      - HTTPBearer: []
+    patch:
+      tags:
+      - Users
+      summary: Update the authenticated user's profile
+      operationId: update-current-user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserProfileRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/demo/public:
+    get:
+      tags:
+      - RBAC Demo
+      summary: Public endpoint -- accessible to everyone, no bearer token required
+      operationId: demo-public
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicMessage'
+  /api/v1/demo/private/me:
+    get:
+      tags:
+      - RBAC Demo
+      summary: Private endpoint -- any authenticated user, returns who the bearer
+        token identifies
+      operationId: demo-private-whoami
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhoAmIResponse'
+      security:
+      - HTTPBearer: []
+  /api/v1/demo/private/animal:
+    get:
+      tags:
+      - RBAC Demo
+      summary: Private endpoint -- requires admin, publisher, or user role; response
+        varies by role
+      operationId: demo-private-animal
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleAnimalResponse'
+      security:
+      - HTTPBearer: []
   /:
     get:
       summary: Root
@@ -323,6 +906,63 @@ components:
           - type: string
           - type: 'null'
           title: Error Message
+        cpus:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cpus
+        memory:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Memory
+        max_time:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Time
+        env_vars:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Env Vars
+        purpose:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purpose
+        submitted:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Submitted
+        updated:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated
+        project_size:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Project Size
+        results_size:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Results Size
+        runtime:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Runtime
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
       type: object
       required:
       - id
@@ -380,13 +1020,13 @@ components:
     Body_check-compatibility:
       properties:
         uploaded_file:
-          type: string
-          format: binary
+          anyOf:
+          - type: string
+            format: binary
+          - type: 'null'
           title: Uploaded File
           description: OMEX/COMBINE archive to check for compatibility
       type: object
-      required:
-      - uploaded_file
       title: Body_check-compatibility
     Body_verify-omex:
       properties:
@@ -475,26 +1115,39 @@ components:
       title: ComparisonStatistics
     CompatibilityResponse:
       properties:
+        omex_id:
+          type: string
+          title: Omex Id
         omex_content:
           $ref: '#/components/schemas/OmexContent'
-        compatible_simulators:
+        eligible_simulators:
           items:
-            $ref: '#/components/schemas/CompatibleSimulator'
+            $ref: '#/components/schemas/EligibleSimulator'
           type: array
-          title: Compatible Simulators
-        equivalent_simulators:
-          items:
-            $ref: '#/components/schemas/CompatibleSimulator'
-          type: array
-          title: Equivalent Simulators
+          title: Eligible Simulators
       type: object
       required:
+      - omex_id
       - omex_content
-      - compatible_simulators
-      - equivalent_simulators
+      - eligible_simulators
       title: CompatibilityResponse
       description: Response from the compatibility check endpoint.
-    CompatibleSimulator:
+    ConglomerateStatus:
+      properties:
+        processing_id:
+          type: string
+          title: Processing Id
+        jobs:
+          items:
+            $ref: '#/components/schemas/SimulationJobStatus'
+          type: array
+          title: Jobs
+      type: object
+      required:
+      - processing_id
+      - jobs
+      title: ConglomerateStatus
+    EligibleSimulator:
       properties:
         id:
           type: string
@@ -502,27 +1155,29 @@ components:
         name:
           type: string
           title: Name
-        version:
-          type: string
-          title: Version
-        image_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Image Url
-        algorithms:
+        versions:
           items:
             type: string
           type: array
-          title: Algorithms
+          title: Versions
+        exact:
+          type: boolean
+          title: Exact
+        version_details:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/SimulatorVersionDetail'
+            type: array
+          - type: 'null'
+          title: Version Details
       type: object
       required:
       - id
       - name
-      - version
-      - algorithms
-      title: CompatibleSimulator
-      description: A simulator that can run the OMEX archive.
+      - versions
+      - exact
+      title: EligibleSimulator
+      description: A simulator eligible to run the OMEX archive.
     GenerateStatisticsActivityOutput:
       properties:
         sims_run_info:
@@ -671,6 +1326,125 @@ components:
       - shape
       - values
       title: Hdf5DataValues
+    JobLogs:
+      properties:
+        jobId:
+          type: string
+          title: Jobid
+        simulatorId:
+          type: string
+          title: Simulatorid
+        logs:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Logs
+      type: object
+      required:
+      - jobId
+      - simulatorId
+      title: JobLogs
+      description: 'One job''s logs, part of GET /simulations/{id}/logs.
+
+
+        `logs` is the passthrough biosimulations.org /logs/{id} payload (untyped --
+
+        no confirmed schema to model against); None when unavailable.'
+    JobResult:
+      properties:
+        jobId:
+          type: string
+          title: Jobid
+        simulatorId:
+          type: string
+          title: Simulatorid
+        hdf5File:
+          anyOf:
+          - $ref: '#/components/schemas/HDF5File'
+          - type: 'null'
+      type: object
+      required:
+      - jobId
+      - simulatorId
+      title: JobResult
+      description: 'One job''s result-dataset catalog, part of GET /simulations/{id}/results.
+
+
+        `hdf5_file` is None when the job has no `biosimulations_run_id` yet (still
+
+        running) or its metadata couldn''t be fetched.'
+    KisaoTerm:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+      type: object
+      required:
+      - id
+      - name
+      title: KisaoTerm
+      description: A KiSAO ontology term with ID and human-readable name.
+    LabeledIdentifier:
+      properties:
+        uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uri
+        label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Label
+      type: object
+      title: LabeledIdentifier
+    ListSimulationRunsRequest:
+      properties:
+        type:
+          type: string
+          enum:
+          - all
+          - user
+          title: Type
+          default: all
+        user:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User
+        sort:
+          anyOf:
+          - $ref: '#/components/schemas/TableSort'
+          - type: 'null'
+        filters:
+          items:
+            $ref: '#/components/schemas/TableFilter'
+          type: array
+          title: Filters
+        pagination:
+          $ref: '#/components/schemas/TablePagination'
+      type: object
+      title: ListSimulationRunsRequest
+      description: "Body of ``POST /simulations/runs`` \u2014 table query for the\
+        \ runs listing."
+    ListSimulationRunsResponse:
+      properties:
+        runs:
+          items:
+            $ref: '#/components/schemas/SimulationRun'
+          type: array
+          title: Runs
+        pagination:
+          $ref: '#/components/schemas/TablePagination'
+      type: object
+      required:
+      - runs
+      - pagination
+      title: ListSimulationRunsResponse
     ModelFormat:
       properties:
         format_uri:
@@ -707,6 +1481,12 @@ components:
             type: string
           type: array
           title: Sedml Files
+        parse_errors:
+          items:
+            type: string
+          type: array
+          title: Parse Errors
+          default: []
       type: object
       required:
       - model_formats
@@ -714,6 +1494,791 @@ components:
       - sedml_files
       title: OmexContent
       description: Parsed content from an OMEX archive.
+    PageAlgorithm:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      title: PageAlgorithm
+    PageCurve:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        xDataGenerator:
+          anyOf:
+          - type: string
+          - $ref: '#/components/schemas/PageGenerator'
+          title: Xdatagenerator
+        yDataGenerator:
+          anyOf:
+          - type: string
+          - $ref: '#/components/schemas/PageGenerator'
+          title: Ydatagenerator
+        style:
+          anyOf:
+          - type: string
+          - $ref: '#/components/schemas/PageCurveStyle'
+          - type: 'null'
+          title: Style
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - xDataGenerator
+      - yDataGenerator
+      title: PageCurve
+    PageCurveStyle:
+      properties:
+        base:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base
+        line:
+          anyOf:
+          - $ref: '#/components/schemas/PageLineStyle'
+          - type: 'null'
+        marker:
+          anyOf:
+          - $ref: '#/components/schemas/PageMarkerStyle'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      title: PageCurveStyle
+    PageDataSet:
+      properties:
+        id:
+          type: string
+          title: Id
+        label:
+          type: string
+          title: Label
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - label
+      title: PageDataSet
+    PageDataSetLog:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+        output:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output
+      additionalProperties: false
+      type: object
+      title: PageDataSetLog
+    PageDocumentLog:
+      properties:
+        status:
+          type: string
+          title: Status
+        output:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output
+        algorithm:
+          anyOf:
+          - $ref: '#/components/schemas/PageAlgorithm'
+          - type: 'null'
+        skipReason:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        exception:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        location:
+          type: string
+          title: Location
+        tasks:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageTaskLog'
+            type: array
+          - type: 'null'
+          title: Tasks
+        outputs:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageOutputLog'
+            type: array
+          - type: 'null'
+          title: Outputs
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - location
+      title: PageDocumentLog
+    PageExecutionReason:
+      properties:
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+      additionalProperties: false
+      type: object
+      title: PageExecutionReason
+    PageFile:
+      properties:
+        format:
+          type: string
+          title: Format
+        location:
+          type: string
+          title: Location
+        size:
+          type: integer
+          title: Size
+        url:
+          type: string
+          title: Url
+      additionalProperties: false
+      type: object
+      required:
+      - format
+      - location
+      - size
+      - url
+      title: PageFile
+    PageGenerator:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      title: PageGenerator
+    PageIdentifier:
+      properties:
+        uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uri
+        label:
+          type: string
+          title: Label
+      additionalProperties: false
+      type: object
+      required:
+      - label
+      title: PageIdentifier
+    PageLineStyle:
+      properties:
+        color:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Color
+        thickness:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Thickness
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+      additionalProperties: false
+      type: object
+      title: PageLineStyle
+    PageLinkedIdentifier:
+      properties:
+        uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uri
+        label:
+          type: string
+          title: Label
+      additionalProperties: false
+      type: object
+      required:
+      - label
+      title: PageLinkedIdentifier
+    PageMarkerStyle:
+      properties:
+        fillColor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fillcolor
+        lineColor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Linecolor
+        lineThickness:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Linethickness
+        size:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Size
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+      additionalProperties: false
+      type: object
+      title: PageMarkerStyle
+    PageOutput:
+      properties:
+        _type:
+          type: string
+          title: Type
+        id:
+          type: string
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        xScale:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Xscale
+        yScale:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Yscale
+        curves:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageCurve'
+            type: array
+          - type: 'null'
+          title: Curves
+        dataSets:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageDataSet'
+            type: array
+          - type: 'null'
+          title: Datasets
+      additionalProperties: false
+      type: object
+      required:
+      - _type
+      - id
+      title: PageOutput
+    PageOutputLog:
+      properties:
+        status:
+          type: string
+          title: Status
+        output:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output
+        algorithm:
+          anyOf:
+          - $ref: '#/components/schemas/PageAlgorithm'
+          - type: 'null'
+        skipReason:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        exception:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        id:
+          type: string
+          title: Id
+        dataSets:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageDataSetLog'
+            type: array
+          - type: 'null'
+          title: Datasets
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - id
+      title: PageOutputLog
+    PageProject:
+      properties:
+        id:
+          type: string
+          title: Id
+        created:
+          type: string
+          title: Created
+        updated:
+          type: string
+          title: Updated
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - created
+      - updated
+      title: PageProject
+    PageProjectRun:
+      properties:
+        name:
+          type: string
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        abstract:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Abstract
+        creators:
+          items:
+            $ref: '#/components/schemas/PageIdentifier'
+          type: array
+          title: Creators
+        keywords:
+          items:
+            $ref: '#/components/schemas/PageIdentifier'
+          type: array
+          title: Keywords
+        thumbnails:
+          items:
+            type: string
+          type: array
+          title: Thumbnails
+        projectSize:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Projectsize
+        resultsSize:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Resultssize
+        id:
+          type: string
+          title: Id
+        citations:
+          items:
+            $ref: '#/components/schemas/PageLinkedIdentifier'
+          type: array
+          title: Citations
+        encodes:
+          items:
+            $ref: '#/components/schemas/PageLinkedIdentifier'
+          type: array
+          title: Encodes
+        simulator:
+          $ref: '#/components/schemas/PageSimulator'
+        modelFormats:
+          items:
+            type: string
+          type: array
+          title: Modelformats
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - creators
+      - keywords
+      - thumbnails
+      - id
+      - citations
+      - encodes
+      - simulator
+      - modelFormats
+      title: PageProjectRun
+    PageRunInfo:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        simulator:
+          type: string
+          title: Simulator
+        simulatorVersion:
+          type: string
+          title: Simulatorversion
+        submitted:
+          type: string
+          title: Submitted
+        updated:
+          type: string
+          title: Updated
+        status:
+          type: string
+          title: Status
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - name
+      - simulator
+      - simulatorVersion
+      - submitted
+      - updated
+      - status
+      title: PageRunInfo
+    PageRunSummary:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        abstract:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Abstract
+        creators:
+          items:
+            $ref: '#/components/schemas/PageIdentifier'
+          type: array
+          title: Creators
+        keywords:
+          items:
+            $ref: '#/components/schemas/PageIdentifier'
+          type: array
+          title: Keywords
+        thumbnails:
+          items:
+            type: string
+          type: array
+          title: Thumbnails
+        projectSize:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Projectsize
+        resultsSize:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Resultssize
+      additionalProperties: false
+      type: object
+      required:
+      - creators
+      - keywords
+      - thumbnails
+      title: PageRunSummary
+    PageSimulationLog:
+      properties:
+        status:
+          type: string
+          title: Status
+        output:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output
+        algorithm:
+          anyOf:
+          - $ref: '#/components/schemas/PageAlgorithm'
+          - type: 'null'
+        skipReason:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        exception:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        sedDocuments:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PageDocumentLog'
+            type: array
+          - type: 'null'
+          title: Seddocuments
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      title: PageSimulationLog
+    PageSimulator:
+      properties:
+        name:
+          type: string
+          title: Name
+        version:
+          type: string
+          title: Version
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - version
+      title: PageSimulator
+    PageSpecification:
+      properties:
+        id:
+          type: string
+          title: Id
+        outputs:
+          items:
+            $ref: '#/components/schemas/PageOutput'
+          type: array
+          title: Outputs
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - outputs
+      title: PageSpecification
+    PageTaskLog:
+      properties:
+        status:
+          type: string
+          title: Status
+        output:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Output
+        algorithm:
+          anyOf:
+          - $ref: '#/components/schemas/PageAlgorithm'
+          - type: 'null'
+        skipReason:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        exception:
+          anyOf:
+          - $ref: '#/components/schemas/PageExecutionReason'
+          - type: 'null'
+        id:
+          type: string
+          title: Id
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - id
+      title: PageTaskLog
+    ProjectQueryStat:
+      properties:
+        target:
+          type: string
+          title: Target
+        valueFrequencies:
+          items:
+            $ref: '#/components/schemas/ValueFrequency'
+          type: array
+          title: Valuefrequencies
+      type: object
+      required:
+      - target
+      title: ProjectQueryStat
+      description: Facet counts for a single filterable target (e.g. taxa, modelFormat).
+    ProjectStub:
+      properties:
+        id:
+          type: string
+          title: Id
+        simulationRun:
+          type: string
+          title: Simulationrun
+        created:
+          type: string
+          title: Created
+        updated:
+          type: string
+          title: Updated
+        name:
+          type: string
+          title: Name
+        summary:
+          type: string
+          title: Summary
+        model_format:
+          type: string
+          title: Model Format
+          default: ''
+        image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Url
+      type: object
+      required:
+      - id
+      - simulationRun
+      - created
+      - updated
+      - name
+      - summary
+      title: ProjectStub
+      description: 'Slim, list-optimized project record. Mirrors the frontend ``ProjectStub``.
+
+
+        ``model_format`` and ``image_url`` require a join beyond ``projectSummary``
+
+        (Specifications / Files) and are best-effort until that join lands; they
+
+        default to empty rather than failing the whole page.'
+    ProjectStubPage:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ProjectStub'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+      type: object
+      required:
+      - items
+      - total
+      title: ProjectStubPage
+      description: A page of results plus the total match count (for the pager).
+    ProjectSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        created:
+          type: string
+          title: Created
+        updated:
+          type: string
+          title: Updated
+        simulationRun:
+          $ref: '#/components/schemas/RunSummary'
+      type: object
+      required:
+      - id
+      - created
+      - updated
+      - simulationRun
+      title: ProjectSummary
+    ProjectsPagePayload:
+      properties:
+        project:
+          $ref: '#/components/schemas/PageProject'
+        simulationRun:
+          $ref: '#/components/schemas/PageProjectRun'
+        files:
+          items:
+            $ref: '#/components/schemas/PageFile'
+          type: array
+          title: Files
+        specifications:
+          items:
+            $ref: '#/components/schemas/PageSpecification'
+          type: array
+          title: Specifications
+      additionalProperties: false
+      type: object
+      required:
+      - project
+      - simulationRun
+      - files
+      - specifications
+      title: ProjectsPagePayload
+    PublicMessage:
+      properties:
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - message
+      title: PublicMessage
+    RoleAnimalResponse:
+      properties:
+        role:
+          type: string
+          title: Role
+        animal:
+          type: string
+          title: Animal
+      type: object
+      required:
+      - role
+      - animal
+      title: RoleAnimalResponse
     RunData:
       properties:
         run_id:
@@ -736,20 +2301,284 @@ components:
       - var_names
       - data
       title: RunData
+    RunExecution:
+      properties:
+        simulator:
+          $ref: '#/components/schemas/SimulatorSummary'
+        projectSize:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Projectsize
+        resultsSize:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Resultssize
+      type: object
+      required:
+      - simulator
+      title: RunExecution
+    RunMetadataSummary:
+      properties:
+        abstract:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Abstract
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        thumbnails:
+          items:
+            type: string
+          type: array
+          title: Thumbnails
+        creators:
+          items:
+            $ref: '#/components/schemas/LabeledIdentifier'
+          type: array
+          title: Creators
+        keywords:
+          items:
+            $ref: '#/components/schemas/LabeledIdentifier'
+          type: array
+          title: Keywords
+        citations:
+          items:
+            $ref: '#/components/schemas/LabeledIdentifier'
+          type: array
+          title: Citations
+        encodes:
+          items:
+            $ref: '#/components/schemas/LabeledIdentifier'
+          type: array
+          title: Encodes
+      type: object
+      title: RunMetadataSummary
+    RunSimulationRequest:
+      properties:
+        omex_id:
+          type: string
+          title: Omex Id
+        name:
+          type: string
+          title: Name
+        simulators:
+          items:
+            $ref: '#/components/schemas/SimulatorSelection'
+          type: array
+          title: Simulators
+        is_commercial:
+          type: boolean
+          title: Is Commercial
+          default: false
+        email_address:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email Address
+        newsletter_consent:
+          type: boolean
+          title: Newsletter Consent
+          default: false
+        cache_buster:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cache Buster
+          description: Optional salt for the (omex, simulator, cache_buster) result
+            cache. Omit (or null) to reuse cached results for identical submissions;
+            pass a unique value to force fresh biosimulations.org runs.
+      type: object
+      required:
+      - omex_id
+      - name
+      - simulators
+      title: RunSimulationRequest
+    RunSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        run:
+          $ref: '#/components/schemas/RunExecution'
+        metadata:
+          items:
+            $ref: '#/components/schemas/RunMetadataSummary'
+          type: array
+          title: Metadata
+      type: object
+      required:
+      - id
+      - name
+      - run
+      title: RunSummary
+    RunsPagePayload:
+      properties:
+        info:
+          $ref: '#/components/schemas/PageRunInfo'
+        summary:
+          $ref: '#/components/schemas/PageRunSummary'
+        files:
+          items:
+            $ref: '#/components/schemas/PageFile'
+          type: array
+          title: Files
+        specifications:
+          items:
+            $ref: '#/components/schemas/PageSpecification'
+          type: array
+          title: Specifications
+        logs:
+          anyOf:
+          - $ref: '#/components/schemas/PageSimulationLog'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - info
+      - summary
+      - files
+      - specifications
+      - logs
+      title: RunsPagePayload
+    SimulationJobStatus:
+      properties:
+        job_id:
+          type: string
+          title: Job Id
+        simulator_id:
+          type: string
+          title: Simulator Id
+        version:
+          type: string
+          title: Version
+        status:
+          type: string
+          title: Status
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+        biosimulations_run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Biosimulations Run Id
+      type: object
+      required:
+      - job_id
+      - simulator_id
+      - version
+      - status
+      title: SimulationJobStatus
     SimulationRequirement:
       properties:
-        algorithm_kisao_id:
-          type: string
-          title: Algorithm Kisao Id
+        algorithm:
+          $ref: '#/components/schemas/KisaoTerm'
         simulation_type:
           type: string
           title: Simulation Type
       type: object
       required:
-      - algorithm_kisao_id
+      - algorithm
       - simulation_type
       title: SimulationRequirement
       description: Represents a simulation algorithm requirement from a SED-ML file.
+    SimulationRun:
+      properties:
+        id:
+          type: string
+          title: Id
+        biosimulationsRunId:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Biosimulationsrunid
+        name:
+          type: string
+          title: Name
+        simulator:
+          type: string
+          title: Simulator
+        simulatorVersion:
+          type: string
+          title: Simulatorversion
+        simulatorDigest:
+          type: string
+          title: Simulatordigest
+        cpus:
+          type: integer
+          title: Cpus
+        memory:
+          type: integer
+          title: Memory
+        maxTime:
+          type: integer
+          title: Maxtime
+        envVars:
+          items:
+            type: string
+          type: array
+          title: Envvars
+        purpose:
+          type: string
+          title: Purpose
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
+        status:
+          type: string
+          title: Status
+        runtime:
+          type: integer
+          title: Runtime
+        projectSize:
+          type: integer
+          title: Projectsize
+        resultsSize:
+          type: integer
+          title: Resultssize
+        submitted:
+          type: string
+          title: Submitted
+        updated:
+          type: string
+          title: Updated
+      type: object
+      required:
+      - id
+      - name
+      - simulator
+      - simulatorVersion
+      - simulatorDigest
+      - cpus
+      - memory
+      - maxTime
+      - envVars
+      - purpose
+      - email
+      - status
+      - runtime
+      - projectSize
+      - resultsSize
+      - submitted
+      - updated
+      title: SimulationRun
+      description: 'API representation of a run, matching the frontend ``SimulationRun``
+
+        interface (``frontend/app/models/simulators.ts``). Serialized with camelCase
+
+        aliases; FastAPI emits aliases by default (``response_model_by_alias=True``).'
     SimulationRunInfo:
       properties:
         biosim_sim_run:
@@ -761,6 +2590,194 @@ components:
       - biosim_sim_run
       - hdf5_file
       title: SimulationRunInfo
+    SimulationRunLogs:
+      properties:
+        processingId:
+          type: string
+          title: Processingid
+        jobs:
+          items:
+            $ref: '#/components/schemas/JobLogs'
+          type: array
+          title: Jobs
+      type: object
+      required:
+      - processingId
+      - jobs
+      title: SimulationRunLogs
+    SimulationRunResults:
+      properties:
+        processingId:
+          type: string
+          title: Processingid
+        jobs:
+          items:
+            $ref: '#/components/schemas/JobResult'
+          type: array
+          title: Jobs
+      type: object
+      required:
+      - processingId
+      - jobs
+      title: SimulationRunResults
+    SimulatorSelection:
+      properties:
+        id:
+          type: string
+          title: Id
+        version:
+          type: string
+          title: Version
+      type: object
+      required:
+      - id
+      - version
+      title: SimulatorSelection
+    SimulatorSummary:
+      properties:
+        name:
+          type: string
+          title: Name
+        version:
+          type: string
+          title: Version
+      type: object
+      required:
+      - name
+      - version
+      title: SimulatorSummary
+    SimulatorVersionDetail:
+      properties:
+        version:
+          type: string
+          title: Version
+        image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Url
+        algorithms:
+          items:
+            $ref: '#/components/schemas/KisaoTerm'
+          type: array
+          title: Algorithms
+          default: []
+        exact:
+          type: boolean
+          title: Exact
+        common_ancestor:
+          anyOf:
+          - $ref: '#/components/schemas/KisaoTerm'
+          - type: 'null'
+        equivalence_category:
+          anyOf:
+          - $ref: '#/components/schemas/KisaoTerm'
+          - type: 'null'
+      type: object
+      required:
+      - version
+      - exact
+      title: SimulatorVersionDetail
+      description: Per-version compatibility details (populated in verbose mode).
+    TableFilter:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        operator:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operator
+        value:
+          title: Value
+      type: object
+      title: TableFilter
+    TablePagination:
+      properties:
+        page:
+          type: integer
+          title: Page
+          default: 1
+        perPage:
+          type: integer
+          title: Perpage
+          default: 20
+        _total:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total
+      type: object
+      title: TablePagination
+    TableSort:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        direction:
+          anyOf:
+          - type: string
+            enum:
+            - asc
+            - desc
+          - type: 'null'
+          title: Direction
+      type: object
+      title: TableSort
+    UpdateUserProfileRequest:
+      properties:
+        name:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Name
+      type: object
+      title: UpdateUserProfileRequest
+    UserProfile:
+      properties:
+        id:
+          type: string
+          title: Id
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        provider:
+          type: string
+          title: Provider
+          description: Auth0 connection derived from the `sub` prefix, e.g. 'google-oauth2'.
+        emailVerified:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Emailverified
+      type: object
+      required:
+      - id
+      - provider
+      title: UserProfile
+      description: 'API representation of the authenticated user, backing GET/PATCH
+        /api/v1/me.
+
+
+        `id`/`email` come from the validated JWT; `name`/`email_verified` are
+
+        best-effort enrichment from the Auth0 Management API (None when the
+
+        Management API isn''t configured or the call fails).'
     ValidationError:
       properties:
         loc:
@@ -782,6 +2799,20 @@ components:
       - msg
       - type
       title: ValidationError
+    ValueFrequency:
+      properties:
+        value:
+          type: string
+          title: Value
+        count:
+          type: integer
+          title: Count
+      type: object
+      required:
+      - value
+      - count
+      title: ValueFrequency
+      description: One facet value and how many matching projects carry it.
     VerifyWorkflowOutput:
       properties:
         workflow_id:
@@ -824,3 +2855,16 @@ components:
       - FAILED
       - RUN_ID_NOT_FOUND
       title: VerifyWorkflowStatus
+    WhoAmIResponse:
+      properties:
+        name:
+          type: string
+          title: Name
+      type: object
+      required:
+      - name
+      title: WhoAmIResponse
+  securitySchemes:
+    HTTPBearer:
+      type: http
+      scheme: bearer
