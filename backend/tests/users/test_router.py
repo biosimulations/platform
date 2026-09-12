@@ -93,6 +93,44 @@ def test_patch_me_updates_name(
     assert resp.json()["name"] == "New Name"
 
 
+@patch("biosim_server.users.router.get_auth0_user")
+@patch("biosim_server.users.router.update_auth0_user")
+@patch("biosim_server.users.router.management_api_configured", return_value=True)
+def test_patch_me_updates_email(
+    _mock_configured: AsyncMock,
+    mock_update: AsyncMock,
+    mock_get: AsyncMock,
+    authenticated_user: AuthenticatedUser,
+) -> None:
+    mock_update.return_value = {"email": "new@example.com", "email_verified": False}
+    mock_get.return_value = {"name": "Test User", "email": "new@example.com", "email_verified": False}
+    resp = client.patch("/api/v1/me", json={"email": "new@example.com"})
+    assert resp.status_code == 200
+    mock_update.assert_awaited_once_with(authenticated_user.sub, email="new@example.com", verify_email=True)
+    assert resp.json()["email"] == "new@example.com"
+    assert resp.json()["emailVerified"] is False
+
+
+def test_resend_verification_requires_authentication() -> None:
+    resp = client.post("/api/v1/me/resend-verification")
+    assert resp.status_code == 401
+
+
+@patch("biosim_server.users.router.resend_auth0_verification_email")
+@patch("biosim_server.users.router.management_api_configured", return_value=True)
+def test_resend_verification_success(
+    _mock_configured: AsyncMock,
+    mock_resend: AsyncMock,
+    authenticated_user: AuthenticatedUser,
+) -> None:
+    mock_resend.return_value = {"status": "pending"}
+    resp = client.post("/api/v1/me/resend-verification")
+    assert resp.status_code == 200
+    mock_resend.assert_awaited_once_with(authenticated_user.sub)
+    assert resp.json()["message"] == "Verification email resent successfully"
+
+
+
 def test_delete_me_requires_authentication() -> None:
     resp = client.delete("/api/v1/me")
     assert resp.status_code == 401

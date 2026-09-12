@@ -100,3 +100,17 @@ async def delete_auth0_user(user_id: str) -> None:
             timeout=10.0,
         )
         resp.raise_for_status()
+
+
+async def resend_auth0_verification_email(user_id: str) -> dict[str, Any]:
+    settings = get_settings().auth0
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"https://{settings.domain}/api/v2/jobs/verification-email",
+            headers=await _auth_headers(),
+            json={"user_id": user_id},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        return dict(resp.json())
+
