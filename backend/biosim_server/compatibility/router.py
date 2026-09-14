@@ -4,6 +4,7 @@ import hashlib
 import ipaddress
 import logging
 import socket
+from typing import Optional
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -110,7 +111,7 @@ async def _download_archive(url: str) -> bytes:
 )
 async def check_compatibility(
     uploaded_file: UploadFile | None = File(None, description="OMEX/COMBINE archive to check for compatibility"),
-    archive_url: str | None = Query(None, description="URL to an OMEX/COMBINE archive (alternative to file upload)"),
+    archive_url: Optional[str] | None = Query(None, description="URL to an OMEX/COMBINE archive (alternative to file upload)"),
     verbose: bool = Query(False, description="Include per-version algorithm and ontology details"),
 ) -> CompatibilityResponse:
     """Check which simulators can run the given OMEX archive.

@@ -1,0 +1,9 @@
+[
+  {
+    "format": "http://identifiers.org/combine.specifications/sbml",
+    "location": "model.xml",
+    "size": 64521,
+    "url": "https://example.org/model.xml",
+    "ignored": "secret"
+  }
+]

@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+import httpx
 from motor.motor_asyncio import AsyncIOMotorClient
 from temporalio.client import Client as TemporalClient
 
@@ -102,6 +103,29 @@ def get_mongo_client() -> AsyncIOMotorClient | None:
     global global_mongo_client
     return global_mongo_client
 
+#------ shared HTTP client for upstream biosimulations.org calls ------
+# One pooled AsyncClient for the whole process, injected as a FastAPI dependency
+# so tests can swap in an httpx.MockTransport client via dependency_overrides.
+# Lazily constructed: the API creates it in init_standalone, but a test client
+# that skips lifespan still gets a usable one.
+
+_HTTP_TIMEOUT = httpx.Timeout(30.0)
+
+global_http_client: httpx.AsyncClient | None = None
+
+def set_http_client(http_client: httpx.AsyncClient | None) -> None:
+    global global_http_client
+    global_http_client = http_client
+
+def get_http_client() -> httpx.AsyncClient:
+    global global_http_client
+    if global_http_client is None:
+        global_http_client = httpx.AsyncClient(
+            base_url=get_settings().biosimulations_api_base_url.rstrip("/"),
+            timeout=_HTTP_TIMEOUT,
+        )
+    return global_http_client
+
 #------ Temporal workflow client ------
 
 global_temporal_client: TemporalClient | None = None
@@ -130,6 +154,12 @@ async def init_standalone() -> None:
     settings = get_settings()
     set_file_service(_make_file_service(settings.storage_backend))
     set_biosim_service(BiosimServiceRest())
+    set_http_client(
+        httpx.AsyncClient(
+            base_url=settings.biosimulations_api_base_url.rstrip("/"),
+            timeout=_HTTP_TIMEOUT,
+        )
+    )
     set_temporal_client(await TemporalClient.connect(settings.temporal_service_url))
 
     # Local import avoids the simulations -> dependencies import cycle at module load.
@@ -167,6 +197,9 @@ async def shutdown_standalone() -> None:
     file_service = get_file_service()
     if file_service:
         await file_service.close()
+    if global_http_client is not None:
+        await global_http_client.aclose()
+        set_http_client(None)
     # biosim_service = get_biosim_service()
     # if biosim_service:
     #     await biosim_service.close()

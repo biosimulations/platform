@@ -944,6 +944,18 @@ def test_get_simulation_logs(mock_get_runs_db: MagicMock, mock_get_biosim: Magic
 
 @patch("biosim_server.simulations.router.get_biosim_service")
 @patch("biosim_server.simulations.router.get_simulation_run_database_service")
+def test_get_simulation_logs_not_found(mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock) -> None:
+    runs_db = AsyncMock()
+    runs_db.get_simulation_runs_by_processing_id.return_value = []
+    mock_get_runs_db.return_value = runs_db
+    mock_get_biosim.return_value = AsyncMock()
+
+    response = TestClient(app).get("/simulations/nonexistent/logs")
+    assert response.status_code == 404
+
+
+@patch("biosim_server.simulations.router.get_biosim_service")
+@patch("biosim_server.simulations.router.get_simulation_run_database_service")
 def test_get_simulation_results_anonymous_cannot_read_owned_run(
     mock_get_runs_db: MagicMock, mock_get_biosim: MagicMock
 ) -> None:

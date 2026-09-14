@@ -16,7 +16,7 @@ from biosim_server.biosim_omex import OmexFile, get_cached_omex_file_from_upload
 from biosim_server.biosim_runs import BiosimulatorVersion
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.compatibility import compatibility_router
-from biosim_server.simulations import simulations_router
+from biosim_server.simulations import run_summary_router, simulations_router
 from biosim_server.projects.router import router as projects_router
 from biosim_server.common.auth import AuthenticatedUser, get_current_user
 from biosim_server.common.auth.auth0 import JwksCache, get_jwks_cache
@@ -182,6 +182,7 @@ app.add_middleware(
 # include routers
 app.include_router(compatibility_router)
 app.include_router(simulations_router)
+app.include_router(run_summary_router)
 app.include_router(projects_router)
 app.include_router(users_router)
 

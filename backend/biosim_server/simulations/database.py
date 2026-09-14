@@ -56,7 +56,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _coerce_date(value: Any) -> datetime:
+def _coerce_date(value: object) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, str):
@@ -69,7 +69,7 @@ def _coerce_date(value: Any) -> datetime:
     raise InvalidDateFilterError("Date filter values must be ISO-8601 strings")
 
 
-def _filter_clause(db_field: str, operator: str | None, value: Any) -> Any | None:
+def _filter_clause(db_field: str, operator: str | None, value: object) -> object | None:
     """Translate one TableFilter into a Mongo match clause for ``db_field``.
 
     Returns ``None`` when the filter is incomplete or unsupported (skip it)."""
