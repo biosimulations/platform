@@ -103,6 +103,9 @@ async def delete_auth0_user(user_id: str) -> None:
 
 
 async def resend_auth0_verification_email(user_id: str) -> dict[str, Any]:
+    # No `identity` in the body, so Auth0 only verifies the user's primary
+    # *database* identity -- social, enterprise and passwordless identities would
+    # need one. Callers must restrict this to "auth0|..." users.
     settings = get_settings().auth0
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -113,4 +116,3 @@ async def resend_auth0_verification_email(user_id: str) -> dict[str, Any]:
         )
         resp.raise_for_status()
         return dict(resp.json())
-

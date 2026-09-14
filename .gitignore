@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 .idea
+.vscode
+.cursor
+.freebuff
+# Machine-local MCP configs (Cursor/PyCharm loopback). Not deployable.
+.mcp.json
 
 # C extensions
 *.so
