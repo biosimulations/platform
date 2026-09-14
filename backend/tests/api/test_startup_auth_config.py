@@ -194,6 +194,3 @@ async def test_lifespan_proceeds_with_valid_configuration(
             async with lifespan(app):
                 init_mock.assert_awaited_once()
     shutdown_mock.assert_awaited_once()
-
-
-

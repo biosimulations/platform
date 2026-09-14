@@ -115,11 +115,11 @@ class TestWindowReset:
         ratelimit_module.workflow_rate_limit(request=request, user=None)
         with pytest.raises(HTTPException):
             ratelimit_module.workflow_rate_limit(request=request, user=None)
-        
+
         clock.advance(61)
 
         ratelimit_module.workflow_rate_limit(request=request, user=None)
-        
+
 
 class TestPerKeyIsolation:
     def test_one_ip_does_not_consume_another_ips_quota(self) -> None:

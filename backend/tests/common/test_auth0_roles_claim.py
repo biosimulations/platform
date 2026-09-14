@@ -112,4 +112,3 @@ async def test_warning_is_rated_limited(
             await get_current_user(_creds(token))
 
     assert caplog.text.count("Post-Login Action") == 1
-

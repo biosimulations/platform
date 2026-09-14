@@ -278,7 +278,7 @@ async def test_expired_token_is_401_not_503(
             PROTECTED_URL,
             headers={"Authorization": f"Bearer {KEY.token(expires_in=-120)}"},
         )
-    
+
     assert response.status_code == 401
     assert response.json() == {"detail": "Token expired"}
 

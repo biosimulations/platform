@@ -650,7 +650,7 @@ async def test_hs256_signed_token_is_rejected_even_with_valid_claims(
     """
 
     from jose import jwt as jose_jwt  # type: ignore[import-untyped]
-    
+
     endpoint = FakeJwksEndpoint(responses=[_ok(KEY_A)])
     _install(monkeypatch, endpoint, FakeClock())
 
@@ -665,7 +665,7 @@ async def test_hs256_signed_token_is_rejected_even_with_valid_claims(
         algorithm="HS256",
         headers={"kid": KEY_A.kid},
     )
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await get_current_user(_creds(hs256_token))
     assert exc_info.value.status_code == 401
