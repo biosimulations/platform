@@ -99,15 +99,6 @@ APP_SERVERS: list[dict[str, str]] = [
 
 router = APIRouter()
 
-"""
-def _warn_if_auth0_misconfigured() -> None:
-    auth0 = get_settings().auth0
-    if not auth0.domain or not auth0.audience:
-        logger.warning(
-            "AUTH0_DOMAIN/AUTH0_AUDIENCE not set -- all endpoints behind get_current_user/"
-            "get_optional_user will reject every bearer token with 401."
-        )
-"""
 
 def _validate_auth0_configuration() -> None:
     """
@@ -157,7 +148,6 @@ def _validate_auth0_configuration() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    #_warn_if_auth0_misconfigured()
     _validate_auth0_configuration()
     # #16: best-effort OIDC discovery warm. Deliberately after the (local,
     # side-effect-free) configuration gate and wrapped so it can never fail
