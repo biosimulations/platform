@@ -26,6 +26,16 @@ class RunSimulationRequest(BaseModel):
             "a unique value to force fresh biosimulations.org runs."
         ),
     )
+    visibility: Literal["public", "private"] | None = Field(
+        default=None,
+        description=(
+            "Requested run visibility. Authenticated callers: omitted defaults to "
+            "private; 'public' or 'private' is honored (the run is always owned by "
+            "the caller). Anonymous submissions are always public -- a requested "
+            "'private' is forced to public because no identity exists to grant "
+            "access to."
+        ),
+    )
 
 
 class SimulationJobStatus(BaseModel):
@@ -88,6 +98,19 @@ class SimulationRunRecord(BaseModel):
     env_vars: list[str] = Field(default_factory=list)
     purpose: str = ""
     email: str | None = None
+    # The verified Auth0 `sub` of the authenticated submitter, or None for a
+    # legacy record (predates this field) or a genuinely anonymous
+    # submission. The primary ownership key -- see
+    # common.auth.roles.require_owner_or_admin. `email` is retained for
+    # display and as the legacy fallback path.
+    owner_sub: str | None = None
+    # Named ownership field for new records.  ``owner_sub`` remains populated
+    # for compatibility with the existing owner-scoping implementation.
+    owner: str | None = None
+    # Binary public/private. Missing or null on legacy documents is treated as
+    # public by authorization. Never client-supplied; derived from whether the
+    # creator presented a verified token.
+    visibility: Literal["public", "private"] | None = None
     status: RunDisplayStatus = "CREATED"
     runtime: int = 0
     project_size: int = 0
@@ -134,7 +157,7 @@ class SimulationRun(BaseModel):
     updated: str
 
     @classmethod
-    def from_record(cls, record: SimulationRunRecord) -> "SimulationRun":
+    def from_record(cls, record: SimulationRunRecord, *, include_email: bool = False) -> "SimulationRun":
         return cls(
             id=record.run_id,
             biosimulations_run_id=record.biosimulations_run_id,
@@ -147,7 +170,7 @@ class SimulationRun(BaseModel):
             max_time=record.max_time,
             env_vars=record.env_vars,
             purpose=record.purpose,
-            email=record.email,
+            email=record.email if include_email else None,
             status=record.status,
             runtime=record.runtime,
             project_size=record.project_size,
@@ -177,8 +200,8 @@ class TableFilter(BaseModel):
 class TablePagination(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    page: int = 1
-    per_page: int = Field(default=20, alias="perPage")
+    page: int = Field(default=1, ge=1)
+    per_page: int = Field(default=20, alias="perPage", ge=1, le=100)
     total: int | None = Field(default=None, alias="_total")
 
 
@@ -187,6 +210,9 @@ class ListSimulationRunsRequest(BaseModel):
 
     type: Literal["all", "user"] = "all"
     user: str | None = None
+    # Set by the listing handler from a verified token. A client-supplied
+    # value is ignored (the handler overwrites it before querying).
+    owner_sub: str | None = None
     sort: TableSort | None = None
     filters: list[TableFilter] = Field(default_factory=list)
     pagination: TablePagination = Field(default_factory=TablePagination)

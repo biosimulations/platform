@@ -10,7 +10,8 @@ __pycache__/
 .freebuff
 .postman
 postman/
-
+# Machine-local MCP configs (Cursor/PyCharm loopback). Not deployable.
+/.mcp.json
 
 # C extensions
 *.so
@@ -207,6 +208,7 @@ build
 
 # Claude Code local state
 /.claude/
+AGENTS.md
 
 
 .python-version

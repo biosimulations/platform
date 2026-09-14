@@ -20,6 +20,7 @@ class OmexVerifyWorkflowInput(BaseModel):
     requested_simulators: list[BiosimulatorVersion]
     cache_buster: str
     compare_settings: CompareSettings
+    owner_sub: str | None = None
 
 
 @workflow.defn
@@ -36,7 +37,8 @@ class OmexVerifyWorkflow:
             compare_settings=verify_input.compare_settings,
             workflow_run_id=workflow.info().run_id,
             workflow_status=VerifyWorkflowStatus.IN_PROGRESS,
-            timestamp=str(workflow.now()))
+            timestamp=str(workflow.now()),
+            owner_sub=verify_input.owner_sub)
 
     @workflow.query(name="get_output")
     def get_omex_sim_workflow_output(self) -> VerifyWorkflowOutput:

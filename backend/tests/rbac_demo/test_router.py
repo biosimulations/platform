@@ -174,3 +174,29 @@ def test_animal_prefers_most_privileged_role_when_multiple_present() -> None:
         app.dependency_overrides.pop(get_current_user, None)
     assert resp.status_code == 200
     assert resp.json() == {"role": "admin", "animal": "Zebra"}
+
+
+def test_permission_endpoint_requires_authentication() -> None:
+    resp = client.get("/api/v1/demo/private/permission")
+    assert resp.status_code == 401
+
+
+def test_permission_endpoint_rejects_role_without_permission() -> None:
+    user = make_authenticated_user(roles=["admin"], permissions=[])
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        resp = client.get("/api/v1/demo/private/permission")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+    assert resp.status_code == 403
+
+
+def test_permission_endpoint_allows_demo_read() -> None:
+    user = make_authenticated_user(permissions=["demo:read"])
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        resp = client.get("/api/v1/demo/private/permission")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+    assert resp.status_code == 200
+    assert resp.json() == {"permission": "demo:read", "granted": True}
