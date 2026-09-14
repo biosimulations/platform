@@ -92,14 +92,19 @@ async def test_ready_when_mongo_down(mock_get_mongo_client: MagicMock, mock_get_
 
 @patch("biosim_server.api.main.get_temporal_client")
 def test_get_output_not_found(mock_get_temporal: MagicMock) -> None:
-    """GET /verify/{workflow_id} returns 404 when the Temporal query fails."""
+    """GET /verify/{workflow_id} returns 404 to an authenticated caller when the Temporal query fails."""
     temporal = MagicMock()
     handle = AsyncMock()
     handle.query.side_effect = Exception("Workflow not found")
     temporal.get_workflow_handle.return_value = handle
     mock_get_temporal.return_value = temporal
 
-    response = TestClient(app).get("/verify/non-existent-id")
+    user = AuthenticatedUser(sub="auth0|test-user-id", email="user@example.com")
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        response = TestClient(app).get("/verify/non-existent-id")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
     assert response.status_code == 404
     assert "non-existent-id" in response.json()["detail"]
 
@@ -114,7 +119,7 @@ def test_verify_omex_unknown_simulator(
     mock_get_biosim: MagicMock,
     mock_get_cached: AsyncMock,
 ) -> None:
-    """POST /verify/omex returns 400 when a requested simulator is not known."""
+    """POST /verify/omex returns 400 to an authenticated caller when a requested simulator is not known."""
     mock_get_file.return_value = MagicMock()
     mock_get_omex_db.return_value = MagicMock()
     mock_get_cached.return_value = OmexFile(
@@ -128,11 +133,16 @@ def test_verify_omex_unknown_simulator(
     biosim.get_simulator_versions.return_value = []
     mock_get_biosim.return_value = biosim
 
-    response = TestClient(app).post(
-        "/verify/omex",
-        files={"uploaded_file": ("t.omex", b"not-used", "application/zip")},
-        params={"simulators": "unknown-sim"},
-    )
+    user = AuthenticatedUser(sub="auth0|test-user-id", email="user@example.com")
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        response = TestClient(app).post(
+            "/verify/omex",
+            files={"uploaded_file": ("t.omex", b"not-used", "application/zip")},
+            params={"simulators": "unknown-sim"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
     assert response.status_code == 400
     assert "unknown-sim" in response.json()["detail"]
 
