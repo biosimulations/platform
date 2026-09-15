@@ -7,7 +7,9 @@ import pytest
 
 from biosim_server.api.main import app
 from biosim_server.dependencies import get_http_client
+from biosim_server.pages import service
 from tests.pages.test_mapping import satellite
+from tests.pages.test_run_page import hang_until_cancelled
 from tests.summaries.test_mapping import payload
 
 pytestmark = pytest.mark.asyncio
@@ -182,3 +184,26 @@ async def test_embedded_dot_run_id_is_rejected(run_id: str) -> None:
             response = await caller.get(PAGE)
     assert response.status_code == 404
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize("stalled", ["identity", "satellites"])
+async def test_project_page_total_timeout(stalled: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exceeding the page budget returns 504 and cancels every upstream call still in flight."""
+    monkeypatch.setitem(service._PAGE_TIMEOUTS, "project", 0.1)
+    cancelled: set[str] = set()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/summary"):
+            if stalled == "satellites":
+                return httpx.Response(200, json=payload("project"))
+            await hang_until_cancelled("identity", cancelled)
+        await hang_until_cancelled(request.url.path.split("/")[1], cancelled)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://upstream.test") as upstream:
+        app.dependency_overrides[get_http_client] = lambda: upstream
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://platform.test") as caller:
+            response = await caller.get(PAGE)
+    assert response.status_code == 504, response.text
+    assert response.json() == {"detail": "Timed out while loading the project page."}
+    # Project satellites need the run id from identity, so a stalled identity starts none.
+    assert cancelled == ({"identity"} if stalled == "identity" else set(RESOURCES))
