@@ -13,7 +13,6 @@ __pycache__/
 postman/
 # Machine-local MCP configs (Cursor/PyCharm loopback). Not deployable.
 /.mcp.json
-.agents/
 
 # C extensions
 *.so
