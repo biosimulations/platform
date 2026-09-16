@@ -163,6 +163,7 @@ class Auth0Settings(BaseSettings):
     # PATCH/DELETE /api/v1/me). Optional -- those endpoints 503 when unset.
     management_client_id: str = Field(default="", alias="AUTH0_MANAGEMENT_CLIENT_ID")
     management_client_secret: str = Field(default="", alias="AUTH0_MANAGEMENT_CLIENT_SECRET")
+    password_reset_client_id: str = Field(default="", alias="AUTH0_PASSWORD_RESET_CLIENT_ID")
     # Auth0 access tokens don't include role assignments by default -- roles
     # have to be copied onto the token as a custom claim by an Auth0 Action
     # (Auth0 Dashboard -> Actions -> Flows -> Login -> add a post-login

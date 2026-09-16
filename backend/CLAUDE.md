@@ -35,7 +35,16 @@ uv run mypy biosim_server
 
 # Single test file
 uv run pytest tests/biosim_runs/test_sim_workflow.py -v
+
+# Regenerate the committed OpenAPI artifact after changing any route or model
+uv run python -m scripts.generate_openapi
 ```
+
+Always regenerate the spec with `scripts/generate_openapi.py` rather than by hand.
+The demo router is environment-gated (`ENABLE_RBAC_DEMO`, default false), so dumping
+`app.openapi()` in a default shell silently deletes `/api/v1/demo/*` from the
+artifact; the script forces the flag on so the output does not depend on the
+shell it ran in.
 
 ## Verification
 
@@ -144,6 +153,7 @@ backend/
 | `/verify/omex` | POST | Verify OMEX file across simulators (authenticated; persists `owner_sub`) |
 | `/verify/{workflow_id}` | GET | Get verification results (authenticated; owner-or-admin when `owner_sub` is set) |
 | `/verify/runs` | POST | Compare existing biosimulation runs (authenticated; persists `owner_sub`) |
+| `/api/v1/me/password-reset` | POST | Issue a short-lived Auth0-hosted password-change URL for the authenticated primary database user (New Universal Login; no email is sent; requires `create:user_tickets` on the server M2M client) |
 | `/version` | GET | Get API version |
 | `/docs` | GET | Swagger UI |
 
@@ -244,8 +254,9 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | `AUTH0_EMAIL_VERIFIED_CLAIM` | `https://api.biosimulations.org/email_verified` | Namespaced claim carrying whether that email is verified. Stamped by the same Action. Authorization treats a missing claim as unverified (fail closed). Override only if the Action uses a different namespace. |
 | `AUTH0_PERMISSIONS_CLAIM` | `permissions` | Auth0 RBAC access-token claim (array) used by `require_permissions`. Missing/malformed → no permissions (fail closed). Roles never satisfy a permission check. See `docs/auth0-tokens-claims-endpoints.md`. |
 | `AUTH0_TRUSTED_ISSUERS` | _empty_ | Optional JSON object mapping `issuer` → `{audiences, jwks_uri}`. When set, token validation uses this **pairing** (an audience trusted for issuer A is not valid for issuer B). When unset, `AUTH0_DOMAIN`/`AUTH0_AUDIENCE` (or `AUTH0_ISSUER`/`AUTH0_JWKS_URI`) remain the single-issuer configuration. |
-| `AUTH0_MANAGEMENT_CLIENT_ID` | _empty_ | M2M credentials for `PATCH`/`DELETE /api/v1/me`. **Secret** — sealed-secret path only. Unset in every cluster today, so those endpoints return 503. |
+| `AUTH0_MANAGEMENT_CLIENT_ID` | _empty_ | M2M credentials for the Auth0 Management API: `PATCH`/`DELETE /api/v1/me` (`update:users`/`delete:users`) and `POST /api/v1/me/password-reset` (`create:user_tickets`). **Secret** — sealed-secret path only. Unset in every cluster today, so those endpoints return 503; password reset also requires the M2M application to be authorized for the `create:user_tickets` scope. |
 | `AUTH0_MANAGEMENT_CLIENT_SECRET` | _empty_ | See above. |
+| `AUTH0_PASSWORD_RESET_CLIENT_ID` | _empty_ | **Non-secret** SPA application client ID used as the `client_id` for the hosted password-change ticket (`POST /api/v1/me/password-reset`). Blank disables the endpoint (503). Not the M2M client ID. Configure New Universal Login and the SPA's Application Login URI in Auth0 before enabling. |
 
 **Per-cluster configuration:**
 
@@ -268,6 +279,10 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | Valid token, missing required permission/scope | **403**. |
 | Management API (`PATCH`/`DELETE /api/v1/me`) rate-limited (429) through all retries | **503** with `Retry-After`. |
 | Management API 5xx or transport failure through all retries | **502**. |
+| Password reset unconfigured (`AUTH0_DOMAIN`, `AUTH0_PASSWORD_RESET_CLIENT_ID`, or Management credentials blank) | **503** `Password reset is unavailable`. |
+| Password-reset ticket 429 (Auth0 rate limit) | **503** with `Retry-After: 10`; issuance is deliberately not retried (non-idempotent). |
+| Password-reset ticket/token 4xx/5xx/transport/malformed or unsafe URL | **502** generic; upstream body is never logged or returned. |
+| Valid token, non-`auth0\|` sub, or issuer ≠ `https://AUTH0_DOMAIN/` | **403** `Password reset is unavailable for this account`. |
 
 **Anonymous `POST /simulations/run` (P1 #9 Option B).** This endpoint stays
 reachable without a bearer token, paired with the workflow rate limiter

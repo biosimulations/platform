@@ -11,6 +11,8 @@ paths:
       description: Upload an OMEX archive or provide a URL to find compatible simulators
         based on model format and algorithm requirements.
       operationId: check-compatibility
+      security:
+      - HTTPBearer: []
       parameters:
       - name: archive_url
         in: query
@@ -109,6 +111,8 @@ paths:
       - Simulations
       summary: Get status of a simulation run
       operationId: get-simulation-status
+      security:
+      - HTTPBearer: []
       parameters:
       - name: processing_id
         in: path
@@ -160,6 +164,8 @@ paths:
       summary: Get status of a simulation run (explicit sub-resource, same data as
         GET /{id})
       operationId: get-simulation-status-explicit
+      security:
+      - HTTPBearer: []
       parameters:
       - name: processing_id
         in: path
@@ -186,6 +192,8 @@ paths:
       - Simulations
       summary: Get the result-dataset catalog for each job in a simulation run
       operationId: get-simulation-results
+      security:
+      - HTTPBearer: []
       parameters:
       - name: processing_id
         in: path
@@ -212,6 +220,8 @@ paths:
       - Simulations
       summary: Get simulator logs for each job in a simulation run
       operationId: get-simulation-logs
+      security:
+      - HTTPBearer: []
       parameters:
       - name: processing_id
         in: path
@@ -568,6 +578,21 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/v1/me/password-reset:
+    post:
+      tags:
+      - Users
+      summary: Create an Auth0-hosted password reset URL for the authenticated user
+      operationId: create-current-user-password-reset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordResetResponse'
+      security:
+      - HTTPBearer: []
   /api/v1/demo/public:
     get:
       tags:
@@ -613,6 +638,22 @@ paths:
                 $ref: '#/components/schemas/RoleAnimalResponse'
       security:
       - HTTPBearer: []
+  /api/v1/demo/private/permission:
+    get:
+      tags:
+      - RBAC Demo
+      summary: Private endpoint -- requires the demo:read permission on the access
+        token
+      operationId: demo-private-permission
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionCheckResponse'
+      security:
+      - HTTPBearer: []
   /:
     get:
       summary: Root
@@ -645,6 +686,8 @@ paths:
       - Verification
       summary: Request verification report for OMEX/COMBINE archive across simulators
       operationId: verify-omex
+      security:
+      - HTTPBearer: []
       parameters:
       - name: workflow_id_prefix
         in: query
@@ -766,6 +809,8 @@ paths:
       - Verification
       summary: Retrieve verification report for OMEX/COMBINE archive
       operationId: get-verify-output
+      security:
+      - HTTPBearer: []
       parameters:
       - name: workflow_id
         in: path
@@ -792,6 +837,8 @@ paths:
       - Verification
       summary: Request verification report for biosimulation runs by run IDs
       operationId: verify-runs
+      security:
+      - HTTPBearer: []
       parameters:
       - name: workflow_id_prefix
         in: query
@@ -1416,6 +1463,11 @@ components:
           - type: string
           - type: 'null'
           title: User
+        owner_sub:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Sub
         sort:
           anyOf:
           - $ref: '#/components/schemas/TableSort'
@@ -2136,6 +2188,28 @@ components:
       - status
       - id
       title: PageTaskLog
+    PasswordResetResponse:
+      properties:
+        url:
+          type: string
+          title: Url
+      type: object
+      required:
+      - url
+      title: PasswordResetResponse
+    PermissionCheckResponse:
+      properties:
+        permission:
+          type: string
+          title: Permission
+        granted:
+          type: boolean
+          title: Granted
+      type: object
+      required:
+      - permission
+      - granted
+      title: PermissionCheckResponse
     ProjectQueryStat:
       properties:
         target:
@@ -2392,6 +2466,19 @@ components:
           description: Optional salt for the (omex, simulator, cache_buster) result
             cache. Omit (or null) to reuse cached results for identical submissions;
             pass a unique value to force fresh biosimulations.org runs.
+        visibility:
+          anyOf:
+          - type: string
+            enum:
+            - public
+            - private
+          - type: 'null'
+          title: Visibility
+          description: 'Requested run visibility. Authenticated callers: omitted defaults
+            to private; ''public'' or ''private'' is honored (the run is always owned
+            by the caller). Anonymous submissions are always public -- a requested
+            ''private'' is forced to public because no identity exists to grant access
+            to.'
       type: object
       required:
       - omex_id
@@ -2699,10 +2786,13 @@ components:
       properties:
         page:
           type: integer
+          minimum: 1.0
           title: Page
           default: 1
         perPage:
           type: integer
+          maximum: 100.0
+          minimum: 1.0
           title: Perpage
           default: 20
         _total:
@@ -2839,6 +2929,11 @@ components:
           anyOf:
           - $ref: '#/components/schemas/GenerateStatisticsActivityOutput'
           - type: 'null'
+        owner_sub:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Sub
       type: object
       required:
       - workflow_id

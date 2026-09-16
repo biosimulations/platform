@@ -1,11 +1,15 @@
-"""Thin async client for the Auth0 Management API (api/v2/users/*).
+"""Thin async client for the Auth0 Management API (api/v2/*).
 
 Used by PATCH/DELETE /api/v1/me to actually mutate the Auth0 user record --
 Auth0 is the single source of truth for identity (no local password storage),
 so profile writes have to go through it rather than a local shadow table.
 
+Also used by POST /api/v1/me/password-reset to issue a short-lived hosted
+password-change ticket (api/v2/tickets/password-change).
+
 Requires a Machine-to-Machine Auth0 application authorized for the Management
-API with `update:users` / `delete:users` scopes (AUTH0_MANAGEMENT_CLIENT_ID /
+API with `update:users` / `delete:users` (profile writes) and
+`create:user_tickets` (password reset) scopes (AUTH0_MANAGEMENT_CLIENT_ID /
 AUTH0_MANAGEMENT_CLIENT_SECRET). Callers should check `management_api_configured()`
 first and surface a 503 when it's false, rather than let these raise.
 """
@@ -16,6 +20,7 @@ import random
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -225,3 +230,40 @@ async def delete_auth0_user(user_id: str) -> None:
             op="DELETE user",
         )
         resp.raise_for_status()
+
+
+async def create_password_change_ticket(user_id: str) -> str:
+    """Issue a short-lived bearer capability. Never retry uncertain issuance."""
+    settings = get_settings().auth0
+    headers = await _auth_headers()
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"https://{settings.domain}/api/v2/tickets/password-change",
+            headers=headers,
+            json={
+                "user_id": user_id,
+                "client_id": settings.password_reset_client_id,
+                "ttl_sec": 600,
+                "mark_email_as_verified": False,
+                "includeEmailInRedirect": False,
+            },
+            timeout=10.0,
+        )
+    if resp.status_code == 429:
+        raise Auth0ManagementRateLimited(10)
+    resp.raise_for_status()
+    payload = resp.json()
+    ticket = payload.get("ticket") if isinstance(payload, dict) else None
+    if not isinstance(ticket, str) or not ticket or any(
+        c.isspace() or ord(c) < 32 or c == "\\" for c in ticket
+    ):
+        raise Auth0ManagementError("Invalid password reset response")
+    parsed = urlsplit(ticket)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != settings.domain
+        or parsed.fragment
+        or not parsed.path.startswith("/")
+    ):
+        raise Auth0ManagementError("Invalid password reset response")
+    return ticket

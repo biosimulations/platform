@@ -186,6 +186,7 @@ async def test_valid_issuer_and_audience_is_accepted(
         _creds(KEY_A.token(issuer=ISSUER_A, audience=AUD_A, sub="auth0|alice"))
     )
     assert user.sub == "auth0|alice"
+    assert user.issuer == ISSUER_A
     assert endpoint.calls == [JWKS_A]
 
 

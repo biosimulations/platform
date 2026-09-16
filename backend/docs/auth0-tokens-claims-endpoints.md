@@ -176,6 +176,10 @@ Empty lists fail closed. Missing permissions on the token fail closed.
 
 `/api/v1/me` may enrich `name` / `email_verified` from the Auth0 Management API when
 configured. That enrichment is **not** an authorization input.
+`POST /api/v1/me/password-reset` uses the same Management API client to issue a hosted
+password-change ticket. The returned URL is a bearer capability: it is returned with
+`Cache-Control: no-store`, and the browser must navigate to it directly (never fetch it
+with the application's `Authorization` header).
 
 ---
 
@@ -200,6 +204,7 @@ return 401.
 | `POST /projects/reindex` | shared secret, **not** Auth0 | `PROJECT_REINDEX_TOKEN` | n/a |
 | `GET /api/v1/me` | `get_current_user` | any valid access token | `sub`, namespaced email (display) |
 | `PATCH` / `DELETE /api/v1/me` | `get_current_user` | same, plus Management API configured | `sub` (Management API user id) |
+| `POST /api/v1/me/password-reset` | `get_current_user` | same, plus Management API configured and authorized for `create:user_tickets`; caller's `iss` must be exactly `https://AUTH0_DOMAIN/` and `sub` must be a primary `auth0\|<id>` database user | `sub` only — caller-supplied email/user id/`result_url` are never forwarded; returns an Auth0-hosted ticket URL and sends no email |
 | `GET /api/v1/demo/private/me` | `get_current_user` | any valid access token | email or `sub` (gated by `ENABLE_RBAC_DEMO`) |
 | `GET /api/v1/demo/private/animal` | `get_current_user` | `require_roles(admin, publisher, user)` | namespaced **roles** |
 | `GET /api/v1/demo/private/permission` | `get_current_user` | `require_permissions("demo:read")` | **permissions** / `scope` |

@@ -246,3 +246,8 @@ def compatibility_rate_limit(
     authenticated/anonymous ceilings, keyed as ``compat:<identity>``.
     """
     _enforce_rate_limit(request, user, key_prefix="compat")
+
+
+def password_reset_rate_limit(request: Request, user: AuthenticatedUser) -> None:
+    """Separate self-service budget; caller supplies the required principal."""
+    _enforce_rate_limit(request, user, key_prefix="password-reset")

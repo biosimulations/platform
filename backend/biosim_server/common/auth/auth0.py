@@ -575,6 +575,7 @@ class AuthenticatedUser(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
 
     sub: str
+    issuer: str | None = None
     email: str | None = None
     roles: list[str] = Field(default_factory=list)
     email_verified: bool = False
@@ -729,7 +730,8 @@ async def get_current_user(
         raise _unauthorized("Invalid token", error="invalid_token", reason="missing_sub")
     _log_auth_event("success", "validated", sub=sub)
     return AuthenticatedUser(
-        sub=sub, email=email, roles=roles, email_verified=email_verified, permissions=permissions
+        sub=sub, issuer=expected_issuer, email=email, roles=roles,
+        email_verified=email_verified, permissions=permissions
     )
 
 

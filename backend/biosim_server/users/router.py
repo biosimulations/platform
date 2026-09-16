@@ -1,18 +1,25 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user
 from biosim_server.common.auth.auth0_management import (
     Auth0ManagementRateLimited,
+    create_password_change_ticket,
     delete_auth0_user,
     get_auth0_user,
     management_api_configured,
     update_auth0_user,
 )
-from biosim_server.users.models import UpdateUserProfileRequest, UserProfile
+from biosim_server.common.ratelimit import password_reset_rate_limit
+from biosim_server.config import get_settings
+from biosim_server.users.models import PasswordResetResponse, UpdateUserProfileRequest, UserProfile
 
 logger = logging.getLogger(__name__)
+
+# Every password-reset response is per-principal, and the 200 carries a bearer
+# capability -- no intermediary should retain any of them, errors included.
+_NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
 router = APIRouter(prefix="/api/v1", tags=["Users"])
 
@@ -111,3 +118,51 @@ async def delete_me(user: AuthenticatedUser = Depends(get_current_user)) -> Resp
         logger.exception("Failed to delete account through Auth0 Management API")
         raise HTTPException(status_code=502, detail="Failed to delete account via Auth0 Management API")
     return Response(status_code=204)
+
+
+@router.post(
+    "/me/password-reset",
+    response_model=PasswordResetResponse,
+    operation_id="create-current-user-password-reset",
+    summary="Create an Auth0-hosted password reset URL for the authenticated user",
+)
+async def reset_my_password(
+    request: Request,
+    response: Response,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PasswordResetResponse:
+    settings = get_settings().auth0
+    if not settings.domain or not settings.password_reset_client_id or not management_api_configured():
+        raise HTTPException(status_code=503, detail="Password reset is unavailable", headers=_NO_STORE)
+    # Quota is charged before the identity check so an ineligible principal cannot
+    # hammer the 403 branch unbounded; the 503 above is config-only and free.
+    try:
+        password_reset_rate_limit(request, user)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **_NO_STORE}
+        raise
+    if (
+        user.issuer != f"https://{settings.domain}/"
+        or not user.sub.startswith("auth0|")
+        or not user.sub.removeprefix("auth0|")
+        or user.sub.count("|") != 1
+        or user.sub.endswith("@clients")
+    ):
+        raise HTTPException(
+            status_code=403, detail="Password reset is unavailable for this account", headers=_NO_STORE
+        )
+    try:
+        url = await create_password_change_ticket(user.sub)
+    except Auth0ManagementRateLimited:
+        raise HTTPException(
+            status_code=503, detail="Password reset is temporarily unavailable",
+            headers={**_NO_STORE, "Retry-After": "10"},
+        ) from None
+    except Exception:
+        # Do not log exceptions: URLs/bodies may contain ticket or credential material.
+        logger.warning("Auth0 password reset request failed")
+        raise HTTPException(
+            status_code=502, detail="Unable to start password reset", headers=_NO_STORE
+        ) from None
+    response.headers.update(_NO_STORE)
+    return PasswordResetResponse(url=url)
