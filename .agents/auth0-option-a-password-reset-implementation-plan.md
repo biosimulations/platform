@@ -89,8 +89,8 @@ Reuse `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`, issuer/JWKS validation and server-only `
 New `AUTH0_PASSWORD_RESET_CLIENT_ID=<SPA_APPLICATION_CLIENT_ID>` associates hosted experience with this application; blank disables reset. It is not the M2M ID and is not itself secret. Ticket TTL fixed at 600 seconds. No result/return URL configuration or client override. Existing RATE_LIMIT_* settings apply with a separate reset bucket (default 30/60s per process); operators should tune and enforce ingress/global limits if needed.
 Local: use a test tenant, test SPA ID and secret store, same tenant domain as token issuer. Production: separate tenant/application credentials and trusted HTTPS application login URI. Never copy M2M secrets/tokens into NUXT_PUBLIC_* or frontend env. Custom-domain aliases are not silently accepted: current implementation requires token issuer and returned ticket host to match AUTH0_DOMAIN exactly; verify before enabling.
 
-## 10. Frontend Implementation Plan — DO NOT IMPLEMENT
-**STATUS: PLANNED ONLY — DO NOT IMPLEMENT DURING THIS TASK**
+## 10. Frontend Implementation Plan
+**STATUS: PLANNED ONLY**
 
 F1: `frontend/app/pages/profile.vue`: replace `sendPasswordResetLink` with authenticated ticket initiation. Keep social-provider guidance. Require logged-in user, disable duplicate clicks while loading, acquire access token with existing audience pattern, POST backend with explicit Bearer, no email/body/redirect. Change button to “Change password” and copy to explain leaving for Auth0 (remove email-sent success copy). On success navigate; on 401 prompt login; 403 explain provider-managed password; 429/503 permit retry with delay; otherwise generic error, never raw error/URL logging. A successful response only means ticket issued, not password changed. Re-login after completion if SDK session is stale.
 ```typescript
