@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type {ProjectFile, SimulationRunSedDocument, SimulationRunSummary} from "~/models/simulation";
+import type { ProjectsPagePayload, PageProjectOverview, PageProjectSimulationRun, PageProjectFile, PageSimulationRunSedDocument } from "~/models/page";
 import {ref, computed, onMounted} from "vue";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
@@ -14,9 +14,10 @@ const all_data_fetched = ref(false)
 const error_encountered = ref<string | undefined>(undefined)
 const breadcrumbs = ref<BreadcrumbItem[]>([])
 
-const project_summary = ref<any>(undefined)
-const run_summary = ref<SimulationRunSummary | undefined>(undefined)
-const run_files = ref<ProjectFile[] | undefined>(undefined)
+const project_overview = ref<PageProjectOverview | undefined>(undefined)
+const run_summary = ref<PageProjectSimulationRun | undefined>(undefined)
+const run_files = ref<PageProjectFile[] | undefined>(undefined)
+const run_specifications = ref<PageSimulationRunSedDocument[] | undefined>(undefined)
 
 const img_zoomed = ref(false)
 
@@ -62,46 +63,37 @@ const plot_config = ref({
   responsive: true,
 })
 
-const run_specifications = ref<SimulationRunSedDocument | undefined>(undefined)
-
 const isDescriptionExpanded = ref(false)
 const descriptionContent = computed(() => {
-  const raw = run_summary.value?.metadata?.[0]?.description;
+  const raw = run_summary.value?.description;
   if (!raw) return { html: '', isLong: false };
   const stripped = raw.replace(/<\/?[^>]+(>|$)/g, "");
   return { html: raw, isLong: stripped.length >= 250 };
 })
 
 useSeoMeta({
-  title: () => project_summary.value ? project_summary.value.simulationRun.name : 'Project',
-  description: () => project_summary.value?.simulationRun?.metadata?.[0]?.abstract || 'Explore this project on BioSimulations.',
-  author: () => project_summary.value?.simulationRun?.metadata?.[0]?.creators?.map((c: any) => c.label).join(', ') || 'BioSimulations',
-  keywords: () => project_summary.value?.simulationRun?.metadata?.[0]?.keywords?.map((k: any) => k.label).join(', ') || 'biosimulations, project'
+  title: () => run_summary.value ? run_summary.value.name : 'Project',
+  description: () => run_summary.value?.abstract || 'Explore this project on BioSimulations.',
+  author: () => run_summary.value?.creators?.map(c => c.label).join(', ') || 'BioSimulations',
+  keywords: () => run_summary.value?.keywords?.map(k => k.label).join(', ') || 'biosimulations, project'
 })
 
 async function fetch_run() {
   try {
-    const projSumm: any = await $fetch(`${runtimeConfig.public.legacy_api_url}/projects/${route.params.id}/summary`);
-    project_summary.value = projSumm;
-    const simRunId = projSumm.simulationRun.id;
-    run_summary.value = projSumm.simulationRun;
-
-    const [filesData, specsData] = await Promise.all([
-      $fetch(`${runtimeConfig.public.legacy_api_url}/files/${simRunId}`).catch(() => []),
-      $fetch(`${runtimeConfig.public.legacy_api_url}/specifications/${simRunId}`).catch(() => undefined)
-    ]);
-
-    run_files.value = filesData as ProjectFile[];
-    run_specifications.value = specsData as SimulationRunSedDocument;
+    const payload = await $fetch<ProjectsPagePayload>(`${runtimeConfig.public.api_url}/projects/${route.params.id}/page`);
+    project_overview.value = payload.project;
+    run_summary.value = payload.simulationRun;
+    run_files.value = payload.files;
+    run_specifications.value = payload.specifications;
 
     all_data_fetched.value = true;
 
-    useVisualizations(simRunId, run_files.value || [], run_specifications.value).then((lists) => {
+    useVisualizations(payload.simulationRun.id, payload.files, payload.specifications).then((lists) => {
       visualizationsLists.value = lists;
     });
 
   } catch (error: any) {
-    console.log(`Error fetching project data:`, error);
+    console.error(`Error fetching project data:`, error);
     error_encountered.value = error.message;
   }
 }
@@ -142,9 +134,9 @@ interface MetadataSection {
 function getMetadataSections(): MetadataSection[] {
   const sections: MetadataSection[] = []
 
-  if (run_summary.value?.metadata?.[0]) {
-    const md = run_summary.value.metadata[0]
-    if (md.citations && md.citations.length > 0) {
+  if (run_summary.value) {
+    const run = run_summary.value
+    if (run.citations && run.citations.length > 0) {
       sections.push({
         label: 'Identifiers',
         defaultOpen: true,
@@ -152,13 +144,13 @@ function getMetadataSections(): MetadataSection[] {
           {
             icon: 'i-lucide-book',
             title: 'Citation',
-            values: md.citations.map((c: any) => ({ label: c.label, url: c.uri }))
+            values: run.citations.filter(c => c.label).map(c => ({ label: c.label, url: c.uri || undefined }))
           }
         ]
       })
     }
     // Encodes for biology
-    if (md.encodes && md.encodes.length > 0) {
+    if (run.encodes && run.encodes.length > 0) {
       sections.push({
         label: 'Biology',
         defaultOpen: true,
@@ -166,27 +158,26 @@ function getMetadataSections(): MetadataSection[] {
           {
             icon: 'i-lucide-dna',
             title: 'Taxonomy/Biology',
-            values: md.encodes.map((e: any) => ({ label: e.label, url: e.uri }))
+            values: run.encodes.filter(e => e.label).map(e => ({ label: e.label, url: e.uri || undefined }))
           }
         ]
       })
     }
-      const simItems: MetadataItem[] = []
-      if (run_summary.value.run?.simulator) {
-        simItems.push({
-          icon: 'i-lucide-cpu',
-          title: 'Simulator',
-          values: [{ label: `${run_summary.value.run.simulator.name} v${run_summary.value.run.simulator.version}` }]
-        })
-      }
-      if (run_specifications.value?.tasks) {
-        const models = new Set(run_specifications.value.tasks.map((t: any) => t.model?.language?.acronym || t.model?.language?.name || t.model?.language?.sedmlUrn))
-        simItems.push({
-          icon: 'i-lucide-file-code',
-          title: 'Model Formats',
-          values: [{ label: Array.from(models).join(', ') }]
-        })
-      }
+    const simItems: MetadataItem[] = []
+    if (run.simulator) {
+      simItems.push({
+        icon: 'i-lucide-cpu',
+        title: 'Simulator',
+        values: [{ label: `${run.simulator.name} v${run.simulator.version}` }]
+      })
+    }
+    if (run.modelFormats && run.modelFormats.length > 0) {
+      simItems.push({
+        icon: 'i-lucide-file-code',
+        title: 'Model Formats',
+        values: [{ label: run.modelFormats.join(', ') }]
+      })
+    }
     if (simItems.length > 0) {
       sections.push({ label: 'Simulation', defaultOpen: true, items: simItems })
     }
@@ -221,7 +212,7 @@ const detailedInfoSections = computed(() => getMetadataSections())
 
         <div class="w-full flex flex-col gap-4">
           <div class="w-full flex flex-col lg:flex-row items-start gap-4">
-            <template v-if="!run_summary?.metadata?.[0]?.thumbnails?.[0]">
+            <template v-if="!run_summary?.thumbnails?.[0]">
               <div class="w-full lg:w-187.5 h-48 lg:h-auto bg-neutral-50 flex items-center justify-center p-4 rounded-lg border border-neutral-300">
                 <p><em>No thumbnail available</em></p>
               </div>
@@ -232,11 +223,11 @@ const detailedInfoSections = computed(() => getMetadataSections())
                   <Icon name="i-lucide-zoom-in" class="text-white size-8" />
                   <p class="text-lg text-white font-bold">Click to expand</p>
                 </div>
-                <NuxtImg :src="`${runtimeConfig.public.legacy_api_url}/files/${run_summary!.id}/${run_summary!.metadata![0]!.thumbnails[0]}/download?thumbnail=view`" alt="Simulation Thumbnail Image" class="w-full" />
+                <NuxtImg :src="`${runtimeConfig.public.legacy_api_url}/files/${run_summary!.id}/${run_summary!.thumbnails[0]}/download?thumbnail=view`" alt="Simulation Thumbnail Image" class="w-full" />
                 <vue-easy-lightbox
                   class="lenis-prevent"
                   :visible="img_zoomed"
-                  :imgs="[`${runtimeConfig.public.legacy_api_url}/files/${run_summary!.id}/${run_summary!.metadata![0]!.thumbnails[0]}/download`]"
+                  :imgs="[`${runtimeConfig.public.legacy_api_url}/files/${run_summary!.id}/${run_summary!.thumbnails[0]}/download`]"
                   :index="0"
                   @hide="img_zoomed = false"
                 />
@@ -257,11 +248,11 @@ const detailedInfoSections = computed(() => getMetadataSections())
                 </tr>
                 <tr>
                   <td class="py-1"><p class="text-sm font-bold">Created:</p></td>
-                  <td class="py-1"><span class="text-sm text-color"><NuxtTime v-if="project_summary?.created" :datetime="project_summary?.created" /><span v-else>N/A</span></span></td>
+                  <td class="py-1"><span class="text-sm text-color"><NuxtTime v-if="project_overview?.created" :datetime="project_overview?.created" /><span v-else>N/A</span></span></td>
                 </tr>
                 <tr>
                   <td class="py-1"><p class="text-sm font-bold">Updated:</p></td>
-                  <td class="py-1"><span class="text-sm text-color"><NuxtTime v-if="project_summary?.updated" :datetime="project_summary?.updated" /><span v-else>N/A</span></span></td>
+                  <td class="py-1"><span class="text-sm text-color"><NuxtTime v-if="project_overview?.updated" :datetime="project_overview?.updated" /><span v-else>N/A</span></span></td>
                 </tr>
                 </tbody>
               </table>
@@ -368,7 +359,7 @@ const detailedInfoSections = computed(() => getMetadataSections())
           <!-- Files & Outputs Section -->
           <div class="w-full flex flex-col gap-2">
             <p class="text-lg mb-2"><strong>Files & Outputs</strong></p>
-            <FilesOutputsTable :summary="run_summary" :files="run_files" />
+            <FilesOutputsTable :summary="run_summary" :files="run_files" :run-id="run_summary?.id" />
           </div>
         </div>
       </template>

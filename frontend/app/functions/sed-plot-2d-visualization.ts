@@ -1,4 +1,4 @@
-import type { SedPlot2D, SedStyle } from '~/models/sedml';
+import type { PageSedOutput, PageSedCurveStyle } from '~/models/page';
 import { flattenTaskResults, getRepeatedTaskTraceLabel } from './utils';
 import hexToRgba from 'hex-to-rgba';
 import {type PlotlyDataLayout, type PlotlyTrace, type PlotlyTraceLineDash, type PlotlyTraceMarkerSymbol, PlotlyTraceMode, PlotlyTraceType} from "~/models/plotly";
@@ -70,7 +70,7 @@ const sedMarkerStyleTypePlotlyMap: {
 export function getPlotlyDataLayout(
   simulationRunId: string,
   sedDocLocation: string,
-  plot: SedPlot2D,
+  plot: PageSedOutput,
   results: SimulationRunOutput,
 ): PlotlyDataLayout {
   if (sedDocLocation.startsWith('./')) {
@@ -83,7 +83,7 @@ export function getPlotlyDataLayout(
   const xAxisTitlesSet = new Set<string>();
   const yAxisTitlesSet = new Set<string>();
   const errors: string[] = [];
-  for (const curve of plot.curves) {
+  for (const curve of plot.curves || []) {
     const xGenId = typeof curve.xDataGenerator === 'string' ? curve.xDataGenerator : curve.xDataGenerator.id;
     const yGenId = typeof curve.yDataGenerator === 'string' ? curve.yDataGenerator : curve.yDataGenerator.id;
 
@@ -100,7 +100,7 @@ export function getPlotlyDataLayout(
       xAxisTitlesSet.add(xGenName);
       yAxisTitlesSet.add(yGenName);
 
-      const style: SedStyle | undefined = curve?.style ? resolveStyle(curve.style) : undefined;
+      const style = curve?.style ? resolveStyle(curve.style) : undefined;
 
       const flatData = flattenTaskResults([xData, yData]);
 
@@ -252,68 +252,63 @@ function getOutputIdFromSedmlLocationId(location: string): string {
   return location.split('/').reverse()[0] || '';
 }
 
-function resolveStyle(style: SedStyle): SedStyle {
+function resolveStyle(style: PageSedCurveStyle | string): any {
   let resolvedStyle: any;
+
+  if (typeof style === 'string') {
+    return {
+      _type: 'SedStyle',
+      id: style,
+    };
+  }
 
   if (style?.base) {
     resolvedStyle = resolveStyle(style.base);
   } else {
     resolvedStyle = {
       _type: 'SedStyle',
-      id: style.id,
     };
   }
 
-  resolvedStyle.id = style.id;
-  resolvedStyle.name = style?.name;
   resolvedStyle.base = style?.base;
 
-  if (style?.line !== undefined) {
+  if (style?.line !== undefined && style?.line !== null) {
     if (resolvedStyle?.line === undefined) {
       resolvedStyle.line = {
         _type: 'SedLineStyle',
       };
     }
-    if (style.line?.type !== undefined) {
+    if (style.line.type !== undefined && style.line.type !== null) {
       resolvedStyle.line.type = style.line.type;
     }
-    if (style.line?.color !== undefined) {
+    if (style.line.color !== undefined && style.line.color !== null) {
       resolvedStyle.line.color = style.line.color;
     }
-    if (style.line?.thickness !== undefined) {
+    if (style.line.thickness !== undefined && style.line.thickness !== null) {
       resolvedStyle.line.thickness = style.line.thickness;
     }
   }
 
-  if (style?.marker !== undefined) {
+  if (style?.marker !== undefined && style?.marker !== null) {
     if (resolvedStyle?.marker === undefined) {
       resolvedStyle.marker = {
         _type: 'SedMarkerStyle',
       };
     }
-    if (style.marker?.type !== undefined) {
+    if (style.marker.type !== undefined && style.marker.type !== null) {
       resolvedStyle.marker.type = style.marker.type;
     }
-    if (style.marker?.size !== undefined) {
+    if (style.marker.size !== undefined && style.marker.size !== null) {
       resolvedStyle.marker.size = style.marker.size;
     }
-    if (style.marker?.lineColor !== undefined) {
+    if (style.marker.lineColor !== undefined && style.marker.lineColor !== null) {
       resolvedStyle.marker.lineColor = style.marker.lineColor;
     }
-    if (style.marker?.lineThickness !== undefined) {
+    if (style.marker.lineThickness !== undefined && style.marker.lineThickness !== null) {
       resolvedStyle.marker.lineThickness = style.marker.lineThickness;
     }
-    if (style.marker?.fillColor !== undefined) {
+    if (style.marker.fillColor !== undefined && style.marker.fillColor !== null) {
       resolvedStyle.marker.fillColor = style.marker.fillColor;
-    }
-  }
-
-  if (style?.fill !== undefined) {
-    if (resolvedStyle?.fill === undefined) {
-      resolvedStyle.fill = {
-        _type: 'SedFillStyle',
-        color: style.fill.color,
-      };
     }
   }
 

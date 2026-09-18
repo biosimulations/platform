@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import type {SimulationRun} from "~/models/simulators";
-import type {ProjectFile, SimulationRunSedDocument, SimulationRunSummary} from "~/models/simulation";
-import {ref, computed, onMounted} from "vue";
+import type { RunsPagePayload, PageSimulationRun, PageSimulationRunSummary, PageProjectFile, PageSimulationRunSedDocument, PageSimulationLog } from "~/models/page";
+import {ref, computed, onMounted, nextTick, watch} from "vue";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
 import {normalize_text} from "~/functions/functions";
 import { useVisualizations } from "~/composables/useVisualizations";
@@ -15,13 +14,11 @@ const all_data_fetched = ref(false)
 const error_encountered = ref<string | undefined>(undefined)
 const breadcrumbs = ref<BreadcrumbItem[]>([])
 
-const run_info = ref<SimulationRun | undefined>(undefined)
-const run_summary = ref<SimulationRunSummary | undefined>(undefined)
-const run_files = ref<ProjectFile[] | undefined>(undefined)
+const run_info = ref<PageSimulationRun | undefined>(undefined)
+const run_summary = ref<PageSimulationRunSummary | undefined>(undefined)
+const run_files = ref<PageProjectFile[] | undefined>(undefined)
 
 const img_zoomed = ref(false)
-
-const fetched_data_array: boolean[] = []
 
 const visualizationsLists = ref<VisualizationList[]>([])
 const selectedVisualizationList = ref<VisualizationList | undefined>(undefined)
@@ -76,12 +73,12 @@ const plot_config = ref({
   responsive: true,
 })
 
-const run_specifications = ref<SimulationRunSedDocument | undefined>(undefined)
-const run_logs = ref<any>()
+const run_specifications = ref<PageSimulationRunSedDocument[] | undefined>(undefined)
+const run_logs = ref<PageSimulationLog | null | undefined>(undefined)
 
 const isDescriptionExpanded = ref(false)
 const descriptionContent = computed(() => {
-  const raw = run_summary.value?.metadata?.[0]?.description;
+  const raw = run_summary.value?.description;
   if (!raw) return { html: '<p><em>No description available for this run.</em></p>', isLong: false };
   const stripped = raw.replace(/<\/?[^>]+(>|$)/g, "");
   return { html: raw, isLong: stripped.length >= 250 };
@@ -111,76 +108,49 @@ function downloadRawLog() {
 }
 
 useSeoMeta({
-  title: () => run_summary.value ? run_summary.value.name : 'Run',
-  description: () => run_summary.value?.metadata?.[0]?.abstract || 'Explore this simulation run on BioSimulations.',
-  author: () => run_summary.value?.metadata?.[0]?.creators?.map((c: any) => c.label).join(', ') || 'BioSimulations',
-  keywords: () => run_summary.value?.metadata?.[0]?.keywords?.map((k: any) => k.label).join(', ') || 'biosimulations, run, simulation'
+  title: () => run_summary.value?.name || run_info.value?.name || 'Run',
+  description: () => run_summary.value?.abstract || 'Explore this simulation run on BioSimulations.',
+  author: () => run_summary.value?.creators?.map(c => c.label).join(', ') || 'BioSimulations',
+  keywords: () => run_summary.value?.keywords?.map(k => k.label).join(', ') || 'biosimulations, run, simulation'
 })
 
 async function fetch_run() {
-  const run_endpoints: any[] = [
-    {
-      url: `${runtimeConfig.public.legacy_api_url}/runs/${route.params.id}`,
-      success: (data: SimulationRun) => { run_info.value = data },
-    },
-    {
-      url: `${runtimeConfig.public.legacy_api_url}/runs/${route.params.id}/summary`,
-      success: (data: SimulationRunSummary) => { run_summary.value = data },
-    },
-    {
-      url: `${runtimeConfig.public.legacy_api_url}/files/${route.params.id}`,
-      success: (data: ProjectFile[]) => { run_files.value = data },
-    },
-    {
-      url: `${runtimeConfig.public.legacy_api_url}/specifications/${route.params.id}`,
-      success: (data: SimulationRunSedDocument) => { run_specifications.value = data },
-    },
-    {
-      url: `${runtimeConfig.public.legacy_api_url}/logs/${route.params.id}`,
-      success: (data: any) => { run_logs.value = data },
-    }
-  ]
+  try {
+    const payload = await $fetch<RunsPagePayload>(`${runtimeConfig.public.api_url}/runs/${route.params.id}/page`);
+    run_info.value = payload.info;
+    run_summary.value = payload.summary;
+    run_files.value = payload.files;
+    run_specifications.value = payload.specifications;
+    run_logs.value = payload.logs;
 
-  run_endpoints.forEach(({url, success}) => {
-    $fetch(url, {
-      method: 'GET',
-    })
-      .then((data: any) => {
-        success(data)
-        fetched_data_array.push(true)
+    all_data_fetched.value = true;
 
-        if (fetched_data_array.length == run_endpoints.length) {
-          all_data_fetched.value = true
+    nextTick(() => {
+      if (route.hash === '#logs') {
+        const el = document.querySelector('#logs');
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+      }
+    });
 
-          nextTick(() => {
-            if (route.hash === '#logs') {
-              const el = document.querySelector('#logs');
-              if (el) el.scrollIntoView({ behavior: 'smooth' });
-            }
-          });
-
-          useVisualizations(route.params.id as string, run_files.value || [], run_specifications.value).then((lists) => {
-            visualizationsLists.value = lists;
-            if (lists.length > 0 && lists[0]) {
-              selectedVisualizationList.value = lists[0];
-              if (lists[0].visualizations.length > 0) {
-                selectedVisualization.value = lists[0].visualizations[0];
-              }
-            }
-            nextTick(() => {
-              if (route.hash === '#visualization') {
-                const el = document.querySelector(route.hash);
-                if (el) el.scrollIntoView({ behavior: 'smooth' });
-              }
-            });
-          });
+    useVisualizations(route.params.id as string, payload.files || [], payload.specifications).then((lists) => {
+      visualizationsLists.value = lists;
+      if (lists.length > 0 && lists[0]) {
+        selectedVisualizationList.value = lists[0];
+        if (lists[0].visualizations.length > 0) {
+          selectedVisualization.value = lists[0].visualizations[0];
         }
-      })
-      .catch((error: any) => {
-        console.log(`Error fetching ${url}:`, error)
-        error_encountered.value = error.message
-      })
-  })
+      }
+      nextTick(() => {
+        if (route.hash === '#visualization') {
+          const el = document.querySelector(route.hash);
+          if (el) el.scrollIntoView({ behavior: 'smooth' });
+        }
+      });
+    });
+  } catch (error: any) {
+    console.error(`Error fetching run data:`, error);
+    error_encountered.value = error.message;
+  }
 }
 
 onMounted(async () => {
@@ -225,7 +195,7 @@ onMounted(async () => {
 
         <div class="w-full flex flex-col gap-4">
           <div class="w-full flex flex-col lg:flex-row items-start gap-4">
-            <template v-if="!run_summary?.metadata?.[0]?.thumbnails?.[0]">
+            <template v-if="!run_summary?.thumbnails?.[0]">
               <div class="w-full lg:w-187.5 h-48 lg:h-auto bg-neutral-50 flex items-center justify-center p-4 rounded-lg border border-neutral-300">
                 <p><em>No thumbnail available</em></p>
               </div>
@@ -236,11 +206,11 @@ onMounted(async () => {
                   <Icon name="i-lucide-zoom-in" class="text-white size-8" />
                   <p class="text-lg text-white font-bold">Click to expand</p>
                 </div>
-                <NuxtImg :src="`${runtimeConfig.public.legacy_api_url}/files/${run_info!.id}/${run_summary!.metadata![0]!.thumbnails[0]}/download?thumbnail=view`" alt="Simulation Thumbnail Image" class="w-full" />
+                <NuxtImg :src="`${runtimeConfig.public.legacy_api_url}/files/${run_info!.id}/${run_summary!.thumbnails[0]}/download?thumbnail=view`" alt="Simulation Thumbnail Image" class="w-full" />
                 <vue-easy-lightbox
                   class="lenis-prevent"
                   :visible="img_zoomed"
-                  :imgs="[`${runtimeConfig.public.legacy_api_url}/files/${run_info!.id}/${run_summary!.metadata![0]!.thumbnails[0]}/download`]"
+                  :imgs="[`${runtimeConfig.public.legacy_api_url}/files/${run_info!.id}/${run_summary!.thumbnails[0]}/download`]"
                   :index="0"
                   @hide="img_zoomed = false"
                 />
@@ -418,7 +388,7 @@ onMounted(async () => {
 
             <template #content>
               <div class="mt-4">
-                <FilesOutputsTable :summary="run_summary" :files="run_files" />
+                <FilesOutputsTable :summary="run_summary" :files="run_files" :run-id="run_info?.id" />
               </div>
             </template>
           </UCollapsible>

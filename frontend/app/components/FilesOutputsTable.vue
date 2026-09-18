@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { SimulationRunSummary, ProjectFile } from '~/models/simulation'
+import type { PageProjectFile, PageRunSummary, PageProjectSimulationRun } from '~/models/page'
 
 const props = defineProps<{
-  summary?: SimulationRunSummary
-  files?: ProjectFile[]
+  summary?: PageRunSummary | PageProjectSimulationRun | any
+  files?: PageProjectFile[]
+  runId?: string
 }>()
 
 const columns = [
@@ -19,15 +20,25 @@ const tableData = computed(() => {
 
   const config = useRuntimeConfig()
 
-  const formattedProjectSize = (props.summary.run?.projectSize !== undefined)
-    ? formatSize(props.summary.run.projectSize)
-    : 'N/A';
+  const effectiveRunId = props.runId || props.summary?.id || props.summary?.info?.id || ''
 
-  const formattedResultsSize = (props.summary.run?.resultsSize !== undefined)
-    ? formatSize(props.summary.run.resultsSize)
-    : 'N/A';
+  const projectSizeNum = props.summary?.projectSize !== undefined && props.summary?.projectSize !== null
+    ? props.summary.projectSize
+    : props.summary?.run?.projectSize
 
-  function buildTree(files: ProjectFile[]) {
+  const resultsSizeNum = props.summary?.resultsSize !== undefined && props.summary?.resultsSize !== null
+    ? props.summary.resultsSize
+    : props.summary?.run?.resultsSize
+
+  const formattedProjectSize = (projectSizeNum !== undefined && projectSizeNum !== null)
+    ? formatSize(projectSizeNum)
+    : 'N/A'
+
+  const formattedResultsSize = (resultsSizeNum !== undefined && resultsSizeNum !== null)
+    ? formatSize(resultsSizeNum)
+    : 'N/A'
+
+  function buildTree(files: PageProjectFile[]) {
     const root = { children: {} as any }
     for (const f of files) {
       const parts = f.location.split('/')
@@ -75,19 +86,19 @@ const tableData = computed(() => {
       name: 'outputs.json',
       format: 'JSON',
       size: 'N/A',
-      downloadUrl: `${config.public.legacy_api_url}/results/${props.summary.id}?includeData=true`
+      downloadUrl: `${config.public.legacy_api_url}/results/${effectiveRunId}?includeData=true`
     },
     {
       name: 'outputs.zip',
       format: 'ZIP archive',
       size: formattedResultsSize,
-      downloadUrl: `${config.public.legacy_api_url}/results/${props.summary.id}/download`
+      downloadUrl: `${config.public.legacy_api_url}/results/${effectiveRunId}/download`
     },
     {
       name: 'log.json',
       format: 'JSON',
       size: 'N/A',
-      downloadUrl: `${config.public.legacy_api_url}/logs/${props.summary.id}`
+      downloadUrl: `${config.public.legacy_api_url}/logs/${effectiveRunId}`
     }
   ]
 
@@ -96,14 +107,14 @@ const tableData = computed(() => {
       name: 'Simulation Specification (COMBINE/OMEX archive)',
       format: 'COMBINE/OMEX archive',
       size: formattedProjectSize,
-      downloadUrl: `${config.public.legacy_api_url}/runs/${props.summary.id}/download`,
+      downloadUrl: `${config.public.legacy_api_url}/runs/${effectiveRunId}/download`,
       children: specChildren
     },
     {
       name: 'Simulation Outputs',
       format: 'ZIP archive',
       size: formattedResultsSize,
-      downloadUrl: `${config.public.legacy_api_url}/results/${props.summary.id}/download`,
+      downloadUrl: `${config.public.legacy_api_url}/results/${effectiveRunId}/download`,
       children: outputChildren
     }
   ]
@@ -148,9 +159,7 @@ function formatSize(valueBytes: number) {
 async function forceDownload(url: string, filename: string) {
   if (!url) return;
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('Network response was not ok');
-    const blob = await response.blob();
+    const blob = await $fetch<Blob>(url, { responseType: 'blob' });
     const windowUrl = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.style.display = 'none';

@@ -55,246 +55,232 @@
       leadingIcon: 'i-lucide-book-open' // w-4
     }
   ])
-  const cta_links = ref([
-    {
-      label: 'Run a simulation',
-      class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      to: '/simulations/run' as const,
-      size: 'md' as const,
-      color: 'neutral' as const,
-      variant: 'subtle' as const,
-      leadingIcon: 'i-gravity-ui-play-fill' // w-4
-    },
-    {
-      label: 'Compare Simulators',
-      class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md' as const,
-      color: 'neutral' as const,
-      leadingIcon: 'i-lucide-cpu' // w-4
-    },
-    {
-      label: 'Browse simulations',
-      class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      to: '/simulations' as const,
-      size: 'md' as const,
-      color: 'neutral' as const,
-      variant: 'subtle' as const,
-      leadingIcon: 'i-lucide-search' // w-4
-    },
-    {
-      label: 'Submit a simulation',
-      class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md' as const,
-      color: 'neutral' as const,
-      variant: 'subtle' as const,
-      leadingIcon: 'i-mynaui-send-solid' // w-4
-    },
-    {
-      label: 'Visit the docs',
-      class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md' as const,
-      color: 'neutral' as const,
-      variant: 'subtle' as const,
-      leadingIcon: 'i-lucide-book-open' // w-4
-    }
-  ])
-  // TODO: Update names and urls, add numerical sequential ids
+
   const partners = ref([
     {
       id: 1,
-      url: 'https://google.com',
+      name: 'Karr Lab',
+      url: 'https://karrlab.org',
       src: '/images/collab_partners/image.png',
-      alt: 'Partner Logo or Image'
+      alt: 'Karr Lab at Mount Sinai'
     },
     {
       id: 2,
-      url: 'https://google.com',
+      name: 'NIBIB',
+      url: 'https://www.nibib.nih.gov',
       src: '/images/collab_partners/image-2.png',
-      alt: 'Partner Logo or Image'
+      alt: 'National Institute of Biomedical Imaging and Bioengineering'
     },
     {
       id: 3,
-      url: 'https://google.com',
+      name: 'ModelDB',
+      url: 'https://senselab.med.yale.edu/modeldb/',
       src: '/images/collab_partners/image-3.png',
-      alt: 'Partner Logo or Image'
+      alt: 'ModelDB Computational Neuroscience'
     },
     {
       id: 4,
-      url: 'https://google.com',
+      name: 'NSF',
+      url: 'https://www.nsf.gov',
       src: '/images/collab_partners/image-4.png',
-      alt: 'Partner Logo or Image'
+      alt: 'National Science Foundation'
     },
     {
       id: 5,
-      url: 'https://google.com',
+      name: 'University of Washington',
+      url: 'https://www.washington.edu',
       src: '/images/collab_partners/image-5.png',
-      alt: 'Partner Logo or Image'
+      alt: 'University of Washington'
     },
     {
       id: 6,
-      url: 'https://google.com',
+      name: 'UConn Health',
+      url: 'https://health.uconn.edu',
       src: '/images/collab_partners/image-6.png',
-      alt: 'Partner Logo or Image'
+      alt: 'UConn Health Center for Cell Analysis & Modeling'
     },
     {
       id: 7,
-      url: 'https://google.com',
+      name: 'CRBM',
+      url: 'https://reproduciblebiomedicalmodeling.org',
       src: '/images/collab_partners/image-7.png',
-      alt: 'Partner Logo or Image'
+      alt: 'Center for Reproducible Biomedical Modeling'
     },
     {
       id: 8,
-      url: 'https://google.com',
+      name: 'BioModels',
+      url: 'https://www.ebi.ac.uk/biomodels/',
       src: '/images/collab_partners/image-8.png',
-      alt: 'Partner Logo or Image'
+      alt: 'BioModels Database'
     },
     {
       id: 9,
-      url: 'https://google.com',
+      name: 'BiGG Models',
+      url: 'http://bigg.ucsd.edu/',
       src: '/images/collab_partners/image-9.png',
-      alt: 'Partner Logo or Image'
+      alt: 'BiGG Models Knowledgebase'
     },
     {
       id: 10,
-      url: 'https://google.com',
+      name: 'Mount Sinai',
+      url: 'https://icahn.mssm.edu',
       src: '/images/collab_partners/image-10.png',
-      alt: 'Partner Logo or Image'
+      alt: 'Icahn School of Medicine at Mount Sinai'
     },
     {
       id: 11,
-      url: 'https://google.com',
+      name: 'JWS Online',
+      url: 'https://jjj.bio.vu.nl/',
       src: '/images/collab_partners/image-11.png',
-      alt: 'Partner Logo or Image'
+      alt: 'JWS Online Cellular Systems Modeling'
     },
     {
       id: 12,
-      url: 'https://google.com',
+      name: 'RBA',
+      url: 'https://rba.inrae.fr/',
       src: '/images/collab_partners/image-12.png',
-      alt: 'Partner Logo or Image'
+      alt: 'Resource Balance Analysis'
     },
     {
       id: 13,
-      url: 'https://google.com',
+      name: 'NIH',
+      url: 'https://www.nih.gov',
       src: '/images/collab_partners/image-13.png',
-      alt: 'Partner Logo or Image'
+      alt: 'National Institutes of Health'
     }
   ])
 
-  // TODO: Update names and urls, add numerical sequential ids starting from 1
   const built_using = ref([
     {
       id: 1,
-      url: 'https://google.com',
+      name: 'COMBINE',
+      url: 'https://combine-org.github.io/',
       src: '/images/built_using/image.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'COMBINE Standards'
     },
     {
       id: 2,
-      url: 'https://google.com',
+      name: 'COPASI',
+      url: 'https://copasi.org/',
       src: '/images/built_using/image-2.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'COPASI Biochemical Network Simulator'
     },
     {
       id: 3,
-      url: 'https://google.com',
+      name: 'GitHub',
+      url: 'https://github.com/biosimulations',
       src: '/images/built_using/image-3.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'GitHub'
     },
     {
       id: 4,
-      url: 'https://google.com',
+      name: 'Modeling Tools Group',
+      url: 'https://combine-org.github.io/',
       src: '/images/built_using/image-4.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'Modeling Tools Group'
     },
     {
       id: 5,
-      url: 'https://google.com',
+      name: 'NestJS',
+      url: 'https://nestjs.com/',
       src: '/images/built_using/image-5.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'NestJS Framework'
     },
     {
       id: 6,
-      url: 'https://google.com',
+      name: 'Netlify',
+      url: 'https://www.netlify.com/',
       src: '/images/built_using/image-6.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'Netlify Cloud Platform'
     },
     {
       id: 7,
-      url: 'https://google.com',
+      name: 'BioSimulators',
+      url: 'https://biosimulators.org/',
       src: '/images/built_using/image-7.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'BioSimulators Registry'
     },
     {
       id: 8,
-      url: 'https://google.com',
+      name: 'Font Awesome',
+      url: 'https://fontawesome.com/',
       src: '/images/built_using/image-8.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'Font Awesome'
     },
     {
       id: 9,
-      url: 'https://google.com',
+      name: 'BioSimulations',
+      url: 'https://biosimulations.org/',
       src: '/images/built_using/image-9.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'BioSimulations Ecosystem'
     },
     {
       id: 10,
-      url: 'https://google.com',
+      name: 'Kubernetes',
+      url: 'https://kubernetes.io/',
       src: '/images/built_using/image-10.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'Kubernetes Container Orchestration'
     },
     {
       id: 11,
-      url: 'https://google.com',
+      name: 'Docker',
+      url: 'https://www.docker.com/',
       src: '/images/built_using/image-11.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'Docker Container Engine'
     },
     {
       id: 12,
-      url: 'https://google.com',
+      name: 'OpenAPI',
+      url: 'https://swagger.io/',
       src: '/images/built_using/image-12.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'OpenAPI Swagger Specifications'
     },
     {
       id: 13,
-      url: 'https://google.com',
+      name: 'Material Design',
+      url: 'https://m3.material.io/',
       src: '/images/built_using/image-13.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'Material Design'
     },
     {
       id: 14,
-      url: 'https://google.com',
+      name: 'Auth0',
+      url: 'https://auth0.com/',
       src: '/images/built_using/image-14.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'Auth0 Identity Platform'
     },
     {
       id: 15,
-      url: 'https://google.com',
+      name: 'MongoDB',
+      url: 'https://www.mongodb.com/',
       src: '/images/built_using/image-15.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'MongoDB Database'
     },
     {
       id: 16,
-      url: 'https://google.com',
+      name: 'Plotly',
+      url: 'https://plotly.com/',
       src: '/images/built_using/image-16.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'Plotly Scientific Visualizations'
     },
     {
       id: 17,
-      url: 'https://google.com',
+      name: 'Angular',
+      url: 'https://angular.dev/',
       src: '/images/built_using/image-17.png',
-      alt: 'Logo or Image of Technology/Platform Used'
+      alt: 'Angular Web Framework'
     }
   ])
   const workflow_features = ref<WorkflowFeature[]>([
     {
       title: 'Run a Simulation',
-      description: 'Execute custom simulations online',
+      description: 'Execute custom simulations online in containerized cloud environments',
       selected: false,
       duration: 10000,
       associated_multimedia: {
         type: 'image',
         src: '/images/workflow_multimedia/image.jpg',
-        alt: ''
+        alt: 'Illustration of running a simulation online'
       }
     },
     {
@@ -305,62 +291,62 @@
       associated_multimedia: {
         type: 'image',
         src: '/images/workflow_multimedia/image.jpg',
-        alt: ''
+        alt: 'Illustration of discovering and comparing simulators'
       }
     },
     {
       title: 'Browse Simulations',
-      description: 'Execute custom simulations online',
+      description: 'Browse and search published, peer-reviewed simulations and biomodels in the database',
       selected: false,
       duration: 10000,
       associated_multimedia: {
         type: 'image',
         src: '/images/workflow_multimedia/image-2.jpg',
-        alt: ''
+        alt: 'Illustration of browsing published simulations'
       }
     },
     {
       title: 'Submit a Simulation',
-      description: 'Execute custom simulations online',
+      description: 'Upload and publish your own simulation experiments, models, and COMBINE archives',
       selected: false,
       duration: 10000,
       associated_multimedia: {
         type: 'image',
         src: '/images/workflow_multimedia/image-3.jpg',
-        alt: ''
+        alt: 'Illustration of submitting a simulation experiment'
       }
     },
     {
       title: 'Convert a File',
-      description: 'Execute custom simulations online',
+      description: 'Convert and validate simulation files, SED-ML specifications, and model formats',
       selected: false,
       duration: 10000,
       associated_multimedia: {
         type: 'image',
         src: '/images/workflow_multimedia/image-4.jpg',
-        alt: ''
+        alt: 'Illustration of file conversion and validation'
       }
     },
     {
       title: 'REST API',
-      description: 'Execute custom simulations online',
+      description: 'Programmatically interact with BioSimulations using our automated OpenAPI REST endpoints',
       selected: false,
       duration: 10000,
       associated_multimedia: {
         type: 'image',
         src: '/images/workflow_multimedia/image-5.jpg',
-        alt: ''
+        alt: 'Illustration of BioSimulations REST API integration'
       }
     },
     {
       title: 'Documentation',
-      description: 'Execute custom simulations online',
+      description: 'Explore comprehensive guides, tutorials, and community standards documentation',
       selected: false,
       duration: 10000,
       associated_multimedia: {
         type: 'image',
         src: '/images/workflow_multimedia/image-6.jpg',
-        alt: ''
+        alt: 'Illustration of BioSimulations documentation and user guides'
       }
     }
   ])
@@ -533,6 +519,8 @@
     animationFrame = requestAnimationFrame(animate);
   };
 
+  let resizeHandler: (() => void) | null = null;
+
   // --- 4. Lifecycle & Resize ---
   const init = () => {
     if (!canvas.value) return;
@@ -561,7 +549,8 @@
       drawGridCache(width, height, dpr);
     };
 
-    window.addEventListener('resize', resize);
+    resizeHandler = resize;
+    window.addEventListener('resize', resizeHandler);
     resize();
 
     // Accessibility check
@@ -580,7 +569,9 @@
 
   onUnmounted(() => {
     cancelAnimationFrame(animationFrame);
-    window.removeEventListener('resize', () => {});
+    if (resizeHandler) {
+      window.removeEventListener('resize', resizeHandler);
+    }
   });
 </script>
 <template>
@@ -648,7 +639,7 @@
       <div class="w-full flex flex-col items-center gap-6">
         <p class="text-lg text-center"><strong>In Collaboration With</strong></p>
         <UMarquee class="w-full overflow-hidden" pause-on-hover :overlay="false" orientation="horizontal">
-          <NuxtLink v-for="partner of partners" :key="partner.id" :to="partner.url" target="_blank">
+          <NuxtLink v-for="partner of partners" :key="partner.id" :to="partner.url" target="_blank" rel="noopener noreferrer">
             <img class="max-h-[40px] max-w-[250px] w-full h-full" :alt="partner.alt" :src="partner.src"/>
           </NuxtLink>
         </UMarquee>
@@ -658,7 +649,7 @@
       <div class="w-full flex flex-col items-center gap-6">
         <p class="text-lg text-center"><strong>Built Using These Awesome Projects & Platforms</strong></p>
         <UMarquee class="w-full overflow-hidden" pause-on-hover reverse :overlay="false" orientation="horizontal">
-          <NuxtLink v-for="built_item of built_using" :key="built_item.id" :to="built_item.url" target="_blank">
+          <NuxtLink v-for="built_item of built_using" :key="built_item.id" :to="built_item.url" target="_blank" rel="noopener noreferrer">
             <img class="max-h-[40px] max-w-[250px] w-full h-full" :alt="built_item.alt" :src="built_item.src"/>
           </NuxtLink>
         </UMarquee>
@@ -674,22 +665,22 @@
         <small class="uppercase tracking-widest text-[0.8rem] font-semibold">Simulators</small>
         <p>Access a registry of biosimulation tools encompassing diverse frameworks, algorithms, and model format curated to streamline the simulation process. The registry, powered by conventions like SED-ML, offers readily available Python packages, command-line programs, and Docker images for consistent execution.</p>
         <div class="flex items-center gap-4 mt-3">
-          <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-rocket" to="/simulators/get-started">Get Started</UButton>
-          <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulators">Browse Simulators</UButton>
+          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-rocket" to="/simulators/get-started">Get Started</UButton>
+          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulators">Browse Simulators</UButton>
         </div>
         <br>
         <small class="uppercase tracking-widest text-[0.8rem] font-semibold">Simulations</small>
         <p>Access a wide range of frameworks (e.g., logical, Flux-Balance Analysis (FBA), continuous kinetic, discrete kinetic), simulation algorithms (e.g., FBA, SSA), model formats (e.g., SBML), and tools (e.g., COBRApy, COPASI, tellurium) and connect with a community of others supercharging their bio-data processing.</p>
         <div class="flex items-center gap-4 mt-3">
-          <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-sparkles" to="/simulations/run">Run a Simulation</UButton>
-          <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulations">Browse Simulation Runs</UButton>
+          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-sparkles" to="/simulations/run">Run a Simulation</UButton>
+          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulations">Browse Simulation Runs</UButton>
         </div>
       </div>
 
       <div id="color_gradient" class="absolute top-0 left-0 w-full h-full z-2"></div>
       <div id="top_fade_gradient" class="absolute top-0 left-0 w-full h-full z-3"></div>
     </section>
-    <section id="workflow" class="w-full px-6 text-center md:text-left">
+    <section id="workflow" class="w-full px-6 text-center md:text-left mb-[125px]">
       <div id="workflow_content" class="w-full max-w-[1200px] mx-auto flex flex-col gap-8">
         <div class="w-full flex flex-col gap-2">
           <h1 class="text-3xl font-bold">Your Workflow, Your Way</h1>
@@ -719,36 +710,6 @@
           </div>
         </div>
       </div>
-    </section>
-    <section id="get_started" class="w-full bg-blue-500">
-      <UPageCTA
-        class=""
-        variant="naked"
-        title="Ready To Get Started?"
-        description="The next step in your bio-simulations journey is here. The rest is up to you!"
-        :links="cta_links"
-        :ui="{
-          wrapper: 'w-full flex flex-col items-center gap-[40px] py-[100px]',
-          header: 'w-full flex flex-col items-center gap-[8px]',
-          title: 'text-center text-white !text-3xl font-bold',
-          container: 'max-w-[1200px] w-full px-4 !lg:px-0 !py-0 gap-y-[75px] mx-auto',
-          description: 'mt-0 text-center text-white text-lg',
-          links: 'flex flex-wrap gap-x-[16px] gap-y-[8px]',
-          footer: 'mt-0'
-        }"
-      >
-      </UPageCTA>
-<!--      <div id="get_started_content" class="w-full max-w-[1200px] mx-auto flex flex-col gap-5 p-[100px]">
-        <h1 class="text-center text-white text-3xl font-bold">Ready To Get Started?</h1>
-        <p class="text-center text-white text-lg">The next step in your bio-simulations journey is here. The rest is up to you!</p>
-
-        <div class="w-full flex items-center justify-center gap-4 mt-8">
-          <UButton></UButton>
-          <UButton></UButton>
-          <UButton></UButton>
-          <UButton></UButton>
-        </div>
-      </div>-->
     </section>
   </div>
 </template>

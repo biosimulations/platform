@@ -1,19 +1,19 @@
-import type { ProjectFile, SimulationRunSedDocument } from '~/models/simulation';
+import type { PageProjectFile, PageSimulationRunSedDocument } from '~/models/page';
 import type { VisualizationList, VegaVisualization, SedPlot2DVisualization, Visualization } from '~/models/visualizations';
 import {getPlotlyDataLayout} from '~/functions/sed-plot-2d-visualization';
 import { reactive } from 'vue';
 
 export async function useVisualizations(
   runId: string,
-  files: ProjectFile[],
-  sedDocs: SimulationRunSedDocument | SimulationRunSedDocument[] | undefined
+  files: PageProjectFile[],
+  sedDocs: PageSimulationRunSedDocument | PageSimulationRunSedDocument[] | undefined
 ): Promise<VisualizationList[]> {
 
   const config = useRuntimeConfig();
   const api_url = config.public.legacy_api_url;
 
   // Normalize sedDocs to array
-  const sedmlArchiveContents: SimulationRunSedDocument[] = [];
+  const sedmlArchiveContents: PageSimulationRunSedDocument[] = [];
   if (Array.isArray(sedDocs)) {
     sedmlArchiveContents.push(...sedDocs);
   } else if (sedDocs) {
@@ -98,7 +98,7 @@ export async function useVisualizations(
         const resultUrl = `${api_url}/results/${runId}/${outputIdParam}?includeData=true`;
 
         $fetch(resultUrl).then((results: any) => {
-          vis.plotlyDataLayout = getPlotlyDataLayout(runId, location, output as any, results);
+          vis.plotlyDataLayout = getPlotlyDataLayout(runId, location, output, results);
           vis._isLoading = false;
         }).catch((err) => {
           console.error(`Failed to generate Plotly data for ${output.id}`, err);
