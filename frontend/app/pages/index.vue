@@ -55,49 +55,7 @@
       leadingIcon: 'i-lucide-book-open' // w-4
     }
   ])
-  const cta_links = ref([
-    {
-      label: 'Run a simulation',
-      class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      to: '/simulations/run' as const,
-      size: 'md' as const,
-      color: 'neutral' as const,
-      variant: 'subtle' as const,
-      leadingIcon: 'i-gravity-ui-play-fill' // w-4
-    },
-    {
-      label: 'Compare Simulators',
-      class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md' as const,
-      color: 'neutral' as const,
-      leadingIcon: 'i-lucide-cpu' // w-4
-    },
-    {
-      label: 'Browse simulations',
-      class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      to: '/simulations' as const,
-      size: 'md' as const,
-      color: 'neutral' as const,
-      variant: 'subtle' as const,
-      leadingIcon: 'i-lucide-search' // w-4
-    },
-    {
-      label: 'Submit a simulation',
-      class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md' as const,
-      color: 'neutral' as const,
-      variant: 'subtle' as const,
-      leadingIcon: 'i-mynaui-send-solid' // w-4
-    },
-    {
-      label: 'Visit the docs',
-      class: 'cursor-pointer !gap-2 text-base font-semibold rounded-lg !text-white !border-white !bg-white/0 !border-1',
-      size: 'md' as const,
-      color: 'neutral' as const,
-      variant: 'subtle' as const,
-      leadingIcon: 'i-lucide-book-open' // w-4
-    }
-  ])
+
   // TODO: Update names and urls, add numerical sequential ids
   const partners = ref([
     {
@@ -674,22 +632,22 @@
         <small class="uppercase tracking-widest text-[0.8rem] font-semibold">Simulators</small>
         <p>Access a registry of biosimulation tools encompassing diverse frameworks, algorithms, and model format curated to streamline the simulation process. The registry, powered by conventions like SED-ML, offers readily available Python packages, command-line programs, and Docker images for consistent execution.</p>
         <div class="flex items-center gap-4 mt-3">
-          <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-rocket" to="/simulators/get-started">Get Started</UButton>
-          <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulators">Browse Simulators</UButton>
+          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-rocket" to="/simulators/get-started">Get Started</UButton>
+          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulators">Browse Simulators</UButton>
         </div>
         <br>
         <small class="uppercase tracking-widest text-[0.8rem] font-semibold">Simulations</small>
         <p>Access a wide range of frameworks (e.g., logical, Flux-Balance Analysis (FBA), continuous kinetic, discrete kinetic), simulation algorithms (e.g., FBA, SSA), model formats (e.g., SBML), and tools (e.g., COBRApy, COPASI, tellurium) and connect with a community of others supercharging their bio-data processing.</p>
         <div class="flex items-center gap-4 mt-3">
-          <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-sparkles" to="/simulations/run">Run a Simulation</UButton>
-          <UButton class="w-max bg-transparent border-1 hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulations">Browse Simulation Runs</UButton>
+          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-sparkles" to="/simulations/run">Run a Simulation</UButton>
+          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulations">Browse Simulation Runs</UButton>
         </div>
       </div>
 
       <div id="color_gradient" class="absolute top-0 left-0 w-full h-full z-2"></div>
       <div id="top_fade_gradient" class="absolute top-0 left-0 w-full h-full z-3"></div>
     </section>
-    <section id="workflow" class="w-full px-6 text-center md:text-left">
+    <section id="workflow" class="w-full px-6 text-center md:text-left mb-[125px]">
       <div id="workflow_content" class="w-full max-w-[1200px] mx-auto flex flex-col gap-8">
         <div class="w-full flex flex-col gap-2">
           <h1 class="text-3xl font-bold">Your Workflow, Your Way</h1>
@@ -719,36 +677,6 @@
           </div>
         </div>
       </div>
-    </section>
-    <section id="get_started" class="w-full bg-blue-500">
-      <UPageCTA
-        class=""
-        variant="naked"
-        title="Ready To Get Started?"
-        description="The next step in your bio-simulations journey is here. The rest is up to you!"
-        :links="cta_links"
-        :ui="{
-          wrapper: 'w-full flex flex-col items-center gap-[40px] py-[100px]',
-          header: 'w-full flex flex-col items-center gap-[8px]',
-          title: 'text-center text-white !text-3xl font-bold',
-          container: 'max-w-[1200px] w-full px-4 !lg:px-0 !py-0 gap-y-[75px] mx-auto',
-          description: 'mt-0 text-center text-white text-lg',
-          links: 'flex flex-wrap gap-x-[16px] gap-y-[8px]',
-          footer: 'mt-0'
-        }"
-      >
-      </UPageCTA>
-<!--      <div id="get_started_content" class="w-full max-w-[1200px] mx-auto flex flex-col gap-5 p-[100px]">
-        <h1 class="text-center text-white text-3xl font-bold">Ready To Get Started?</h1>
-        <p class="text-center text-white text-lg">The next step in your bio-simulations journey is here. The rest is up to you!</p>
-
-        <div class="w-full flex items-center justify-center gap-4 mt-8">
-          <UButton></UButton>
-          <UButton></UButton>
-          <UButton></UButton>
-          <UButton></UButton>
-        </div>
-      </div>-->
     </section>
   </div>
 </template>
