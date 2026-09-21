@@ -194,7 +194,7 @@ onMounted(() => {
       <UBreadcrumb class="mx-auto" :items="breadcrumbs" />
 
       <!-- Hero Header Banner (Consistent with runs/[id].vue and projects/[id].vue) -->
-      <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-3 rounded-xl shadow-md text-center">
+      <div class="page_header relative overflow-hidden w-full p-5 sm:p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-3 rounded-xl shadow-md text-center">
         <div class="flex flex-wrap items-center justify-center gap-3">
           <h1 class="text-2xl sm:text-3xl font-bold tracking-tight">{{ simulator.name }}</h1>
           <UBadge color="neutral" variant="subtle" size="lg" class="font-semibold text-sm px-3 py-1">
@@ -234,7 +234,8 @@ onMounted(() => {
               :href="author.orcidUrl"
               target="_blank"
               rel="noopener noreferrer"
-              title="ORCID profile"
+              :title="`ORCID profile for ${author.name}`"
+              :aria-label="`View ${author.name}'s ORCID profile (opens in new tab)`"
               class="text-green-300 hover:text-white inline-flex items-center"
             >
               <UIcon name="i-lucide-award" class="w-3.5 h-3.5" />
@@ -245,9 +246,9 @@ onMounted(() => {
       </div>
 
       <!-- Bento Trio: "Run", "Standardized", and "Details" -->
-      <div class="w-full grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
-        <!-- Left: "Run" Card + "Standardized" Execution Card (Spans first 2 columns) -->
-        <div class="md:col-span-2 w-full flex flex-col gap-6 min-w-0">
+      <div class="w-full grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">
+        <!-- Left: "Run" Card + "Standardized" Execution Card (Spans first 2 columns on desktop) -->
+        <div class="lg:col-span-2 w-full flex flex-col gap-6 min-w-0">
           <!-- 1. "Run" Online CTA Card -->
           <div class="w-full p-6 border border-primary-200 dark:border-primary-900/50 rounded-xl bg-primary-50/50 dark:bg-primary-950/20 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div class="flex items-center gap-3.5">
@@ -332,6 +333,7 @@ onMounted(() => {
                   :href="`https://github.com/orgs/biosimulators/packages/container/package/${simulator.id}`"
                   target="_blank"
                   rel="noopener noreferrer"
+                  :aria-label="`View ${simulator.name} container on GitHub Packages (opens in new tab)`"
                   class="text-primary-600 hover:underline inline-flex items-center gap-1 font-medium"
                 >
                   <span>GHCR Repository</span>
@@ -349,6 +351,7 @@ onMounted(() => {
                     color="neutral"
                     variant="ghost"
                     icon="i-lucide-copy"
+                    aria-label="Copy Docker pull command to clipboard"
                     class="absolute top-2.5 right-2.5 opacity-80 group-hover:opacity-100 cursor-pointer text-white hover:bg-neutral-800"
                     @click="copyText(`docker pull ${simulator.image.url}`, 'Docker pull command')"
                   />
@@ -365,6 +368,7 @@ onMounted(() => {
                     color="neutral"
                     variant="ghost"
                     icon="i-lucide-copy"
+                    aria-label="Copy Docker run command to clipboard"
                     class="absolute top-2.5 right-2.5 opacity-80 group-hover:opacity-100 cursor-pointer text-white hover:bg-neutral-800"
                     @click="copyText(`docker run -v /path/to/archive:/archive:ro -v /path/to/outputs:/outputs:rw ${simulator.image.url} -i /archive/model.omex -o /outputs`, 'Docker run command')"
                   />
@@ -381,6 +385,7 @@ onMounted(() => {
                     color="neutral"
                     variant="ghost"
                     icon="i-lucide-copy"
+                    aria-label="Copy Docker help command to clipboard"
                     class="absolute top-2.5 right-2.5 opacity-80 group-hover:opacity-100 cursor-pointer text-white hover:bg-neutral-800"
                     @click="copyText(`docker run ${simulator.image.url} --help`, 'Docker help command')"
                   />
@@ -410,6 +415,7 @@ onMounted(() => {
                     color="neutral"
                     variant="ghost"
                     icon="i-lucide-copy"
+                    aria-label="Copy Singularity pull command to clipboard"
                     class="absolute top-2.5 right-2.5 opacity-80 group-hover:opacity-100 cursor-pointer text-white hover:bg-neutral-800"
                     @click="copyText(`singularity pull docker://${simulator.image.url}`, 'Singularity pull command')"
                   />
@@ -426,6 +432,7 @@ onMounted(() => {
                     color="neutral"
                     variant="ghost"
                     icon="i-lucide-copy"
+                    aria-label="Copy Singularity run command to clipboard"
                     class="absolute top-2.5 right-2.5 opacity-80 group-hover:opacity-100 cursor-pointer text-white hover:bg-neutral-800"
                     @click="copyText(`singularity run -B /path/to/archive:/archive:ro -B /path/to/outputs:/outputs:rw docker://${simulator.image.url} -i /archive/model.omex -o /outputs`, 'Singularity run command')"
                   />
@@ -444,6 +451,7 @@ onMounted(() => {
                   :href="simulator.cli.package?.startsWith('http') ? simulator.cli.package : `https://pypi.org/project/${simulator.cli.package}/`"
                   target="_blank"
                   rel="noopener noreferrer"
+                  :aria-label="`View ${simulator.cli.package} on ${simulator.cli.packageRepository || 'PyPI'} (opens in new tab)`"
                   class="text-primary-600 hover:underline inline-flex items-center gap-1 font-medium"
                 >
                   <span>{{ simulator.cli.packageRepository || 'PyPI' }}: {{ simulator.cli.package }}</span>
@@ -461,6 +469,7 @@ onMounted(() => {
                     color="neutral"
                     variant="ghost"
                     icon="i-lucide-copy"
+                    aria-label="Copy CLI install command to clipboard"
                     class="absolute top-2.5 right-2.5 opacity-80 group-hover:opacity-100 cursor-pointer text-white hover:bg-neutral-800"
                     @click="copyText(`pip install ${simulator.cli.package}`, 'Pip install command')"
                   />
@@ -477,6 +486,7 @@ onMounted(() => {
                     color="neutral"
                     variant="ghost"
                     icon="i-lucide-copy"
+                    aria-label="Copy CLI run command to clipboard"
                     class="absolute top-2.5 right-2.5 opacity-80 group-hover:opacity-100 cursor-pointer text-white hover:bg-neutral-800"
                     @click="copyText(`${simulator.cli.command} -i /path/to/archive.omex -o /path/to/outputs`, 'CLI run command')"
                   />
@@ -495,6 +505,7 @@ onMounted(() => {
                   :href="simulator.pythonApi.package?.startsWith('http') ? simulator.pythonApi.package : `https://pypi.org/project/${simulator.pythonApi.package}/`"
                   target="_blank"
                   rel="noopener noreferrer"
+                  :aria-label="`View ${simulator.pythonApi.package} on PyPI (opens in new tab)`"
                   class="text-primary-600 hover:underline inline-flex items-center gap-1 font-medium"
                 >
                   <span>PyPI: {{ simulator.pythonApi.package }}</span>
@@ -512,6 +523,7 @@ onMounted(() => {
                     color="neutral"
                     variant="ghost"
                     icon="i-lucide-copy"
+                    aria-label="Copy Python pip install command to clipboard"
                     class="absolute top-2.5 right-2.5 opacity-80 group-hover:opacity-100 cursor-pointer text-white hover:bg-neutral-800"
                     @click="copyText(`pip install ${simulator.pythonApi.package}`, 'Pip install command')"
                   />
@@ -529,6 +541,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
                     color="neutral"
                     variant="ghost"
                     icon="i-lucide-copy"
+                    aria-label="Copy Python code snippet to clipboard"
                     class="absolute top-2.5 right-2.5 opacity-80 group-hover:opacity-100 cursor-pointer text-white hover:bg-neutral-800"
                     @click="copyText(`import ${simulator.pythonApi.module} as simulator\nsimulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/outputs')`, 'Python code snippet')"
                   />
@@ -544,7 +557,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
         </div>
 
         <!-- 3. "Details" Panel (Spans 3rd column, aligning with the 3-column row below) -->
-        <div class="metadata_panel md:col-span-1 w-full flex flex-col justify-between p-6 rounded-xl border border-neutral-300 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 shadow-sm min-w-0">
+        <div class="metadata_panel lg:col-span-1 w-full flex flex-col justify-between p-5 sm:p-6 rounded-xl border border-neutral-300 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 shadow-sm min-w-0">
           <div class="flex flex-col">
             <div class="w-full flex items-center justify-between gap-2">
               <div class="flex items-center gap-2">
@@ -567,7 +580,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
               <tbody class="divide-y divide-neutral-200 dark:divide-neutral-800">
                 <!-- Version Selector Row -->
                 <tr>
-                  <td class="py-2.5 font-bold text-color pr-3 w-28">Version:</td>
+                  <th scope="row" class="py-2.5 font-bold text-color text-left pr-3 w-24 sm:w-28 font-medium">Version:</th>
                   <td class="py-2.5">
                     <USelectMenu
                       v-if="simulator.versions.length > 0"
@@ -575,6 +588,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
                       :items="simulator.versions.map(v => v.version)"
                       class="w-full"
                       size="xs"
+                      aria-label="Select simulator version"
                       @update:model-value="onVersionSelect"
                     />
                     <span v-else class="font-mono">v{{ simulator.version }}</span>
@@ -583,14 +597,15 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
 
                 <!-- Curation Rating (NO BADGE) -->
                 <tr>
-                  <td class="py-2.5 font-bold text-color pr-3">Curation:</td>
+                  <th scope="row" class="py-2.5 font-bold text-color text-left pr-3 font-medium">Curation:</th>
                   <td class="py-2.5">
                     <UTooltip :text="simulator.curationStatusMessage">
                       <div class="flex items-center gap-1.5 cursor-default select-none">
-                        <span class="text-amber-500 font-bold text-base tracking-wider">
+                        <span class="sr-only">Curation rating: {{ simulator.curationStatus }} out of 5 stars ({{ simulator.curationStatusMessage }})</span>
+                        <span aria-hidden="true" class="text-amber-500 font-bold text-base tracking-wider">
                           {{ '★'.repeat(simulator.curationStatus) + '☆'.repeat(5 - simulator.curationStatus) }}
                         </span>
-                        <span class="text-xs text-muted font-medium">({{ simulator.curationStatus }}/5)</span>
+                        <span aria-hidden="true" class="text-xs text-muted font-medium">({{ simulator.curationStatus }}/5)</span>
                       </div>
                     </UTooltip>
                   </td>
@@ -598,13 +613,14 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
 
                 <!-- License -->
                 <tr>
-                  <td class="py-2.5 font-bold text-color pr-3">License:</td>
+                  <th scope="row" class="py-2.5 font-bold text-color text-left pr-3 font-medium">License:</th>
                   <td class="py-2.5">
                     <a
                       v-if="simulator.licenseUrl"
                       :href="simulator.licenseUrl"
                       target="_blank"
                       rel="noopener noreferrer"
+                      :aria-label="`View ${simulator.licenseName || 'license'} (opens in new tab)`"
                       class="text-primary-600 hover:underline font-medium inline-flex items-center gap-1"
                     >
                       <span>{{ simulator.licenseName || 'View License' }}</span>
@@ -616,7 +632,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
 
                 <!-- Registered Date -->
                 <tr>
-                  <td class="py-2.5 font-bold text-color pr-3">Registered:</td>
+                  <th scope="row" class="py-2.5 font-bold text-color text-left pr-3 font-medium">Registered:</th>
                   <td class="py-2.5 text-muted">
                     <NuxtTime v-if="simulator.created" :datetime="simulator.created" />
                     <span v-else>N/A</span>
@@ -625,7 +641,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
 
                 <!-- Last Updated Date -->
                 <tr>
-                  <td class="py-2.5 font-bold text-color pr-3">Updated:</td>
+                  <th scope="row" class="py-2.5 font-bold text-color text-left pr-3 font-medium">Updated:</th>
                   <td class="py-2.5 text-muted">
                     <NuxtTime v-if="simulator.updated" :datetime="simulator.updated" />
                     <span v-else>N/A</span>
@@ -657,6 +673,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
               size="sm"
               icon="i-lucide-globe"
               :label="simulator.urls[0].title || 'Home Page'"
+              :aria-label="`Visit ${simulator.name} official homepage (opens in new tab)`"
               block
               class="cursor-pointer font-medium"
             />
@@ -670,6 +687,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
               size="sm"
               icon="i-lucide-box"
               label="Docker Image (GHCR)"
+              aria-label="View Docker Image on GitHub Packages (opens in new tab)"
               block
               class="cursor-pointer font-medium"
             />
@@ -683,6 +701,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
               size="sm"
               icon="i-lucide-terminal"
               label="PyPI Package"
+              :aria-label="`View ${simulator.cli?.package || simulator.pythonApi?.package} package on PyPI (opens in new tab)`"
               block
               class="cursor-pointer font-medium"
             />
@@ -693,6 +712,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
               size="sm"
               icon="i-lucide-share-2"
               label="Copy Page Link"
+              aria-label="Copy simulator page link to clipboard"
               block
               class="cursor-pointer font-medium"
               @click="copyText(`${runtimeConfig.public.base_url || ''}/simulators/${simulator.id}/${simulator.version}`, 'Simulator link')"
@@ -702,7 +722,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
       </div>
 
       <!-- Full-Width Bento Row: "Supported OS", "Languages", and "Interfaces" Trio -->
-      <div class="w-full grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="w-full grid grid-cols-1 lg:grid-cols-3 gap-6">
         <!-- Supported OS Card -->
         <div class="p-5 border border-neutral-200 dark:border-neutral-800 rounded-xl bg-neutral-50/50 dark:bg-neutral-900/50 shadow-xs flex flex-col gap-3">
           <span class="text-sm font-bold text-color flex items-center gap-2">
@@ -1029,8 +1049,11 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
                     <!-- Curation Rating in Table (NO BADGE) -->
                     <td class="p-3.5">
                       <UTooltip :text="v.curationStatusMessage">
-                        <span class="text-amber-500 font-bold text-sm tracking-wider cursor-default select-none">
-                          {{ '★'.repeat(v.curationStatus) + '☆'.repeat(5 - v.curationStatus) }}
+                        <span class="inline-flex items-center cursor-default select-none">
+                          <span class="sr-only">Curation rating: {{ v.curationStatus }} out of 5 stars ({{ v.curationStatusMessage }})</span>
+                          <span aria-hidden="true" class="text-amber-500 font-bold text-sm tracking-wider">
+                            {{ '★'.repeat(v.curationStatus) + '☆'.repeat(5 - v.curationStatus) }}
+                          </span>
                         </span>
                       </UTooltip>
                     </td>
@@ -1054,6 +1077,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
                         color="primary"
                         variant="outline"
                         label="View Version"
+                        :aria-label="`View simulator details for version ${v.version}`"
                         class="cursor-pointer"
                       />
                       <span v-else class="text-xs text-muted font-medium">Active</span>
@@ -1246,7 +1270,8 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
                           :href="res.caseArchiveUrl"
                           target="_blank"
                           rel="noopener noreferrer"
-                          title="Download sample OMEX archive"
+                          :title="`Download sample OMEX archive for ${res.caseId}`"
+                          :aria-label="`Download sample OMEX archive for test case ${res.caseId} (opens in new tab)`"
                           class="p-1.5 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-600 dark:text-neutral-300 transition-colors"
                         >
                           <UIcon name="i-lucide-download" class="w-4 h-4" />
@@ -1255,7 +1280,8 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
                           :href="res.caseUrl"
                           target="_blank"
                           rel="noopener noreferrer"
-                          title="View test case source code"
+                          :title="`View source code for ${res.caseId}`"
+                          :aria-label="`View source code for test case ${res.caseId} on GitHub (opens in new tab)`"
                           class="p-1.5 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-600 dark:text-neutral-300 transition-colors"
                         >
                           <UIcon name="i-lucide-code" class="w-4 h-4" />
@@ -1266,6 +1292,8 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
                           color="neutral"
                           variant="ghost"
                           :icon="expandedTestLogs[res.caseId] ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
+                          :aria-label="expandedTestLogs[res.caseId] ? `Collapse log details for test case ${res.caseId}` : `Expand log details for test case ${res.caseId}`"
+                          :aria-expanded="expandedTestLogs[res.caseId] ? 'true' : 'false'"
                           class="cursor-pointer"
                           @click="toggleTestLog(res.caseId)"
                         />
@@ -1432,6 +1460,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
                   variant="outline"
                   icon="i-lucide-copy"
                   label="Copy JSON"
+                  aria-label="Copy specifications JSON to clipboard"
                   class="cursor-pointer"
                   @click="copyText(simulator.rawJson, 'Specifications JSON')"
                 />
@@ -1441,6 +1470,7 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
                   variant="soft"
                   icon="i-lucide-download"
                   label="Download JSON"
+                  aria-label="Download simulator specifications JSON file"
                   class="cursor-pointer"
                   @click="downloadSpecificationsJson"
                 />

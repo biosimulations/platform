@@ -447,7 +447,7 @@ function formatDate(dateString: string | null) {
   <section class="w-full min-h-[calc(100vh-var(--ui-header-height))] p-6 max-w-(--ui-container) mx-auto flex flex-col gap-4">
     <UBreadcrumb class="mx-auto" :items="breadcrumbs" />
 
-    <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
+    <div class="page_header relative overflow-hidden w-full p-5 sm:p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
       <div class="background diamonds w-full h-full" />
       <h1 class="text-xl font-bold">Simulators</h1>
       <p class="text-center max-w-2xl text-sm md:text-base">
@@ -472,6 +472,7 @@ function formatDate(dateString: string | null) {
             v-model="search_query"
             placeholder="Search simulators (e.g. COPASI, SBML)..."
             icon="i-lucide-search"
+            aria-label="Search simulators by name, ID, framework, or algorithm"
             class="w-full"
             clearable
           />
@@ -502,6 +503,7 @@ function formatDate(dateString: string | null) {
               label="Columns"
               color="neutral"
               variant="outline"
+              aria-label="Toggle visible table columns"
               trailing-icon="i-lucide-chevron-down"
             />
           </UDropdownMenu>
@@ -566,6 +568,7 @@ function formatDate(dateString: string | null) {
                   variant="ghost"
                   class="cursor-pointer"
                   icon="i-lucide-filter"
+                  :aria-label="`Filter by ${tableColumn.columnDef.header}`"
                 />
                 <template #content>
                   <div class="p-3 w-64">
@@ -688,8 +691,11 @@ function formatDate(dateString: string | null) {
           <!-- Curation Status Cell (NO BADGE, clean stars) -->
           <template #curationStatus-cell="{ row }">
             <UTooltip :text="row.original.curationStatusMessage">
-              <span class="text-amber-500 font-bold text-sm tracking-wider select-none cursor-default">
-                {{ '★'.repeat(row.original.curationStatus) + '☆'.repeat(5 - row.original.curationStatus) }}
+              <span class="inline-flex items-center select-none cursor-default">
+                <span class="sr-only">Curation rating: {{ row.original.curationStatus }} out of 5 stars ({{ row.original.curationStatusMessage }})</span>
+                <span aria-hidden="true" class="text-amber-500 font-bold text-sm tracking-wider">
+                  {{ '★'.repeat(row.original.curationStatus) + '☆'.repeat(5 - row.original.curationStatus) }}
+                </span>
               </span>
             </UTooltip>
           </template>
@@ -773,6 +779,7 @@ function formatDate(dateString: string | null) {
                 color="neutral"
                 variant="ghost"
                 icon="i-lucide-ellipsis-vertical"
+                :aria-label="`Actions for simulator ${row.original.name}`"
               />
             </UDropdownMenu>
           </template>
