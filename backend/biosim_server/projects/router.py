@@ -3,16 +3,25 @@
 Two decoupled GET endpoints replace the legacy ``/projects/summary_filtered``
 so paging through slim results is independent of the heavier facet computation
 (see ``docs/project-search-api-plan.md``).
+
+``GET /{id}/summary`` returns a validated, platform-owned summary contract.
 """
 
 import json
 import logging
+import secrets
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import ValidationError
 
 from biosim_server.config import get_settings
-from biosim_server.dependencies import get_project_database_service
+from biosim_server.common.upstream import fetch_upstream_json, upstream_url
+from biosim_server.pages.models import ProjectsPagePayload
+from biosim_server.pages.service import assemble_project_page
+from biosim_server.summaries.mapping import map_project_summary
+from biosim_server.summaries.models import ProjectSummary
+from biosim_server.dependencies import get_http_client, get_project_database_service
 from biosim_server.projects.models import (
     ProjectQueryStat,
     ProjectSearchFilter,
@@ -29,11 +38,36 @@ def require_reindex_token(authorization: str | None = Header(default=None)) -> N
 
     Disabled by default: with no token configured the endpoint returns 503, so
     it can't be triggered over the public ingress. The routine rebuild runs as an
-    in-cluster CronJob (direct Mongo), not through this endpoint."""
+    in-cluster CronJob (direct Mongo), not through this endpoint.
+
+    Uses secrets.compare_digest for a constant-time comparison (TODO P1 #15).
+    compare_digest requires both arguments to be the same type (str/str or
+    bytes/bytes) and, for str, ASCII only -- Starlette decodes header bytes
+    as latin-1, so a non-ASCII Authorization value would otherwise raise
+    TypeError and surface as an unhandled 500. Encode both sides to UTF-8
+    before comparing. The `authorization is None` check MUST run first: a
+    missing header is the common unauthenticated probe and must stay a
+    clean 401, not a TypeError.
+
+    Keep-and-harden (P1 #15): this endpoint stays. It is the only HTTP
+    path that can rebuild the project search index without cluster access;
+    disabling it when PROJECT_REINDEX_TOKEN is unset is the public-ingress
+    control. Deleting it would force every rebuild through the CronJob.
+    """
     token = get_settings().project_reindex_token
     if not token:
         raise HTTPException(status_code=503, detail="reindex endpoint disabled (no token configured)")
-    if authorization != f"Bearer {token}":
+    expected = f"Bearer {token}"
+    if authorization is None:
+        raise HTTPException(status_code=401, detail="invalid or missing reindex token")
+    try:
+        matches = secrets.compare_digest(
+            authorization.encode("utf-8", "surrogateescape"),
+            expected.encode("utf-8"),
+        )
+    except (TypeError, ValueError):
+        matches = False
+    if not matches:
         raise HTTPException(status_code=401, detail="invalid or missing reindex token")
 
 
@@ -112,3 +146,49 @@ async def list_project_stats(
     return await projects_db.query_project_stats(
         filters=parsed_filters, search_term=searchTerm.strip()
     )
+
+
+@router.get(
+    "/{project_id}/summary",
+    response_model=ProjectSummary,
+    operation_id="get-project-summary",
+    summary="Platform-owned project summary",
+    responses={
+        502: {"description": "The upstream service failed, was unreachable, or returned an invalid summary."},
+        504: {"description": "Timed out while contacting the upstream service."},
+    },
+)
+async def get_project_summary(
+    project_id: str,
+    client: httpx.AsyncClient = Depends(get_http_client),
+) -> ProjectSummary:
+    """Return a public typed summary; upstream drift is a sanitized gateway error."""
+    payload = await fetch_upstream_json(
+        client,
+        upstream_url("projects", project_id, "summary"),
+        resource="project summary",
+    )
+    try:
+        return map_project_summary(payload)
+    except ValidationError as exc:
+        logger.warning("Invalid upstream project summary: %s", exc.errors(include_input=False))
+        raise HTTPException(
+            502, "The upstream service returned an unexpected project summary."
+        ) from exc
+
+
+@router.get(
+    "/{project_id}/page",
+    response_model=ProjectsPagePayload,
+    operation_id="get-project-page",
+    summary="Platform-owned project page aggregation",
+    responses={
+        502: {"description": "The upstream service failed or returned an invalid page resource."},
+        504: {"description": "Timed out while contacting the upstream service."},
+    },
+)
+async def get_project_page(
+    project_id: str,
+    client: httpx.AsyncClient = Depends(get_http_client),
+) -> ProjectsPagePayload:
+    return await assemble_project_page(client, project_id)
