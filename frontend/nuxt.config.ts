@@ -69,6 +69,16 @@ export default defineNuxtConfig({
           }
         }
         enforcePageList(pages)
+
+        // 3. Register route alias /simulators/:id/:version pointing to simulators/[id].vue
+        const simPage = pages.find(p => p.file && /simulators[/\\]\[id\]\.vue$/.test(p.file))
+        if (simPage) {
+          pages.push({
+            name: 'simulators-id-version',
+            path: '/simulators/:id/:version',
+            file: simPage.file,
+          })
+        }
       })
     },
   ],
@@ -102,6 +112,7 @@ export default defineNuxtConfig({
       api_url: process.env.API_URL,
       biosimulations_api_url: process.env.BIOSIMULATIONS_API_URL,
       legacy_api_url: process.env.LEGACY_API_URL,
+      legacy_simulators_api_url: process.env.LEGACY_SIMULATORS_API_URL || 'https://api.biosimulators.org',
       auth0Domain: process.env.NUXT_PUBLIC_AUTH0_DOMAIN,
       auth0ClientId: process.env.NUXT_PUBLIC_AUTH0_CLIENT_ID,
       auth0Audience: process.env.NUXT_PUBLIC_AUTH0_AUDIENCE

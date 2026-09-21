@@ -14,12 +14,17 @@ export default defineNuxtPlugin((nuxtApp) => {
   })
   nuxtApp.vueApp.use(auth0)
 
-  // Intercept all outgoing HTTP requests: enable credentials and attach Bearer token when logged in
+  // Intercept outgoing HTTP requests: enable credentials and attach Bearer token for platform endpoints
   globalThis.$fetch = $fetch.create({
-    async onRequest({ options }) {
-      options.credentials = 'include'
+    async onRequest({ request, options }) {
+      const urlStr = typeof request === 'string' ? request : (request as Request)?.url || ''
+      const isExternalPublicApi = urlStr.includes('api.biosimulators.org')
 
-      if (auth0.isAuthenticated.value) {
+      if (options.credentials === undefined) {
+        options.credentials = isExternalPublicApi ? 'omit' : 'include'
+      }
+
+      if (auth0.isAuthenticated.value && !isExternalPublicApi) {
         try {
           const token = await auth0.getAccessTokenSilently({
             authorizationParams: {
