@@ -21,9 +21,11 @@ so the platform routes have no consumers today. That is deliberate: it keeps the
 switch additive rather than breaking, and it is why the models could be sized
 from consumer needs instead of from the upstream payload. When the migration
 lands, the project page should derive its run summary from `simulationRun`
-rather than issuing a second summary request. Files, specifications, logs,
-results, thumbnails, downloads, and non-summary run information stay on the
-legacy API either way.
+rather than issuing a second summary request. Files, specifications and logs
+are read as **inputs** to the owned page contracts and are never re-hosted: no
+passthrough route exposes them, their upstream shape is not part of any
+published schema, and the page payload is a closed model. Results, thumbnails,
+downloads and non-summary run information stay on the legacy API.
 
 ## Own the consumer contract
 
@@ -83,10 +85,13 @@ The run page makes four: run summary, then files, specifications, and logs
 concurrently. Neither endpoint calls the platform's own summary routes or
 requires database access or authentication.
 
-Only satellite 404s produce empty files/specifications or null logs. Identity
-404s fail the page; upstream outages, malformed responses, and timeouts retain
-sanitized gateway errors. Metadata comes only from the first record, and project
-model formats are derived from full specifications before public projection.
+Only satellite 404s produce empty files/specifications or null logs. A missing
+satellite is a normal state for a run that has none. Satellite 5xx, timeout,
+invalid JSON, and field drift fail the whole page (502, or 504 on timeout) so
+an upstream outage is not presented as emptiness. Identity 404s fail the page;
+other identity failures retain sanitized gateway errors. Metadata comes only
+from the first record, and project model formats are derived from full
+specifications before public projection.
 Curve `style` may be an inline object or a SED-ML style id string, matching the
 existing data-generator union. Caller query parameters, headers, and credentials
 are not forwarded.

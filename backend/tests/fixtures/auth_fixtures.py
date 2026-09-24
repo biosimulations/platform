@@ -16,8 +16,16 @@ def make_authenticated_user(
     sub: str = "auth0|test-user-id",
     email: str | None = "user@example.com",
     roles: list[str] | None = None,
+    email_verified: bool = False,
+    permissions: list[str] | None = None,
 ) -> AuthenticatedUser:
-    return AuthenticatedUser(sub=sub, email=email, roles=roles)
+    return AuthenticatedUser(
+        sub=sub,
+        email=email,
+        roles=roles or [],
+        email_verified=email_verified,
+        permissions=permissions or [],
+    )
 
 
 @pytest.fixture

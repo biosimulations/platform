@@ -77,3 +77,6 @@ class VerifyWorkflowOutput(BaseModel):
     workflow_run_id: Optional[str] = None
     workflow_error: Optional[str] = None
     workflow_results: Optional[GenerateStatisticsActivityOutput] = None
+    # Auth0 `sub` of the caller who started the workflow. Optional so in-flight
+    # Temporal histories that predate this field still deserialize.
+    owner_sub: Optional[str] = None

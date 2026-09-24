@@ -12,3 +12,8 @@ class WhoAmIResponse(BaseModel):
 class RoleAnimalResponse(BaseModel):
     role: str
     animal: str
+
+
+class PermissionCheckResponse(BaseModel):
+    permission: str
+    granted: bool

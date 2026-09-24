@@ -17,6 +17,13 @@ from testcontainers.keycloak import KeycloakContainer  # type: ignore[import-unt
 
 REALM_NAME = "biosim-test"
 CLIENT_ID = "biosim-test-client"
+# Same audience/roles mappers as CLIENT_ID, but its own email-claim shape --
+# both a hardcoded namespaced "https://api.biosimulations.org/email" claim and
+# a plain "email" claim -- so tests can prove the namespaced claim wins.
+NAMESPACED_EMAIL_CLIENT_ID = "biosim-test-client-namespaced-email"
+# Same audience/roles mappers as CLIENT_ID, but no email mapper at all -- so
+# tests can prove a token with neither email claim degrades to None.
+NO_EMAIL_CLIENT_ID = "biosim-test-client-no-email"
 AUDIENCE = "biosim-test-api"
 # Matches the "flat-realm-roles" mapper's claim.name in realm.json -- a plain
 # top-level claim, not Keycloak's default nested `realm_access.roles`, so it

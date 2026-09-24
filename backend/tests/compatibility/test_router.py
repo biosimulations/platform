@@ -1,9 +1,10 @@
 """Tests for the compatibility router endpoint."""
 
-import pytest
+import socket
 from pathlib import Path
 from unittest.mock import patch, AsyncMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from biosim_server.api.main import app
@@ -239,3 +240,55 @@ def test_check_compatibility_reports_unreadable_sedml() -> None:
     detail = response.json()["detail"]
     assert "absent.sedml" in detail
     assert "No simulations could be read" in detail
+
+
+def test_check_compatibility_rejects_loopback_archive_url() -> None:
+    client = TestClient(app)
+    response = client.post("/compatibility/check", params={"archive_url": "http://127.0.0.1/secret.omex"})
+    assert response.status_code == 400
+    assert "private or reserved" in response.json()["detail"]
+
+
+def test_check_compatibility_rejects_localhost_archive_url() -> None:
+    client = TestClient(app)
+    response = client.post("/compatibility/check", params={"archive_url": "http://localhost/secret.omex"})
+    assert response.status_code == 400
+    assert "private or reserved" in response.json()["detail"]
+
+
+def test_check_compatibility_rejects_metadata_archive_url() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/compatibility/check", params={"archive_url": "http://169.254.169.254/latest/meta-data"}
+    )
+    assert response.status_code == 400
+    assert "private or reserved" in response.json()["detail"]
+
+
+def test_check_compatibility_rejects_non_http_archive_url() -> None:
+    client = TestClient(app)
+    response = client.post("/compatibility/check", params={"archive_url": "file:///etc/passwd"})
+    assert response.status_code == 400
+    assert "http or https" in response.json()["detail"]
+
+
+def test_check_compatibility_rejects_userinfo_archive_url() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/compatibility/check", params={"archive_url": "https://user:pass@example.com/a.omex"}
+    )
+    assert response.status_code == 400
+    assert "userinfo" in response.json()["detail"]
+
+
+@patch(
+    "biosim_server.compatibility.router.socket.getaddrinfo",
+    return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 80))],
+)
+def test_check_compatibility_rejects_resolved_private_host(mock_getaddrinfo: object) -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/compatibility/check", params={"archive_url": "http://internal.example/a.omex"}
+    )
+    assert response.status_code == 400
+    assert "private or reserved" in response.json()["detail"]

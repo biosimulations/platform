@@ -269,7 +269,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11.0,<3" },
     { name = "pydantic-settings", specifier = ">=2.8.1,<3" },
     { name = "python-dotenv", specifier = ">=1.1.0,<2" },
-    { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3.0,<4" },
+    { name = "python-jose", extras = ["cryptography"], specifier = ">=3.5.0,<4" },
     { name = "python-multipart", specifier = ">=0.0.22,<0.0.23" },
     { name = "pyyaml", specifier = ">=6.0.2,<7" },
     { name = "temporalio", specifier = ">=1.10.0,<2" },

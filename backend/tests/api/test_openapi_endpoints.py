@@ -59,6 +59,10 @@ _REQUIRED_AUTH_OPERATION_IDS = frozenset({
     "delete-current-user",
     "demo-private-whoami",
     "demo-private-animal",
+    "demo-private-permission",
+    "verify-omex",
+    "get-verify-output",
+    "verify-runs",
 })
 
 
@@ -130,11 +134,12 @@ AUTH_MODE: dict[str, AuthMode] = {
     "demo-public": AuthMode.NONE,
     "demo-private-whoami": AuthMode.REQUIRED,
     "demo-private-animal": AuthMode.REQUIRED_ROLES,
+    "demo-private-permission": AuthMode.REQUIRED_ROLES,  # require_permissions("demo:read")
     "root__get": AuthMode.NONE,
     "get_version_version_get": AuthMode.NONE,
-    "verify-omex": AuthMode.NONE,
-    "get-verify-output": AuthMode.NONE,
-    "verify-runs": AuthMode.NONE,
+    "verify-omex": AuthMode.REQUIRED,
+    "get-verify-output": AuthMode.REQUIRED,
+    "verify-runs": AuthMode.REQUIRED,
 }
 
 VALIDATION_SKIP: dict[str, str] = {
@@ -154,10 +159,11 @@ VALIDATION_SKIP: dict[str, str] = {
     "demo-public": "no request body",
     "demo-private-whoami": "no request body",
     "demo-private-animal": "no request body",
+    "demo-private-permission": "no request body",
     "root__get": "no request body",
     "get_version_version_get": "no request body",
-    "get-verify-output": "path-only; unauthenticated probe is mocked 404",
-    "verify-runs": "all query params optional; start is mocked in the unauth probe",
+    "get-verify-output": "path-only; unauthenticated probe is 401",
+    "verify-runs": "all query params optional; unauthenticated probe is 401",
 }
 
 
@@ -274,38 +280,6 @@ def _probe_version(client: TestClient) -> None:
     assert response.json() == __version__
 
 
-def _probe_verify_omex(client: TestClient) -> None:
-    _assert_status(client.post("/verify/omex"), 422)
-
-
-def _probe_get_verify_output(client: TestClient) -> None:
-    temporal = MagicMock()
-    handle = AsyncMock()
-    handle.query.side_effect = Exception("workflow not found")
-    temporal.get_workflow_handle.return_value = handle
-    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
-        response = client.get("/verify/probe-id")
-    _assert_status(response, 404)
-    assert "probe-id" in response.json()["detail"]
-
-
-def _probe_verify_runs(client: TestClient) -> None:
-    async def start_workflow(*_args: object, **kwargs: object) -> MagicMock:
-        handle = MagicMock()
-        handle.id = str(kwargs["id"])
-        handle.run_id = "run-probe"
-        return handle
-
-    temporal = MagicMock()
-    temporal.start_workflow = start_workflow
-    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
-        response = client.post("/verify/runs")
-    _assert_status(response, 200)
-    body = VerifyWorkflowOutput.model_validate(response.json())
-    assert body.workflow_status == VerifyWorkflowStatus.PENDING
-    assert body.workflow_id.startswith("runs-verification-")
-
-
 UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "check-compatibility": _probe_check_compatibility,
     "run-simulations": _probe_run_simulations,
@@ -324,9 +298,6 @@ UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "demo-public": _probe_demo_public,
     "root__get": _probe_root,
     "get_version_version_get": _probe_version,
-    "verify-omex": _probe_verify_omex,
-    "get-verify-output": _probe_get_verify_output,
-    "verify-runs": _probe_verify_runs,
 }
 
 
@@ -361,7 +332,12 @@ def _validate_update_current_user(client: TestClient) -> None:
 
 
 def _validate_verify_omex(client: TestClient) -> None:
-    _assert_status(client.post("/verify/omex"), 422)
+    user = make_authenticated_user()
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        _assert_status(client.post("/verify/omex"), 422)
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 VALIDATION_RUNNERS: dict[str, Callable[[TestClient], None]] = {
@@ -373,6 +349,30 @@ VALIDATION_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "update-current-user": _validate_update_current_user,
     "verify-omex": _validate_verify_omex,
 }
+
+
+def test_verify_runs_authenticated_caller_starts_pending_workflow(client: TestClient) -> None:
+    """verify-runs requires auth; an authenticated caller gets a PENDING workflow it owns."""
+    async def start_workflow(*_args: object, **kwargs: object) -> MagicMock:
+        handle = MagicMock()
+        handle.id = str(kwargs["id"])
+        handle.run_id = "run-probe"
+        return handle
+
+    temporal = MagicMock()
+    temporal.start_workflow = start_workflow
+    user = make_authenticated_user()
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+            response = client.post("/verify/runs")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+    _assert_status(response, 200)
+    body = VerifyWorkflowOutput.model_validate(response.json())
+    assert body.workflow_status == VerifyWorkflowStatus.PENDING
+    assert body.workflow_id.startswith("runs-verification-")
+    assert body.owner_sub == user.sub
 
 
 def test_every_operation_id_is_accounted_for() -> None:

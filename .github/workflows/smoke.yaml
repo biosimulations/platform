@@ -77,6 +77,11 @@ jobs:
 
       - name: Start backend API
         working-directory: backend
+        env:
+          # Smoke deliberately runs without an IdP: it proves infra wiring, not
+          # authentication. With AUTH_REQUIRED at its default (true) the startup
+          # gate refuses to boot without Auth0 config. Never set this in kustomize.
+          AUTH_REQUIRED: "false"
         run: |
           mkdir -p ../logs
           nohup uv run uvicorn biosim_server.api.main:app --host 0.0.0.0 --port 8000 \

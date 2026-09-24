@@ -13,4 +13,35 @@ export default defineNuxtPlugin((nuxtApp) => {
     },
   })
   nuxtApp.vueApp.use(auth0)
+
+  // Intercept outgoing HTTP requests: enable credentials and attach Bearer token for platform endpoints
+  globalThis.$fetch = $fetch.create({
+    async onRequest({ request, options }) {
+      const urlStr = typeof request === 'string' ? request : (request as Request)?.url || ''
+      const isExternalPublicApi = urlStr.includes('api.biosimulators.org')
+
+      if (options.credentials === undefined) {
+        options.credentials = isExternalPublicApi ? 'omit' : 'include'
+      }
+
+      if (auth0.isAuthenticated.value && !isExternalPublicApi) {
+        try {
+          const token = await auth0.getAccessTokenSilently({
+            authorizationParams: {
+              audience: config.public.auth0Audience,
+            },
+          })
+          if (token) {
+            const headers = new Headers(options.headers)
+            if (!headers.has('Authorization')) {
+              headers.set('Authorization', `Bearer ${token}`)
+            }
+            options.headers = headers
+          }
+        } catch {
+          // Non-fatal if token retrieval fails; proceeds unauthenticated
+        }
+      }
+    },
+  })
 })
