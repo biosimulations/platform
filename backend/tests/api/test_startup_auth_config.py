@@ -12,6 +12,7 @@ the rest of the suite never executes `lifespan`; these tests drive it directly.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from biosim_server.api.main import _validate_auth0_configuration, app, lifespan
 from biosim_server.config import Auth0Settings, get_settings
@@ -94,6 +95,66 @@ def test_url_shaped_domain_is_rejected(bad_domain: str) -> None:
 def test_malformed_hostname_is_rejected(bad_domain: str) -> None:
     errors = _settings(AUTH0_DOMAIN=bad_domain).configuration_errors()
     assert any("does not look like a hostname" in e for e in errors)
+
+# --------------------------------------------------------------------------
+# Password-reset step-up policy (AUTH-MAJ-004)
+# --------------------------------------------------------------------------
+
+def test_step_up_policy_defaults_to_off_and_is_opt_in() -> None:
+    """The gate exists, is configurable, and does not silently change behaviour."""
+    settings = _settings()
+    assert settings.password_reset_require_recent_auth is False
+    assert settings.password_reset_max_auth_age_seconds == 300
+    assert settings.auth_time_claim == "auth_time"
+    assert _settings(
+        AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH="true",
+        AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS="120",
+        AUTH0_AUTH_TIME_CLAIM="https://example.test/auth_time",
+    ).password_reset_require_recent_auth is True
+
+
+def test_a_non_positive_step_up_window_is_rejected_at_settings_construction() -> None:
+    """A zero/negative window would make every reset fail as stale -- refuse it
+    loudly at startup rather than at the first user request."""
+    for bad in ("0", "-1"):
+        with pytest.raises(ValidationError):
+            _settings(AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS=bad)
+
+
+def test_gate_warns_when_reset_is_enabled_without_the_step_up_gate(
+        monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unremarked default must not be what exposes the reset route."""
+    settings = get_settings().auth0
+    monkeypatch.setattr(settings, "required", True)
+    monkeypatch.setattr(settings, "domain", "tenant.us.auth0.com")
+    monkeypatch.setattr(settings, "audience", "https://api.example.test")
+    monkeypatch.setattr(settings, "issuer", "")
+    monkeypatch.setattr(settings, "jwks_uri", "")
+    monkeypatch.setattr(settings, "password_reset_client_id", "spa-id")
+    monkeypatch.setattr(settings, "password_reset_require_recent_auth", False)
+
+    with caplog.at_level("WARNING"):
+        _validate_auth0_configuration()  # must not raise
+    assert "AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH" in caplog.text
+
+
+def test_gate_does_not_warn_when_the_step_up_gate_is_on(
+        monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings = get_settings().auth0
+    monkeypatch.setattr(settings, "required", True)
+    monkeypatch.setattr(settings, "domain", "tenant.us.auth0.com")
+    monkeypatch.setattr(settings, "audience", "https://api.example.test")
+    monkeypatch.setattr(settings, "issuer", "")
+    monkeypatch.setattr(settings, "jwks_uri", "")
+    monkeypatch.setattr(settings, "password_reset_client_id", "spa-id")
+    monkeypatch.setattr(settings, "password_reset_require_recent_auth", True)
+
+    with caplog.at_level("WARNING"):
+        _validate_auth0_configuration()
+    assert "AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH" not in caplog.text
+
 
 # --------------------------------------------------------------------------
 # The gate itself

@@ -18,13 +18,24 @@ def make_authenticated_user(
     roles: list[str] | None = None,
     email_verified: bool = False,
     permissions: list[str] | None = None,
+    issuer: str | None = None,
+    auth_time: int | None = None,
 ) -> AuthenticatedUser:
+    """A principal for dependency-override tests.
+
+    ``issuer``/``auth_time`` are off by default (the historical fixture shape),
+    but endpoints that reason about *which* tenant a subject belongs to -- the
+    Auth0 Management guard and the password-reset step-up gate -- must be driven
+    with them explicitly rather than relying on a browser-shaped default.
+    """
     return AuthenticatedUser(
         sub=sub,
         email=email,
         roles=roles or [],
         email_verified=email_verified,
         permissions=permissions or [],
+        issuer=issuer,
+        auth_time=auth_time,
     )
 
 

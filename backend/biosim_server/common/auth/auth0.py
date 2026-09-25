@@ -9,7 +9,7 @@ from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt  # type: ignore[import-untyped]
 from jose.exceptions import ExpiredSignatureError, JWTClaimsError  # type: ignore[import-untyped]
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from biosim_server.common.auth.discovery import resolve_oidc
 from biosim_server.config import Auth0Settings, get_settings
@@ -461,6 +461,46 @@ def _unauthorized(
     return exc
 
 
+def _require_expiration_claim(unverified_claims: dict[str, Any]) -> None:
+    """Refuse a bearer token that carries no usable ``exp``.
+
+    python-jose has **no** ``require_exp`` option -- ``jose.jwt._validate_exp``
+    returns immediately when the claim is absent, and an explicit JSON ``null``
+    reaches ``int(None)`` and raises a bare ``TypeError`` -- so a correctly
+    signed token with no expiry used to be accepted *forever*, in every
+    configuration, single-issuer included. Presence is therefore enforced here.
+
+    Deliberately checked against the *unverified* claims, before any
+    verification work: the claim's presence is not secret, and rejecting a
+    token with no bounded lifetime before a JWKS lookup avoids an outbound
+    request for a token that can only ever be rejected. The value itself is
+    still validated against the *verified* payload by ``jwt.decode``'s own
+    ``exp``/leeway handling -- this check only establishes that there is one.
+    """
+    value = unverified_claims.get("exp")
+    if value is None:
+        raise _unauthorized("Invalid token", error="invalid_token", reason="missing_exp")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _unauthorized("Invalid token", error="invalid_token", reason="invalid_exp")
+
+
+def _validated_subject(raw: Any) -> str:
+    """The identity string for a verified token, or a 401 if it is not usable.
+
+    ``sub`` is an identity key: it is persisted as ``owner_sub`` and used to
+    select a specific Auth0 account. It is therefore returned byte-for-byte as
+    the token carried it, and a value that would be altered by normalization
+    (surrounding whitespace) is refused rather than rewritten -- otherwise two
+    distinct claims would collide on one identity. Only surrounding whitespace
+    is refused; an internal space is a legal (if unusual) subject character.
+    """
+    if not isinstance(raw, str) or not raw:
+        raise _unauthorized("Invalid token", error="invalid_token", reason="missing_sub")
+    if not raw.strip() or raw != raw.strip():
+        raise _unauthorized("Invalid token", error="invalid_token", reason="invalid_sub")
+    return raw
+
+
 def _token_audiences(claims: dict[str, Any]) -> list[str]:
     """Return the token's ``aud`` values as a list of non-empty strings."""
     raw = claims.get("aud")
@@ -532,6 +572,20 @@ def _extract_string_list(payload: dict[str, Any], claim: str) -> tuple[list[str]
     return [item for item in raw if isinstance(item, str) and item], None
 
 
+def _extract_auth_time(payload: dict[str, Any], settings: Auth0Settings) -> int | None:
+    """The end-user's last interactive-authentication time, or None.
+
+    NumericDate semantics, strictly: only an ``int``/``float`` (never ``bool``,
+    never a numeric string) counts. Anything else -- including a present but
+    malformed claim -- yields ``None``, and the step-up gate treats ``None`` as
+    "no evidence", so a malformed claim can never satisfy it.
+    """
+    raw = payload.get(settings.auth_time_claim)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return int(raw)
+
+
 def _extract_permissions(payload: dict[str, Any], settings: Auth0Settings) -> list[str]:
     """Permissions from the configured claim plus the OAuth ``scope`` string.
 
@@ -570,6 +624,10 @@ class AuthenticatedUser(BaseModel):
     Frozen so authorization attributes cannot be reassigned after construction.
     Invalid state (empty ``sub``, non-string role/permission entries) is rejected
     at construction -- it must never silently become an authorization bypass.
+
+    ``str_strip_whitespace`` is a *display-field* convenience (``email``); an
+    identity key must never be silently rewritten, so ``sub`` is validated by
+    ``_sub_is_exactly_representable`` before the strip can apply to it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
@@ -580,12 +638,50 @@ class AuthenticatedUser(BaseModel):
     roles: list[str] = Field(default_factory=list)
     email_verified: bool = False
     permissions: list[str] = Field(default_factory=list)
+    # The end-user's last interactive authentication time, from the configured
+    # ``auth_time`` claim (OIDC standard; Auth0 stamps it only via a Post-Login
+    # Action). Used by the password-reset step-up policy, never as an
+    # authorization input. ``None`` means "no evidence", which is exactly how a
+    # present-but-malformed claim is treated: the step-up gate fails closed on it.
+    auth_time: int | None = None
+
+    @field_validator("sub", mode="before")
+    @classmethod
+    def _sub_is_exactly_representable(cls, value: object) -> object:
+        """Reject subjects that carry surrounding whitespace, never normalize them.
+
+        Runs *before* ``str_strip_whitespace``, so a padded subject is refused
+        instead of being silently rewritten into a different identity. Without
+        this, ``"auth0|abc "`` would be accepted and stored as ``"auth0|abc"``,
+        colliding with the real ``auth0|abc`` owner on every ``owner_sub``
+        comparison; a whitespace-only subject became ``""`` and raised inside
+        the model, surfacing as a 500 rather than a 401.
+        """
+        if isinstance(value, str):
+            if not value.strip():
+                raise ValueError("sub must not be blank")
+            if value != value.strip():
+                raise ValueError("sub must not have surrounding whitespace")
+        return value
 
     @field_validator("sub")
     @classmethod
     def _sub_must_be_non_empty(cls, value: str) -> str:
         if not value:
             raise ValueError("sub must be a non-empty string")
+        return value
+
+    @field_validator("auth_time")
+    @classmethod
+    def _auth_time_must_be_a_numeric_date(cls, value: int | None) -> int | None:
+        """NumericDate (whole seconds). A malformed value stays ``None``.
+
+        The parser above maps a non-numeric claim to ``None`` before it reaches
+        this validator; this only rejects a negative timestamp, which no clock
+        can produce and which must not be read as "authenticated".
+        """
+        if value is not None and value < 0:
+            return None
         return value
 
     @field_validator("email", mode="before")
@@ -640,6 +736,9 @@ async def get_current_user(
         unverified_claims = jwt.get_unverified_claims(token)
     except Exception:
         raise _unauthorized("Malformed token", error="invalid_request", reason="malformed")
+
+    # No bounded lifetime -> no usable credential, in any configuration.
+    _require_expiration_claim(unverified_claims)
 
     expected_issuer, expected_audience, jwks_uri = await _resolve_verification_targets(
         settings, unverified_claims
@@ -725,14 +824,21 @@ async def get_current_user(
     # Auth0 normally always provides a string subject, but it is an identity
     # key in Platform data.  A signed token without a usable value is still an
     # invalid token, never an application error (or a non-string owner id).
-    sub = payload.get("sub")
-    if not isinstance(sub, str) or not sub:
-        raise _unauthorized("Invalid token", error="invalid_token", reason="missing_sub")
+    sub = _validated_subject(payload.get("sub"))
+    # A claim-construction failure is a property of the token, so it must be a
+    # sanitized 401 -- never a 500 from an exception escaping the dependency.
+    # The success event is emitted only after construction has succeeded, so a
+    # rejected token can never produce an authentication-success log line.
+    try:
+        user = AuthenticatedUser(
+            sub=sub, issuer=expected_issuer, email=email, roles=roles,
+            email_verified=email_verified, permissions=permissions,
+            auth_time=_extract_auth_time(payload, settings),
+        )
+    except ValidationError:
+        raise _unauthorized("Invalid token", error="invalid_token", reason="invalid_claims")
     _log_auth_event("success", "validated", sub=sub)
-    return AuthenticatedUser(
-        sub=sub, issuer=expected_issuer, email=email, roles=roles,
-        email_verified=email_verified, permissions=permissions
-    )
+    return user
 
 
 async def get_optional_user(

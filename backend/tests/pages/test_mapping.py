@@ -241,3 +241,26 @@ def test_optional_title_does_not_fall_back_to_run_name() -> None:
     raw = payload()
     del raw["metadata"][0]["title"]
     assert map_run_page(parse_run(raw), [], [], None).summary.name is None
+
+
+def test_collection_validation_reuses_the_module_level_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SHARED-MIN-002: the two stable list schemas are built once per process.
+
+    Constructing a ``TypeAdapter`` assembles a validator tree, and both list shapes
+    are per-request constants, so rebuilding them on every page was repeated setup.
+    TypeAdapter construction is made to fail here: these calls passing proves the
+    projection reuses the module-level adapters without weakening validation -- the
+    drift tests above still fail closed through the same code path.
+    """
+    import biosim_server.pages.mapping as mapping
+
+    def _constructed(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a TypeAdapter was constructed on the request path")
+
+    monkeypatch.setattr(mapping, "TypeAdapter", _constructed)
+    specifications = satellite("specifications")
+    files = satellite("files")
+    assert mapping.normalize_specifications(specifications)
+    assert mapping.map_files(files)
+    with pytest.raises(ValidationError):
+        mapping.normalize_specifications([{"unexpected": "drift"}])

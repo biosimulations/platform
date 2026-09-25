@@ -8,11 +8,13 @@ required bearer), not the FastAPI-emitted ``security: [HTTPBearer]`` field.
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import assert_never
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from biosim_server.api.main import app
@@ -446,6 +448,42 @@ def test_validation_error_probe(operation: Operation, client: TestClient) -> Non
         assert operation.operation_id in VALIDATION_SKIP
         return
     runner(client)
+
+
+def test_password_reset_documents_its_error_header_and_retry_contract() -> None:
+    """AUTH-MIN-003: generated/documentation-driven clients must not have to guess.
+
+    The reset route is the one operation whose success value is a bearer
+    capability and whose failures are deliberately generic, so its contract lives
+    in the spec rather than in prose: which errors exist, which carry Retry-After,
+    that nothing is cacheable, and that a 200 is not a completed password change.
+    """
+    operation = app.openapi()["paths"]["/api/v1/me/password-reset"]["post"]
+    responses = operation["responses"]
+    assert {"200", "401", "403", "429", "502", "503"} <= set(responses)
+    assert all(responses[code]["description"] for code in ("401", "403", "429", "502", "503"))
+    assert "Retry-After" in responses["429"]["headers"]
+    assert "WWW-Authenticate" in responses["401"]["headers"]
+    description = operation["description"]
+    assert "no-store" in description
+    assert "single attempt" in description
+    assert "not that the password was changed" in description
+    # The response model still owns the 200 body.
+    assert responses["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/PasswordResetResponse"
+    }
+
+
+def test_committed_openapi_artifact_matches_the_in_process_spec() -> None:
+    """The checked-in artifact is the contract clients read; keep it honest.
+
+    A route/model/description change that is not regenerated with
+    ``python -m scripts.generate_openapi`` silently forks the published contract
+    from the running app. The generator forces ENABLE_RBAC_DEMO on, and this
+    suite's conftest sets it before import, so both sides see the same routes.
+    """
+    spec_path = Path(__file__).resolve().parents[2] / "biosim_server/api/spec/openapi_3_1_0_generated.yaml"
+    assert yaml.safe_load(spec_path.read_text()) == app.openapi()
 
 
 def test_page_response_schemas_and_auth() -> None:

@@ -41,6 +41,9 @@ in `shared.env`.**
 | `AUTH0_EMAIL_VERIFIED_CLAIM` | non-secret — a namespace URI in every token | `api.env` |
 | `AUTH0_PERMISSIONS_CLAIM` | non-secret — Auth0 RBAC claim name (default `permissions`) | `api.env` |
 | `AUTH0_TRUSTED_ISSUERS` | non-secret — JSON issuer→audience map | `api.env` |
+| `AUTH0_AUTH_TIME_CLAIM` | non-secret — claim name, default `auth_time` | `api.env` |
+| `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` | non-secret policy flag (default `false`) | `api.env` |
+| `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` | non-secret policy number (default `300`) | `api.env` |
 | `AUTH0_MANAGEMENT_CLIENT_ID` | treat as secret (pairs with the secret) | **sealed secret** |
 | `AUTH0_MANAGEMENT_CLIENT_SECRET` | **SECRET** — grants `update:users`/`delete:users` on the whole tenant | **sealed secret** |
 
@@ -55,10 +58,15 @@ configuration and never enter Kubernetes. See `auth0/README.md`.
 | `RATE_LIMIT_WINDOW_SECONDS` | non-secret | `api.env` |
 | `RATE_LIMIT_AUTHENTICATED_PER_WINDOW` | non-secret | `api.env` |
 | `RATE_LIMIT_ANONYMOUS_PER_WINDOW` | non-secret | `api.env` |
+| `RATE_LIMIT_PASSWORD_RESET_PER_WINDOW` | non-secret — password-reset budget, per pod | `api.env` |
+| `RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS` | non-secret — password-reset window, per pod | `api.env` |
+| `RATE_LIMIT_PAGE_PER_WINDOW` | non-secret — page-aggregation budget, per pod, per client IP | `api.env` |
+| `RATE_LIMIT_PAGE_WINDOW_SECONDS` | non-secret — page-aggregation window, per pod | `api.env` |
+| `UPSTREAM_MAX_RESPONSE_BYTES` | non-secret — decoded-body ceiling for one upstream fetch, per pod | `api.env` |
 
 None of these grant a capability by themselves -- they are policy numbers, not credentials
 -- so per this document's own rule ("a value is a secret if possessing it grants a
-capability"), all four are ordinary ConfigMap configuration.
+capability"), every value in this table is ordinary ConfigMap configuration.
 
 **PER-POD, NOT GLOBAL.** `common/ratelimit.py` keeps its counters in each pod's own memory;
 `api` runs 3 replicas (`base/api.yaml:8`). The above two `_PER_WINDOW` values are enforced

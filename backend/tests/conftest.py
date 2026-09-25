@@ -12,6 +12,7 @@ import pytest  # noqa: F401
 import pytest_asyncio  # noqa: F401
 from _pytest.config.argparsing import Parser
 
+from biosim_server.common.auth import auth0_management as auth0_management_module
 from biosim_server.common.ratelimit import _reset_rate_limit_state
 
 from tests.fixtures.biosim_fixtures import (  # noqa: F401
@@ -81,6 +82,23 @@ from tests.fixtures.keycloak.client import (  # noqa: F401
     alice_token_namespaced_email,
     alice_token_no_email_claim,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth0_management_state_between_tests() -> Iterator[None]:
+    """
+    Session-wide isolation for the Auth0 token/Management client state.
+
+    common/auth/auth0_management.py keeps process-scoped state: one pooled
+    httpx.AsyncClient, a cached M2M token, a failed-refresh cooldown, and a
+    refresh lock. Tests swap in an httpx.MockTransport per test, so a client
+    cached by an earlier test would serve a later test's requests with the wrong
+    transport, and a lock bound to an already-closed event loop would raise
+    ``is bound to a different event loop``. Mirrors this file's rate-limit reset.
+    """
+    auth0_management_module._reset_management_state()
+    yield
+    auth0_management_module._reset_management_state()
 
 
 @pytest.fixture(autouse=True)

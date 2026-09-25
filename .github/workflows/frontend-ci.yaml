@@ -35,3 +35,6 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Auth token destination tests
+        run: npm run test:auth

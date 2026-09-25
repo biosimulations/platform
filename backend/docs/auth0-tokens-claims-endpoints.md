@@ -25,8 +25,14 @@ The Platform API is an OAuth 2.0 **resource server**. It validates **access toke
 2. An RS256 signature matching a key from the configured JWKS URL for that token's issuer.
 3. `iss` matching a configured issuer.
 4. `aud` matching an audience **explicitly allowed for that same issuer**.
-5. A non-empty string `sub`.
-6. `exp` / `nbf` within a 60-second clock-skew leeway.
+5. A non-empty string `sub` with no surrounding whitespace. The accepted string is
+   preserved byte-for-byte: it is an identity key (`owner_sub`), so a value that
+   whitespace normalization would rewrite is rejected rather than repaired.
+6. An **`exp` claim that is present** and, together with `nbf`, within a 60-second
+   clock-skew leeway. python-jose treats a missing `exp` as "no expiry to check",
+   so the presence requirement is enforced explicitly (`missing_exp`); a
+   non-numeric value is `invalid_exp`. A signed token with no bounded lifetime is
+   not a usable credential.
 
 An ID token fails step 4: its `aud` is the application client id, not `AUTH0_AUDIENCE` / the issuer's configured API identifier. That rejection is the intended control, not an accident.
 
@@ -101,7 +107,7 @@ issuer's JWKS. A failure is HTTP **401**.
 | --- | --- | --- |
 | `iss` | JWT | Must equal the configured issuer (`AUTH0_ISSUER`, or `https://{AUTH0_DOMAIN}/`, or an `AUTH0_TRUSTED_ISSUERS` map key). Unknown issuers are rejected **before** any JWKS fetch. |
 | `aud` | JWT | Must include an audience allowed **for that issuer**. Missing `aud` is rejected. An audience configured for issuer B is not valid on a token from issuer A. |
-| `exp` | JWT | Must not be in the past (60s leeway). |
+| `exp` | JWT | **Required.** Must be a NumericDate and not in the past (60s leeway). Missing/null → 401 `missing_exp`; non-numeric → 401 `invalid_exp`. |
 | `nbf` | JWT | If present, must not be in the future (60s leeway). |
 | `alg` (header) | JWT header | Allowlist is the module constant `_ALLOWED_ALGORITHMS = ("RS256",)` — not configurable. `alg:none` and HS256 are rejected. |
 | `kid` (header) | JWT header | Must match an RSA key in that issuer's JWKS. Unknown kids trigger one cooldown-guarded refresh, then 401. |
@@ -133,9 +139,10 @@ tokens.
 
 | Claim | Config | Used for |
 | --- | --- | --- |
-| `sub` | standard | Stable user id. Required. Persisted as `owner_sub` on simulation runs. Primary ownership key (`roles.is_owner`). |
+| `sub` | standard | Stable user id. Required, and accepted exactly as sent: a padded or whitespace-only value is rejected (401), never trimmed into a different identity. Persisted as `owner_sub` on simulation runs. Primary ownership key (`roles.is_owner`). |
 | `https://api.biosimulations.org/email` | `AUTH0_EMAIL_CLAIM` | Email. Fallback: plain `email` (Keycloak test tokens). Informational on `/api/v1/me`; **authorization** only via the verified-email ownership fallback. |
 | `https://api.biosimulations.org/email_verified` | `AUTH0_EMAIL_VERIFIED_CLAIM` | Whether that email is verified. Fallback: plain `email_verified`. Missing → `False` (fail closed). A legacy run without `owner_sub` is owned only when this is true **and** the emails match. |
+| `auth_time` | `AUTH0_AUTH_TIME_CLAIM` (default `auth_time`) | Optional. The end-user's last **interactive** authentication time (OIDC `auth_time`), read into `AuthenticatedUser.auth_time`. Absent or malformed → `None`. Used only by the password-reset step-up gate (below), never as an authorization input. |
 
 These namespaced claims are stamped onto the **access token** by
 `auth0/actions/post-login.js`. They are not present on Auth0 access tokens by default.
@@ -204,7 +211,7 @@ return 401.
 | `POST /projects/reindex` | shared secret, **not** Auth0 | `PROJECT_REINDEX_TOKEN` | n/a |
 | `GET /api/v1/me` | `get_current_user` | any valid access token | `sub`, namespaced email (display) |
 | `PATCH` / `DELETE /api/v1/me` | `get_current_user` | same, plus Management API configured | `sub` (Management API user id) |
-| `POST /api/v1/me/password-reset` | `get_current_user` | same, plus Management API configured and authorized for `create:user_tickets`; caller's `iss` must be exactly `https://AUTH0_DOMAIN/` and `sub` must be a primary `auth0\|<id>` database user | `sub` only — caller-supplied email/user id/`result_url` are never forwarded; returns an Auth0-hosted ticket URL and sends no email |
+| `POST /api/v1/me/password-reset` | `get_current_user` | same, plus Management API configured and authorized for `create:user_tickets`; caller's `iss` must be exactly `https://AUTH0_DOMAIN/` and `sub` must be a primary `auth0\|<id>` database user; when `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true`, the token must also carry an `auth_time` no older than `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` (otherwise **403**) | `sub` only — caller-supplied email/user id/`result_url` are never forwarded; returns an Auth0-hosted ticket URL and sends no email |
 | `GET /api/v1/demo/private/me` | `get_current_user` | any valid access token | email or `sub` (gated by `ENABLE_RBAC_DEMO`) |
 | `GET /api/v1/demo/private/animal` | `get_current_user` | `require_roles(admin, publisher, user)` | namespaced **roles** |
 | `GET /api/v1/demo/private/permission` | `get_current_user` | `require_permissions("demo:read")` | **permissions** / `scope` |
@@ -270,3 +277,6 @@ Non-secret values belong in each overlay's `api.env`.
 | `AUTH0_EMAIL_CLAIM` | Default `https://api.biosimulations.org/email` |
 | `AUTH0_EMAIL_VERIFIED_CLAIM` | Default `https://api.biosimulations.org/email_verified` |
 | `AUTH0_PERMISSIONS_CLAIM` | Default `permissions` (Auth0 RBAC access-token claim) |
+| `AUTH0_AUTH_TIME_CLAIM` | Default `auth_time`; interactive-auth timestamp, used by the step-up gate |
+| `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` | Default `false`. Require fresh `auth_time` evidence for `POST /api/v1/me/password-reset` |
+| `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` | Default `300`; how fresh that evidence must be |

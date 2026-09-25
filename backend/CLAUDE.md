@@ -146,6 +146,8 @@ backend/
 
 | Endpoint | Method | Purpose |
 | --- | --- | --- |
+| `/projects/{id}/page` | GET | Platform-owned project page aggregation (public; rate-limited per client IP; 3 upstream calls) |
+| `/runs/{id}/page` | GET | Platform-owned run page aggregation (public; rate-limited per client IP; 4 upstream calls) |
 | `/compatibility/check` | POST | Check OMEX archive compatibility with simulators (public; rate-limited; `archive_url` SSRF-restricted) |
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
 | `/simulations/runs` | POST | List simulation runs (`type=all` public with email redacted; `type=user` scoped to `owner_sub`) |
@@ -236,6 +238,29 @@ These point at the public biosimulations.org services. Defaults are production; 
 | --- | --- | --- |
 | `CORS_EXTRA_ORIGINS` | _empty_ | Comma-separated list of additional CORS origins appended to the built-in allowlist in `api/main.py`. **Required** for every deployment so the deployed frontend host (e.g. `https://biosim.biosimulations.org`) is allowed. The built-in list only covers local-dev loopbacks and cross-org trusted services — deploy-specific URLs are not hardcoded by design. |
 
+### Page aggregation (public page endpoints)
+
+`GET /projects/{id}/page` and `GET /runs/{id}/page` assemble a page from 3-4 upstream
+calls each. Both are public (no authentication) and metered — see Rate Limiting — and both
+bound what they will buffer from the upstream API this project does not own.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `UPSTREAM_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Hard ceiling on one upstream JSON body's **decoded** size (`common/upstream.py`). Measured on the bytes actually read through `aiter_bytes()`, so neither a declared `Content-Length` nor `Content-Encoding` can slip past it, and the stream is abandoned the moment it is crossed. A breach is a sanitized **502** (`too_large` in the logs) — never a truncated payload. Provisional pending the representative-payload measurements the page audit asks for; raise it per cluster if a legitimate files/specifications/logs response exceeds it. |
+
+Both pages also carry a total time budget derived from the shared per-phase httpx timeout
+(`common/upstream.UPSTREAM_TIMEOUT_SECONDS`, 30 s) and the assembler's real serial depth —
+two hops for the project page (identity → embedded run id → satellites) and one for the run
+page (identity ∥ satellites) — plus 10 s of bounded local slack: **70 s** and **40 s**. A
+budget below the serial depth would cancel healthy requests; one above it can never fire,
+which is what the run page's old flat 60 s did.
+
+Each page emits one structured record per request (`page`, `page_outcome`, `page_status`,
+`page_duration_ms`, `page_identity_duration_ms`, `page_satellites_duration_ms`) and one
+per upstream fetch (`upstream_resource`, `upstream_outcome`, `upstream_duration_ms`,
+`upstream_bytes`). `log_config.JsonFormatter` copies only allowlisted fields, so no id,
+URL, or payload can reach the logs through `extra=`.
+
 ### Authentication (Auth0)
 
 All values are **non-secret** and belong in each overlay's `api.env` ConfigMap, never in a
@@ -257,6 +282,9 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | `AUTH0_MANAGEMENT_CLIENT_ID` | _empty_ | M2M credentials for the Auth0 Management API: `PATCH`/`DELETE /api/v1/me` (`update:users`/`delete:users`) and `POST /api/v1/me/password-reset` (`create:user_tickets`). **Secret** — sealed-secret path only. Unset in every cluster today, so those endpoints return 503; password reset also requires the M2M application to be authorized for the `create:user_tickets` scope. |
 | `AUTH0_MANAGEMENT_CLIENT_SECRET` | _empty_ | See above. |
 | `AUTH0_PASSWORD_RESET_CLIENT_ID` | _empty_ | **Non-secret** SPA application client ID used as the `client_id` for the hosted password-change ticket (`POST /api/v1/me/password-reset`). Blank disables the endpoint (503). Not the M2M client ID. Configure New Universal Login and the SPA's Application Login URI in Auth0 before enabling. |
+| `AUTH0_AUTH_TIME_CLAIM` | `auth_time` | Namespaced/standard claim carrying the end-user's last **interactive** authentication time. Read into `AuthenticatedUser.auth_time`; used only by the password-reset step-up gate. Missing/malformed → no evidence (fail closed). |
+| `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` | `false` | Step-up gate on `POST /api/v1/me/password-reset` (decision D-12). When true, the token must carry an `auth_time` no older than the max age below, else **403** and no ticket. Needs the Post-Login Action to stamp the claim, so it ships off; the startup gate WARNs while the reset endpoint is configured without it. A refreshed token or `iat` is deliberately not accepted as evidence. |
+| `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` | `300` | How fresh that interactive authentication must be. Must be positive (validated at startup). |
 
 **Per-cluster configuration:**
 
@@ -275,6 +303,10 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | Auth0 unreachable, warm JWKS cache | Tokens still validate for up to 24 h; a WARN is logged per request. |
 | Auth0 unreachable, cold JWKS cache | **503** with `Retry-After: 10`. |
 | Invalid, expired, or wrongly-audienced token | **401**. |
+| Signed token with **no `exp`** claim, or a non-numeric one | **401** (`missing_exp` / `invalid_exp`). python-jose does not require `exp`, so the presence check is explicit. |
+| Signed token whose `sub` has leading/trailing whitespace (or is whitespace-only) | **401**. Identity keys are never rewritten; `owner_sub` comparisons stay exact. |
+| Auth0 Management call for a principal whose issuer is not the configured tenant | **403** (`GET` stays JWT-only, no enrichment). Applies to `GET`/`PATCH`/`DELETE /api/v1/me`. |
+| `POST /api/v1/me/password-reset` with `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true` and missing/stale/future `auth_time` | **403**, no ticket. |
 | Valid token, missing role | **403**. |
 | Valid token, missing required permission/scope | **403**. |
 | Management API (`PATCH`/`DELETE /api/v1/me`) rate-limited (429) through all retries | **503** with `Retry-After`. |
@@ -327,6 +359,10 @@ evenly. To target a global ceiling `G`, configure the per-pod value as `G / 3`.
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Fixed-window size in seconds. |
 | `RATE_LIMIT_AUTHENTICATED_PER_WINDOW` | `30` | Per-pod requests per window for a caller identified by a verified token's `sub`. |
 | `RATE_LIMIT_ANONYMOUS_PER_WINDOW` | `5` | Per-pod requests per window for a caller identified only by client IP. |
+| `RATE_LIMIT_PASSWORD_RESET_PER_WINDOW` | `5` | Per-pod requests per **password-reset** window, keyed by `(issuer, subject)`. Deliberately separate policy from the workflow ceilings so operators can tune a sensitive account action without changing simulation throughput. |
+| `RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS` | `300` | Fixed-window size for the password-reset budget. |
+| `RATE_LIMIT_PAGE_PER_WINDOW` | `60` | Per-pod requests per page window for the two public page aggregations, keyed by client IP. More generous than a workflow start because browsing is the ordinary reading path — it still bounds the 3-4-call upstream fan-out. |
+| `RATE_LIMIT_PAGE_WINDOW_SECONDS` | `60` | Fixed-window size for the page-aggregation budget. |
 
 Protects `POST /verify/omex`, `POST /verify/runs`, and `POST /simulations/run` -- the three
 endpoints that start a Temporal workflow. All three share ONE budget per caller identity, not
@@ -335,6 +371,19 @@ three separate ones.
 `POST /compatibility/check` stays unauthenticated (run wizard) but is rate-limited with a
 **separate** `compat:` bucket so it cannot starve workflow starts. `archive_url` is restricted
 to http/https hosts that resolve to public addresses (SSRF).
+
+`POST /api/v1/me/password-reset` has its own `password-reset:` bucket with its own
+ceiling/window (`RATE_LIMIT_PASSWORD_RESET_*`) and a `(issuer, subject)` key, so it can
+neither consume nor be consumed by workflow starts, and a same-named subject from a second
+trusted issuer cannot burn another principal's quota before the route's issuer eligibility
+check rejects it. Quota is charged before eligibility, so a denied principal cannot hammer
+the 403 branch unbounded.
+
+`GET /projects/{id}/page` and `GET /runs/{id}/page` share ONE `pages:` bucket keyed on
+client IP alone (`page_rate_limit`), with their own ceiling/window (`RATE_LIMIT_PAGE_*`).
+Keying on IP even when a bearer token is presented is deliberate: those routes are public
+by design, so a caller must not be able to raise the ceiling or reset an exhausted bucket
+by rotating tokens. A denied request never reaches upstream.
 
 **Failure mode on exhaustion:** `429 Too Many Requests` with a `Retry-After` header naming
 the number of seconds until the current window rolls over.

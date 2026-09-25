@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from biosim_server.api.main import app
+from biosim_server.common.upstream import UPSTREAM_TIMEOUT_SECONDS
 from biosim_server.dependencies import get_http_client
 from biosim_server.pages import service
 from tests.pages.test_mapping import satellite
@@ -186,6 +187,18 @@ async def test_embedded_dot_run_id_is_rejected(run_id: str) -> None:
     assert len(seen) == 1
 
 
+async def test_project_page_budget_is_derived_from_the_upstream_serial_depth() -> None:
+    """Two serial hops (identity → run id → satellites) plus bounded local slack.
+
+    Each upstream call is bounded per phase by the shared client's httpx timeout, so
+    a budget below two timeouts would cancel healthy requests and one far above it
+    would never fire. Pinning the derivation here keeps the constant and the
+    assembler it bounds from drifting apart silently.
+    """
+    budget = service._PAGE_TIMEOUTS["project"]
+    assert 2 * UPSTREAM_TIMEOUT_SECONDS < budget < 3 * UPSTREAM_TIMEOUT_SECONDS
+
+
 @pytest.mark.parametrize("stalled", ["identity", "satellites"])
 async def test_project_page_total_timeout(stalled: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Exceeding the page budget returns 504 and cancels every upstream call still in flight."""
@@ -207,3 +220,94 @@ async def test_project_page_total_timeout(stalled: str, monkeypatch: pytest.Monk
     assert response.json() == {"detail": "Timed out while loading the project page."}
     # Project satellites need the run id from identity, so a stalled identity starts none.
     assert cancelled == ({"identity"} if stalled == "identity" else set(RESOURCES))
+
+
+async def test_project_page_identity_barrier_holds_satellites() -> None:
+    """Current implementation: no satellite is issued until identity answers.
+
+    Unlike the run page, this ordering is a hard dependency (the satellite paths
+    embed the run id from the identity response), so it is asserted on the live
+    assembler rather than only on the pre-change baseline in test_phase0_baseline.
+    """
+    seen: list[str] = []
+    identity_pending = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path.endswith("/summary"):
+            identity_pending.set()
+            await asyncio.wait_for(release.wait(), timeout=2)
+            return httpx.Response(200, json=payload("project"))
+        return httpx.Response(200, json=satellite(request.url.path.split("/")[1]))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://upstream.test") as upstream:
+        app.dependency_overrides[get_http_client] = lambda: upstream
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://platform.test") as caller:
+            request_task = asyncio.create_task(caller.get(PAGE))
+            await asyncio.wait_for(identity_pending.wait(), timeout=2)
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert seen == ["/projects/example/summary"], "a satellite was issued before identity answered"
+            release.set()
+            response = await request_task
+    assert response.status_code == 200, response.text
+    expected_id = payload()["id"]
+    assert seen == ["/projects/example/summary", *[f"/{resource}/{expected_id}" for resource in RESOURCES]]
+
+
+async def test_project_page_failed_satellite_cancels_sibling() -> None:
+    """A failed satellite fails the page with 502 and cancels the sibling still in flight."""
+    started: set[str] = set()
+    cancelled: set[str] = set()
+    both_started = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/summary"):
+            return httpx.Response(200, json=payload("project"))
+        resource = request.url.path.split("/")[1]
+        started.add(resource)
+        if started == set(RESOURCES):
+            both_started.set()
+        if resource == "files":
+            await asyncio.wait_for(both_started.wait(), timeout=2)
+            return httpx.Response(500, text="secret")
+        await hang_until_cancelled(resource, cancelled)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://upstream.test") as upstream:
+        app.dependency_overrides[get_http_client] = lambda: upstream
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://platform.test") as caller:
+            response = await caller.get(PAGE)
+    assert response.status_code == 502, response.text
+    assert "secret" not in response.text
+    assert cancelled == {"specifications"}
+
+
+async def test_project_page_caller_cancellation_drains_upstream_calls() -> None:
+    """Caller cancellation propagates and no upstream call outlives the request.
+
+    A disconnect must not leave the sibling satellite running after the response
+    is decided. Asserts the propagated CancelledError and that every in-flight
+    child was drained, without an unhandled-task warning.
+    """
+    started: set[str] = set()
+    cancelled: set[str] = set()
+    both_started = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/summary"):
+            return httpx.Response(200, json=payload("project"))
+        resource = request.url.path.split("/")[1]
+        started.add(resource)
+        if started == set(RESOURCES):
+            both_started.set()
+        await hang_until_cancelled(resource, cancelled)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://upstream.test") as upstream:
+        task = asyncio.create_task(service.assemble_project_page(upstream, "example"))
+        await asyncio.wait_for(both_started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert started == set(RESOURCES)
+    assert cancelled == set(RESOURCES)

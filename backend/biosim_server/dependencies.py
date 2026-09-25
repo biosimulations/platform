@@ -7,7 +7,9 @@ from temporalio.client import Client as TemporalClient
 from biosim_server.biosim_omex.database import OmexDatabaseService, OmexDatabaseServiceMongo
 from biosim_server.biosim_runs.biosim_service import BiosimService, BiosimServiceRest
 from biosim_server.biosim_runs.database import DatabaseService, DatabaseServiceMongo
+from biosim_server.common.auth.auth0_management import close_auth0_http_client
 from biosim_server.common.storage import FileService, FileServiceGCS, FileServiceLocal, FileServiceMinio
+from biosim_server.common.upstream import UPSTREAM_TIMEOUT_SECONDS
 from biosim_server.config import get_local_cache_dir, get_settings
 
 if TYPE_CHECKING:
@@ -109,7 +111,9 @@ def get_mongo_client() -> AsyncIOMotorClient | None:
 # Lazily constructed: the API creates it in init_standalone, but a test client
 # that skips lifespan still gets a usable one.
 
-_HTTP_TIMEOUT = httpx.Timeout(30.0)
+# Per-phase upstream timeout, shared with common/upstream.py so the page budgets
+# it derives (pages/service.py) stay in step with the client they bound.
+_HTTP_TIMEOUT = httpx.Timeout(UPSTREAM_TIMEOUT_SECONDS)
 
 global_http_client: httpx.AsyncClient | None = None
 
@@ -197,6 +201,10 @@ async def shutdown_standalone() -> None:
     file_service = get_file_service()
     if file_service:
         await file_service.close()
+    # Lifecycle-owned Auth0 transport (token + Management API calls). Separate
+    # from the public upstream client below and closed with it, so no request
+    # pool outlives the process.
+    await close_auth0_http_client()
     if global_http_client is not None:
         await global_http_client.aclose()
         set_http_client(None)

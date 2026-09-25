@@ -10,10 +10,11 @@ from typing import Iterator
 
 import pytest
 from fastapi import HTTPException, Request
+from pydantic import ValidationError
 
 from biosim_server.common import ratelimit as ratelimit_module
 from biosim_server.common.auth.auth0 import AuthenticatedUser
-from biosim_server.config import get_settings
+from biosim_server.config import RateLimitSettings, get_settings
 from tests.fixtures.jwks_fixtures import FakeClock
 
 
@@ -42,6 +43,10 @@ def _restore_ratelimit_state() -> Iterator[None]:
         settings.window_seconds,
         settings.authenticated_per_window,
         settings.anonymous_per_window,
+        settings.password_reset_per_window,
+        settings.password_reset_window_seconds,
+        settings.page_per_window,
+        settings.page_window_seconds,
     )
     yield
     (
@@ -49,6 +54,10 @@ def _restore_ratelimit_state() -> Iterator[None]:
         settings.window_seconds,
         settings.authenticated_per_window,
         settings.anonymous_per_window,
+        settings.password_reset_per_window,
+        settings.password_reset_window_seconds,
+        settings.page_per_window,
+        settings.page_window_seconds,
     ) = original
 
 
@@ -245,6 +254,181 @@ class TestConcurrency:
         assert denied == 30
         bucket = next(iter(ratelimit_module._rate_limit_buckets.values()))
         assert int(bucket["count"]) == 80
+
+
+class TestPasswordResetBudget:
+    """AUTH-MIN-002: a dedicated ceiling/window, keyed by (issuer, subject)."""
+
+    def test_reset_uses_its_own_ceiling_not_the_workflow_one(self) -> None:
+        settings = get_settings().ratelimit
+        settings.password_reset_per_window = 2
+        settings.authenticated_per_window = 100
+        request = _make_request()
+        user = AuthenticatedUser(sub="auth0|abc", issuer="https://tenant.us.auth0.com/")
+
+        for _ in range(2):
+            ratelimit_module.password_reset_rate_limit(request, user)
+        with pytest.raises(HTTPException) as exc_info:
+            ratelimit_module.password_reset_rate_limit(request, user)
+        assert exc_info.value.status_code == 429
+
+        # Workflow starts are unaffected by the exhausted reset budget.
+        ratelimit_module.workflow_rate_limit(request=request, user=user)
+
+    def test_reset_uses_its_own_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Start exactly on a 300 s boundary so the elapsed-time arithmetic below
+        # measures the window, not an unlucky phase offset.
+        clock = FakeClock(start=1_700_000_100.0)
+        monkeypatch.setattr(ratelimit_module, "time", clock)
+        settings = get_settings().ratelimit
+        settings.password_reset_per_window = 1
+        settings.password_reset_window_seconds = 300
+        request = _make_request()
+        user = AuthenticatedUser(sub="auth0|abc", issuer="https://tenant.us.auth0.com/")
+
+        ratelimit_module.password_reset_rate_limit(request, user)
+        with pytest.raises(HTTPException):
+            ratelimit_module.password_reset_rate_limit(request, user)
+
+        # Still inside the reset window, though well past a 60 s workflow window.
+        clock.advance(120)
+        with pytest.raises(HTTPException):
+            ratelimit_module.password_reset_rate_limit(request, user)
+
+        clock.advance(181)
+        ratelimit_module.password_reset_rate_limit(request, user)
+
+    def test_reset_bucket_is_independent_of_the_workflow_bucket(self) -> None:
+        settings = get_settings().ratelimit
+        settings.password_reset_per_window = 1
+        settings.authenticated_per_window = 1
+        request = _make_request()
+        user = AuthenticatedUser(sub="auth0|abc", issuer="https://tenant.us.auth0.com/")
+
+        ratelimit_module.password_reset_rate_limit(request, user)
+        with pytest.raises(HTTPException):
+            ratelimit_module.password_reset_rate_limit(request, user)
+
+        ratelimit_module.workflow_rate_limit(request=request, user=user)
+
+    def test_subjects_are_scoped_by_issuer(self) -> None:
+        """`auth0|abc` from two trusted issuers must not share a reset bucket."""
+        settings = get_settings().ratelimit
+        settings.password_reset_per_window = 1
+        request = _make_request()
+        tenant = AuthenticatedUser(sub="auth0|abc", issuer="https://tenant.us.auth0.com/")
+        foreign = AuthenticatedUser(sub="auth0|abc", issuer="https://other.us.auth0.com/")
+
+        ratelimit_module.password_reset_rate_limit(request, tenant)
+        # A different issuer has its own budget; it does not consume the tenant's.
+        ratelimit_module.password_reset_rate_limit(request, foreign)
+
+        with pytest.raises(HTTPException):
+            ratelimit_module.password_reset_rate_limit(request, foreign)
+
+    def test_shared_workflow_budget_still_keys_on_subject_alone(self) -> None:
+        """Only the sensitive reset budget needs (issuer, subject) granularity."""
+        settings = get_settings().ratelimit
+        settings.authenticated_per_window = 2
+        request = _make_request()
+        first = AuthenticatedUser(sub="auth0|abc", issuer="https://tenant.us.auth0.com/")
+        second = AuthenticatedUser(sub="auth0|abc", issuer="https://other.us.auth0.com/")
+
+        ratelimit_module.workflow_rate_limit(request=request, user=first)
+        ratelimit_module.workflow_rate_limit(request=request, user=second)
+        with pytest.raises(HTTPException):
+            ratelimit_module.workflow_rate_limit(request=request, user=first)
+
+    def test_reset_honours_the_kill_switch(self) -> None:
+        settings = get_settings().ratelimit
+        settings.enabled = False
+        settings.password_reset_per_window = 1
+        request = _make_request()
+        user = AuthenticatedUser(sub="auth0|abc", issuer="https://tenant.us.auth0.com/")
+
+        for _ in range(5):
+            ratelimit_module.password_reset_rate_limit(request, user)
+
+
+class TestPolicyValidation:
+    """A malformed ceiling/window must fail where it is declared, not at 03:00."""
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"RATE_LIMIT_PASSWORD_RESET_PER_WINDOW": "0"},
+            {"RATE_LIMIT_PASSWORD_RESET_PER_WINDOW": "-1"},
+            {"RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS": "0"},
+            {"RATE_LIMIT_PAGE_PER_WINDOW": "0"},
+            {"RATE_LIMIT_PAGE_WINDOW_SECONDS": "-5"},
+        ],
+    )
+    def test_non_positive_reset_policy_values_are_rejected(self, overrides: dict[str, str]) -> None:
+        with pytest.raises(ValidationError):
+            RateLimitSettings(_env_file=None, **overrides)  # type: ignore[call-arg,arg-type]
+
+    def test_reset_policy_defaults_are_conservative_and_distinct(self) -> None:
+        settings = RateLimitSettings(_env_file=None)  # type: ignore[call-arg]
+        assert settings.password_reset_per_window == 5
+        assert settings.password_reset_window_seconds == 300
+        assert settings.password_reset_per_window < settings.authenticated_per_window
+        assert settings.password_reset_window_seconds > settings.window_seconds
+
+    def test_page_policy_defaults_are_tunable_and_more_generous_than_a_workflow_start(self) -> None:
+        settings = RateLimitSettings(_env_file=None)  # type: ignore[call-arg]
+        assert settings.page_per_window == 60
+        assert settings.page_window_seconds == 60
+        # Browsing is the ordinary reading path, so a page view must be cheaper
+        # than starting a workflow -- while still bounding the upstream fan-out.
+        assert settings.page_per_window > settings.authenticated_per_window
+
+
+class TestPageBudget:
+    """The public page-aggregation bucket (addition to the audit's plan)."""
+
+    def test_page_uses_its_own_ceiling_and_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Start exactly on a 60 s/300 s boundary so Retry-After is arithmetic, not luck.
+        clock = FakeClock(start=1_700_000_100.0)
+        monkeypatch.setattr(ratelimit_module, "time", clock)
+        settings = get_settings().ratelimit
+        settings.page_per_window = 2
+        settings.page_window_seconds = 60
+        settings.anonymous_per_window = 100
+        request = _make_request()
+
+        ratelimit_module.page_rate_limit(request)
+        ratelimit_module.page_rate_limit(request)
+        clock.advance(20)
+        with pytest.raises(HTTPException) as exc_info:
+            ratelimit_module.page_rate_limit(request)
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.headers == {"Retry-After": "41"}
+
+        # The exhausted page budget neither consumes nor is consumed by the
+        # shared workflow budget, which is still untouched.
+        ratelimit_module.workflow_rate_limit(request=request, user=None)
+
+        # The window rolls over, so browsing resumes without any reset.
+        clock.advance(40)
+        ratelimit_module.page_rate_limit(request)
+
+    def test_page_bucket_is_keyed_by_client_ip_only(self) -> None:
+        """A token must not buy a larger page budget, nor reset an exhausted one."""
+        settings = get_settings().ratelimit
+        settings.page_per_window = 1
+        request = _make_request()
+
+        ratelimit_module.page_rate_limit(request)
+        assert set(ratelimit_module._rate_limit_buckets) == {"pages:ip:203.0.113.5"}
+        with pytest.raises(HTTPException):
+            ratelimit_module.page_rate_limit(request)
+
+    def test_one_ip_does_not_consume_another_ips_page_budget(self) -> None:
+        settings = get_settings().ratelimit
+        settings.page_per_window = 1
+
+        ratelimit_module.page_rate_limit(_make_request(client_host="203.0.113.5"))
+        ratelimit_module.page_rate_limit(_make_request(client_host="198.51.100.7"))
 
 
 class TestCompatibilityQuotaIsIndependent:

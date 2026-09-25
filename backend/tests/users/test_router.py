@@ -1,18 +1,79 @@
 """Tests for GET/PATCH/DELETE /api/v1/me.
 
-Auth is bypassed via the shared `authenticated_user` fixture (dependency
-override); the Auth0 Management API is mocked at the router's import site,
-matching the repo's `@patch("biosim_server.<module>.router.get_x")` convention.
+Auth is bypassed via a dependency override; the Auth0 Management API is mocked at
+the router's import site, matching the repo's
+`@patch("biosim_server.users.<module>.router.get_x")` convention.
+
+The endpoints are guarded in two independent steps, and both are exercised here:
+`management_api_configured()` decides whether this deployment has Management
+credentials at all (503), and the verified token's *issuer* decides whether the
+configured tenant can resolve the subject (403). The latter is what stops a token
+issued by a second trusted issuer from reading or mutating the tenant's account
+of a same-named subject.
 """
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from biosim_server.api.main import app
-from biosim_server.common.auth import AuthenticatedUser
+from biosim_server.common.auth import AuthenticatedUser, get_current_user
+from biosim_server.config import get_settings
+from tests.fixtures.auth_fixtures import make_authenticated_user
 
 client = TestClient(app)
+
+TENANT_DOMAIN = "tenant.auth0.com"
+TENANT_ISSUER = f"https://{TENANT_DOMAIN}/"
+FOREIGN_ISSUER = "https://other-tenant.auth0.com/"
+
+
+@pytest.fixture(autouse=True)
+def _configured_tenant(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Pin the configured tenant so the issuer guard is deterministic.
+
+    The test environment has no AUTH0_DOMAIN (and a developer's local .env may
+    have one), so both sides of the comparison are fixed explicitly rather than
+    read from ambient configuration.
+    """
+    monkeypatch.setattr(get_settings().auth0, "domain", TENANT_DOMAIN)
+    monkeypatch.setattr(get_settings().auth0, "issuer", "")
+    yield
+
+
+@pytest.fixture
+def authenticated_user() -> Iterator[AuthenticatedUser]:
+    """Overrides get_current_user with a principal from the configured tenant."""
+    user = make_authenticated_user(issuer=TENANT_ISSUER)
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        yield user
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture
+def foreign_user() -> Iterator[AuthenticatedUser]:
+    """A valid principal from a *different* trusted issuer, same subject string."""
+    user = make_authenticated_user(issuer=FOREIGN_ISSUER)
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        yield user
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture
+def issuerless_user() -> Iterator[AuthenticatedUser]:
+    """No verified issuer at all -- must fail closed, never be assumed local."""
+    user = make_authenticated_user(issuer=None)
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        yield user
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_get_me_requires_authentication() -> None:
@@ -58,6 +119,53 @@ def test_get_me_degrades_on_management_api_failure(
     assert body["name"] is None
 
 
+@patch("biosim_server.users.router.get_auth0_user")
+@patch("biosim_server.users.router.management_api_configured", return_value=True)
+def test_get_me_from_a_foreign_issuer_is_jwt_only_and_touches_no_tenant(
+    _mock_configured: AsyncMock, mock_get_auth0_user: AsyncMock, foreign_user: AuthenticatedUser
+) -> None:
+    """A second trusted issuer must never reach the configured tenant's directory.
+
+    The token is a valid credential for this API, but its subject is only
+    meaningful inside its own issuer: resolving it here would read -- or later
+    mutate -- the tenant account of a same-named subject. The caller still gets
+    its own JWT-derived identity; it just gets no tenant enrichment.
+    """
+    resp = client.get("/api/v1/me")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == foreign_user.sub
+    assert resp.json()["name"] is None
+    mock_get_auth0_user.assert_not_awaited()
+
+
+@patch("biosim_server.users.router.get_auth0_user")
+@patch("biosim_server.users.router.management_api_configured", return_value=True)
+def test_get_me_without_a_verified_issuer_gets_no_enrichment(
+    _mock_configured: AsyncMock, mock_get_auth0_user: AsyncMock, issuerless_user: AuthenticatedUser
+) -> None:
+    assert client.get("/api/v1/me").status_code == 200
+    mock_get_auth0_user.assert_not_awaited()
+
+
+@patch("biosim_server.users.router.get_auth0_user")
+@patch("biosim_server.users.router.management_api_configured", return_value=True)
+def test_get_me_enriches_a_same_tenant_social_connection(
+    _mock_configured: AsyncMock, mock_get_auth0_user: AsyncMock
+) -> None:
+    """The guard is issuer-based, not `auth0|`-prefix-based: a social connection
+    inside the same tenant is a real user of that tenant and keeps enrichment."""
+    mock_get_auth0_user.return_value = {"name": "Social User", "email_verified": True}
+    user = make_authenticated_user(sub="google-oauth2|10987654321", issuer=TENANT_ISSUER)
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        resp = client.get("/api/v1/me")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Social User"
+    mock_get_auth0_user.assert_awaited_once_with("google-oauth2|10987654321")
+
+
 def test_patch_me_requires_authentication() -> None:
     resp = client.patch("/api/v1/me", json={"name": "New Name"})
     assert resp.status_code == 401
@@ -74,6 +182,25 @@ def test_patch_me_503_when_management_api_unconfigured(
 ) -> None:
     resp = client.patch("/api/v1/me", json={"name": "New Name"})
     assert resp.status_code == 503
+
+
+@patch("biosim_server.users.router.update_auth0_user")
+@patch("biosim_server.users.router.management_api_configured", return_value=True)
+def test_patch_me_from_a_foreign_issuer_is_403_with_no_management_call(
+    _mock_configured: AsyncMock, mock_update: AsyncMock, foreign_user: AuthenticatedUser
+) -> None:
+    resp = client.patch("/api/v1/me", json={"name": "Attacker"})
+    assert resp.status_code == 403
+    mock_update.assert_not_awaited()
+
+
+@patch("biosim_server.users.router.update_auth0_user")
+@patch("biosim_server.users.router.management_api_configured", return_value=True)
+def test_patch_me_without_a_verified_issuer_is_403(
+    _mock_configured: AsyncMock, mock_update: AsyncMock, issuerless_user: AuthenticatedUser
+) -> None:
+    assert client.patch("/api/v1/me", json={"name": "New Name"}).status_code == 403
+    mock_update.assert_not_awaited()
 
 
 @patch("biosim_server.users.router.get_auth0_user")
@@ -150,6 +277,22 @@ def test_delete_me_503_when_management_api_unconfigured(
 ) -> None:
     resp = client.delete("/api/v1/me")
     assert resp.status_code == 503
+
+
+@patch("biosim_server.users.router.delete_auth0_user")
+@patch("biosim_server.users.router.management_api_configured", return_value=True)
+def test_delete_me_from_a_foreign_issuer_is_403_and_deletes_nothing(
+    _mock_configured: AsyncMock, mock_delete: AsyncMock, foreign_user: AuthenticatedUser
+) -> None:
+    """The destructive case the guard exists for: same subject, other issuer.
+
+    Before the guard, a genuinely signed token from a second trusted issuer
+    reached ``DELETE /api/v1/me`` and the Management client deleted the
+    configured tenant's account for that subject string.
+    """
+    resp = client.delete("/api/v1/me")
+    assert resp.status_code == 403
+    mock_delete.assert_not_awaited()
 
 
 @patch("biosim_server.users.router.delete_auth0_user")

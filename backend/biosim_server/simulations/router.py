@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from biosim_server.biosim_runs import BiosimulatorVersion
+from biosim_server.common.ratelimit import page_rate_limit
 from biosim_server.common.upstream import fetch_upstream_json, upstream_url
 from biosim_server.pages.models import RunsPagePayload
 from biosim_server.pages.service import assemble_run_page
@@ -599,8 +600,18 @@ def _conglomerate_status_from_records(
     response_model=RunsPagePayload,
     operation_id="get-run-page",
     summary="Platform-owned run page aggregation",
+    dependencies=[Depends(page_rate_limit)],
     responses={
-        502: {"description": "The upstream service failed or returned an invalid page resource."},
+        429: {
+            "description": "The caller exhausted the page-aggregation budget. Retry after the indicated delay.",
+            "headers": {
+                "Retry-After": {
+                    "description": "Seconds until the current fixed window rolls over.",
+                    "schema": {"type": "integer"},
+                }
+            },
+        },
+        502: {"description": "The upstream service failed, returned an oversized body, or returned an invalid page resource."},
         504: {"description": "Timed out while contacting the upstream service."},
     },
 )

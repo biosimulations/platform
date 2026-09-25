@@ -1,4 +1,5 @@
 import { createAuth0 } from '@auth0/auth0-vue'
+import { isPlatformApiRequest } from '../utils/api-auth'
 
 export default defineNuxtPlugin((nuxtApp) => {
   const config = useRuntimeConfig()
@@ -14,9 +15,11 @@ export default defineNuxtPlugin((nuxtApp) => {
   })
   nuxtApp.vueApp.use(auth0)
 
-  // Intercept all outgoing HTTP requests: enable credentials and attach Bearer token when logged in
+  // Only the configured Platform API receives the Platform audience token.
   globalThis.$fetch = $fetch.create({
-    async onRequest({ options }) {
+    async onRequest({ request, options }) {
+      if (!isPlatformApiRequest(request, options.baseURL, config.public.api_url, window.location.origin)) return
+
       options.credentials = 'include'
 
       if (auth0.isAuthenticated.value) {

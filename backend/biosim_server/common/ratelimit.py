@@ -137,7 +137,9 @@ def _client_ip(request: Request) -> str:
             return first_hop
     return peer
 
-def client_identity(user: AuthenticatedUser | None, request: Request) -> tuple[str, bool]:
+def client_identity(
+    user: AuthenticatedUser | None, request: Request, *, scope_issuer: bool = False
+) -> tuple[str, bool]:
     """
     Resolve the rate-limit key and whether it is an authenticated identity.
 
@@ -145,12 +147,23 @@ def client_identity(user: AuthenticatedUser | None, request: Request) -> tuple[s
     "ip:...") so an authenticated `sub` string can never collide with an
     IP-shaped anonymous key.
 
+    ``scope_issuer`` additionally qualifies the key with the verified issuer.
+    A subject is only unique *within* one issuer: when more than one issuer is
+    trusted, `auth0|abc` from issuer A and `auth0|abc` from issuer B are
+    different principals, and keying on the subject alone let the second consume
+    (or exhaust) the first's quota. Callers that charge a sensitive per-account
+    budget pass ``scope_issuer=True``; the shared workflow budget keeps the
+    subject-only key so a single real user is one bucket regardless of which
+    audience/issuer they presented.
+
     Deliberately independent of whether the calling endpoint itself requires
     authentication -- see the tutorial's Section 9 Step 2, Decision 5. Works
     identically whether or not TODO #9 (mandatory auth on /verify/omex and
     /verify/runs) has landed yet.
     """
     if user is not None:
+        if scope_issuer and user.issuer:
+            return f"sub:{user.issuer}:{user.sub}", True
         return f"sub:{user.sub}", True
     return f"ip:{_client_ip(request)}", False
 
@@ -189,14 +202,28 @@ def _enforce_rate_limit(
         user: AuthenticatedUser | None,
         *,
         key_prefix: str | None = None,
+        per_window: int | None = None,
+        window_seconds: int | None = None,
+        scope_issuer: bool = False,
 ) -> None:
+    """Charge one unit of the caller's budget.
+
+    ``per_window``/``window_seconds`` let a caller use a dedicated ceiling and
+    window instead of the shared workflow policy (password reset does), without
+    duplicating the key/identity/429 logic or reaching around the kill switch.
+    """
     settings = get_settings().ratelimit
     if not settings.enabled:
         return
-    ident, authenticated = client_identity(user, request)
+    ident, authenticated = client_identity(user, request, scope_issuer=scope_issuer)
     key = f"{key_prefix}:{ident}" if key_prefix else ident
-    limit = settings.authenticated_per_window if authenticated else settings.anonymous_per_window
-    allowed, retry_after = _check_and_increment(key, limit, settings.window_seconds, time.time())
+    if per_window is not None:
+        limit = per_window
+    else:
+        limit = settings.authenticated_per_window if authenticated else settings.anonymous_per_window
+    allowed, retry_after = _check_and_increment(
+        key, limit, window_seconds if window_seconds is not None else settings.window_seconds, time.time()
+    )
     if not allowed:
         # The key itself (a `sub` or an IP) is never logged -- consistent
         # with auth0.py's discipline of never logging raw claims or token
@@ -248,6 +275,62 @@ def compatibility_rate_limit(
     _enforce_rate_limit(request, user, key_prefix="compat")
 
 
+def page_rate_limit(request: Request) -> None:
+    """
+    FastAPI dependency: enforce the platform page-aggregation budget.
+
+    ``GET /projects/{id}/page`` and ``GET /runs/{id}/page`` are public and, until
+    this bucket existed, unmetered -- yet each request fans out to 3-4 GETs
+    against a third-party API this project does not own, so a caller could
+    amplify load onto biosimulations.org at no cost to themselves.
+
+    Three deliberate differences from the workflow/compat buckets:
+
+      * Its own prefix (``pages:<identity>``) so browsing pages can neither
+        consume nor be consumed by simulation-start quota -- same reasoning as
+        ``compatibility_rate_limit``.
+      * Its own, more generous ceiling and window
+        (RATE_LIMIT_PAGE_PER_WINDOW / RATE_LIMIT_PAGE_WINDOW_SECONDS). Page views
+        are the ordinary reading path and are far more frequent than a workflow
+        start or a one-off compatibility check, so the workflow numbers would
+        throttle normal browsing; the ceiling still bounds the upstream
+        amplifier, and the fixed window/ceilings stay operator-tunable.
+      * It intentionally does **not** depend on ``get_optional_user``:
+        ``client_identity(None, ...)`` keys by client IP, so the page endpoints
+        stay unauthenticated exactly as documented (a caller presenting a stale
+        or malformed bearer token still gets the page rather than a 401), and a
+        caller cannot dodge the bound by rotating tokens.
+    """
+    settings = get_settings().ratelimit
+    _enforce_rate_limit(
+        request,
+        None,
+        key_prefix="pages",
+        per_window=settings.page_per_window,
+        window_seconds=settings.page_window_seconds,
+    )
+
+
 def password_reset_rate_limit(request: Request, user: AuthenticatedUser) -> None:
-    """Separate self-service budget; caller supplies the required principal."""
-    _enforce_rate_limit(request, user, key_prefix="password-reset")
+    """Separate self-service budget; caller supplies the required principal.
+
+    Three things distinguish this from the workflow budget, and all three matter
+    for a sensitive account action:
+
+      * its own key prefix, so reset traffic can never starve (or be starved by)
+        simulation starts;
+      * its own ceiling and window (RATE_LIMIT_PASSWORD_RESET_*), so operators
+        can tune reset abuse resistance without changing workflow policy; and
+      * an issuer-scoped key, so a subject string that exists in two trusted
+        issuers cannot consume the other principal's reset quota before the
+        route's issuer eligibility check rejects it.
+    """
+    settings = get_settings().ratelimit
+    _enforce_rate_limit(
+        request,
+        user,
+        key_prefix="password-reset",
+        per_window=settings.password_reset_per_window,
+        window_seconds=settings.password_reset_window_seconds,
+        scope_issuer=True,
+    )

@@ -323,8 +323,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunsPagePayload'
+        '429':
+          description: The caller exhausted the page-aggregation budget. Retry after
+            the indicated delay.
+          headers:
+            Retry-After:
+              description: Seconds until the current fixed window rolls over.
+              schema:
+                type: integer
         '502':
-          description: The upstream service failed or returned an invalid page resource.
+          description: The upstream service failed, returned an oversized body, or
+            returned an invalid page resource.
         '504':
           description: Timed out while contacting the upstream service.
         '422':
@@ -517,8 +526,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectsPagePayload'
+        '429':
+          description: The caller exhausted the page-aggregation budget. Retry after
+            the indicated delay.
+          headers:
+            Retry-After:
+              description: Seconds until the current fixed window rolls over.
+              schema:
+                type: integer
         '502':
-          description: The upstream service failed or returned an invalid page resource.
+          description: The upstream service failed, returned an oversized body, or
+            returned an invalid page resource.
         '504':
           description: Timed out while contacting the upstream service.
         '422':
@@ -550,6 +568,10 @@ paths:
       responses:
         '204':
           description: Successful Response
+        '403':
+          description: The token's issuer is not the configured Auth0 tenant, so its
+            subject must not be resolved against that tenant's directory. No account
+            is deleted.
       security:
       - HTTPBearer: []
     patch:
@@ -570,6 +592,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserProfile'
+        '403':
+          description: The token's issuer is not the configured Auth0 tenant, so its
+            subject must not be resolved against that tenant's directory. No Management
+            API call is made.
         '422':
           description: Validation Error
           content:
@@ -583,14 +609,85 @@ paths:
       tags:
       - Users
       summary: Create an Auth0-hosted password reset URL for the authenticated user
+      description: 'Issues a short-lived (600 s), single-use Auth0-hosted password-change
+        URL for the authenticated primary database user. The account is selected from
+        the verified bearer token only -- no email, user id, client id or return URL
+        is accepted from the caller, and supplying them changes nothing. No email
+        is sent: navigate the browser to the returned URL (it is a bearer capability,
+        so it must never be logged, cached, or fetched by script). Issuance is a single
+        attempt and is deliberately never retried, because an uncertain outcome may
+        already have minted a ticket. Every response, errors included, is `Cache-Control:
+        no-store` with `Referrer-Policy: no-referrer`. A 200 means a ticket was issued,
+        not that the password was changed.'
       operationId: create-current-user-password-reset
       responses:
         '200':
-          description: Successful Response
+          description: 'A hosted password-change URL. Sensitive: no-store/no-referrer,
+            never persisted by the API, and not proof of a completed change.'
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+            Referrer-Policy:
+              description: Always `no-referrer`.
+              schema:
+                type: string
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PasswordResetResponse'
+        '401':
+          description: Missing, malformed, expired, or otherwise unverifiable bearer
+            token. An access token without an expiry is rejected here too.
+          headers:
+            WWW-Authenticate:
+              description: RFC 6750 bearer challenge naming the fault.
+              schema:
+                type: string
+        '403':
+          description: 'This principal may not change a password here: its issuer
+            is not the configured tenant, its subject is not a primary `auth0|` database
+            user, or -- when recent authentication is required -- the token carries
+            no usable recent sign-in evidence.'
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+        '429':
+          description: The caller exhausted the password-reset budget (metered separately
+            from workflow starts, per issuer and subject). Retry after the indicated
+            delay; no ticket was issued.
+          headers:
+            Retry-After:
+              description: Seconds until the current fixed window rolls over.
+              schema:
+                type: integer
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+        '502':
+          description: 'Auth0 rejected or failed the ticket request. Generic by design:
+            it does not indicate whether the account exists.'
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+        '503':
+          description: Password reset is not configured, authentication is temporarily
+            unavailable (no usable JWKS), or Auth0 is rate-limiting ticket issuance.
+          headers:
+            Retry-After:
+              description: Present for the Auth0-throttled and JWKS cases.
+              schema:
+                type: integer
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
       security:
       - HTTPBearer: []
   /api/v1/demo/public:

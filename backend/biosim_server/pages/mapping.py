@@ -212,16 +212,27 @@ class _UpstreamDocuments(_UpstreamModel):
     sed_documents: list[_UpstreamFullSpecification]
 
 
+# Collection schemas are built once per process rather than once per request:
+# pydantic assembles a validator tree when a TypeAdapter is constructed, and the
+# two list shapes below are stable, so rebuilding them on every page was pure
+# repeated setup. They stay immutable __init__ state here -- no per-request
+# mutation -- and the explicit public models are unchanged, so validation and
+# projection are exactly as strict as before. The saving is small; it is claimed
+# as setup removal, not as a measured latency win.
+_UPSTREAM_SPECIFICATIONS = TypeAdapter(list[_UpstreamFullSpecification])
+_UPSTREAM_FILES = TypeAdapter(list[_UpstreamFile])
+
+
 def normalize_specifications(payload: object) -> list[_UpstreamFullSpecification]:
     if isinstance(payload, list):
-        return TypeAdapter(list[_UpstreamFullSpecification]).validate_python(payload)
+        return _UPSTREAM_SPECIFICATIONS.validate_python(payload)
     if isinstance(payload, dict) and "sedDocuments" in payload:
         return _UpstreamDocuments.model_validate(payload).sed_documents
     return [_UpstreamFullSpecification.model_validate(payload)]
 
 
 def map_files(payload: object) -> list[PageFile]:
-    entries = TypeAdapter(list[_UpstreamFile]).validate_python(payload)
+    entries = _UPSTREAM_FILES.validate_python(payload)
     return [PageFile.model_validate(entry.model_dump()) for entry in entries]
 
 

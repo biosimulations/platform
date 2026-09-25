@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from biosim_server.api.main import app
+from biosim_server.common.upstream import UPSTREAM_TIMEOUT_SECONDS
 from biosim_server.dependencies import get_http_client
 from biosim_server.pages import service
 from tests.pages.test_mapping import satellite
@@ -250,6 +251,19 @@ async def test_run_page_satellite_failure_cancels_siblings() -> None:
     assert cancelled == {"specifications", "logs"}
 
 
+async def test_run_page_budget_is_derived_from_the_upstream_serial_depth() -> None:
+    """The budget must be able to fire, and must not be dead code above the real cost.
+
+    Every upstream call is bounded *per phase* by the shared client's httpx timeout,
+    so the run page (one serial hop: identity ∥ satellites) cannot take less than
+    one timeout and cannot legitimately need two. A budget under the serial depth
+    would cancel healthy requests; the old flat 60 s was above anything the
+    implementation could reach, so it could never fire.
+    """
+    budget = service._PAGE_TIMEOUTS["run"]
+    assert UPSTREAM_TIMEOUT_SECONDS < budget < 2 * UPSTREAM_TIMEOUT_SECONDS
+
+
 @pytest.mark.parametrize("stalled", ["identity", "satellites"])
 async def test_run_page_total_timeout(stalled: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Exceeding the page budget returns 504 and cancels every upstream call still in flight."""
@@ -297,3 +311,78 @@ async def test_run_page_critical_path_is_max_not_sum() -> None:
             elapsed = time.monotonic() - start
     assert response.status_code == 200, response.text
     assert delay <= elapsed < 2 * delay, f"run page took {elapsed * 1000:.0f}ms with {delay * 1000:.0f}ms upstream calls"
+
+
+@pytest.mark.parametrize("failure,expected", [(404, 404), (500, 502), ("timeout", 504)])
+async def test_run_page_identity_error_precedes_an_earlier_satellite_failure(failure: int | str, expected: int) -> None:
+    """Mixed failure (RUN-MIN-001): identity's error wins even when a satellite failed first.
+
+    Identity is awaited before satellite results are consumed, so an identity
+    404/502/504 is the response even though ``files`` had already failed. That is
+    the deliberate "identity error wins" semantics a fail-fast refactor would
+    silently change, so it is pinned here rather than left to the single-resource
+    failure tests.
+    """
+    started: set[str] = set()
+    cancelled: set[str] = set()
+    files_failed = asyncio.Event()
+    all_started = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/summary"):
+            # Answer only once the satellite failure has already happened.
+            await asyncio.wait_for(files_failed.wait(), timeout=2)
+            if failure == "timeout":
+                raise httpx.ReadTimeout("secret", request=request)
+            assert isinstance(failure, int)
+            return httpx.Response(failure, text="secret")
+        resource = request.url.path.split("/")[1]
+        started.add(resource)
+        if started == set(RESOURCES):
+            all_started.set()
+        if resource == "files":
+            await asyncio.wait_for(all_started.wait(), timeout=2)
+            files_failed.set()
+            return httpx.Response(500, text="secret")
+        await hang_until_cancelled(resource, cancelled)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://upstream.test") as upstream:
+        app.dependency_overrides[get_http_client] = lambda: upstream
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://platform.test") as caller:
+            response = await caller.get(PAGE)
+    assert response.status_code == expected, response.text
+    assert "secret" not in response.text
+    assert cancelled == {"specifications", "logs"}
+
+
+async def test_run_page_caller_cancellation_drains_upstream_calls() -> None:
+    """Caller cancellation propagates and every in-flight upstream call is drained.
+
+    A disconnect must not leave identity or a satellite running after the request
+    is gone. Asserts the propagated CancelledError and that all four calls were
+    cancelled, without an unhandled-task warning.
+    """
+    started: set[str] = set()
+    cancelled: set[str] = set()
+    all_started = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/summary"):
+            started.add("identity")
+            if started == set(RESOURCES) | {"identity"}:
+                all_started.set()
+            await hang_until_cancelled("identity", cancelled)
+        resource = request.url.path.split("/")[1]
+        started.add(resource)
+        if started == set(RESOURCES) | {"identity"}:
+            all_started.set()
+        await hang_until_cancelled(resource, cancelled)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://upstream.test") as upstream:
+        task = asyncio.create_task(service.assemble_run_page(upstream, "example"))
+        await asyncio.wait_for(all_started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert started == set(RESOURCES) | {"identity"}
+    assert cancelled == set(RESOURCES) | {"identity"}

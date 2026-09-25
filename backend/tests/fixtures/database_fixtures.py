@@ -19,7 +19,8 @@ MONGODB_COLLECTION_NAME = "mycollection"
 
 @pytest.fixture(scope="session")
 def mongodb_container() -> MongoDbContainer:
-    with MongoDbContainer() as container:
+    # MongoDB 8 cannot start on Linux 6.19+ (SERVER-121912); keep CI deterministic.
+    with MongoDbContainer("mongo:7") as container:
         container.start()
         yield container
 

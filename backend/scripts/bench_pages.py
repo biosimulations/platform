@@ -32,9 +32,19 @@ is started or stopped:
 
 Every page request makes 3-4 GETs against the public biosimulations.org API, so
 keep --requests small; more than 50 requires --force.
+
+When it manages the servers itself it also prints a per-phase breakdown for each
+page: median page time split into the identity phase and the satellite phase,
+plus the decoded bytes the page had to buffer. Those come from the API's own
+structured page records (biosim_server/pages/service.py, common/upstream.py) in
+the managed servers' logs -- end-to-end latency alone cannot say where the time
+or the bytes went, and a byte budget cannot be chosen without them. A baseline
+ref that predates the instrumentation simply has no such records, and the
+breakdown says so instead of printing zeros.
 """
 
 import argparse
+import json
 import math
 import os
 import shutil
@@ -67,6 +77,21 @@ class Samples:
     statuses: set[int] = field(default_factory=set)
     size: int = 0
     errors: int = 0
+
+
+@dataclass
+class Phases:
+    """What one server's own structured page records say, for one page."""
+    requests: int = 0
+    page_millis: list[float] = field(default_factory=list)
+    identity_millis: list[float] = field(default_factory=list)
+    satellites_millis: list[float] = field(default_factory=list)
+    bytes_read: list[int] = field(default_factory=list)
+    outcomes: dict[str, int] = field(default_factory=dict)
+
+
+# `--endpoint` labels to the page name the API logs, for the phase breakdown.
+_PAGE_BY_LABEL = {"run page": "run", "project page": "project"}
 
 
 # --- benchmark ---------------------------------------------------------------
@@ -115,6 +140,78 @@ def _report(label: str, path: str, results: dict[str, Samples]) -> None:
             print(f"  {'':<{width}} warning: timings include non-200 responses")
         if samples.errors:
             print(f"  {'':<{width}} warning: {samples.errors} requests failed to connect or timed out")
+
+
+def _median(values: list[float]) -> float:
+    return statistics.median(values) if values else 0.0
+
+
+def _read_phase_samples(log_path: Path, page: str) -> Phases:
+    """Parse one managed server's page-phase records out of its log.
+
+    The API writes one JSON line per page request and one per upstream fetch;
+    uvicorn's access lines are not JSON and are skipped, as is anything a
+    baseline checkout without the instrumentation logs (no records, rather than
+    invented zeros).
+    """
+    samples = Phases()
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+    except OSError:
+        return samples
+    for line in lines:
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get("page") != page:
+            continue
+        outcome = record.get("page_outcome")
+        if outcome is None:
+            # An upstream-fetch record: how much this page had to buffer.
+            if isinstance(record.get("upstream_bytes"), int):
+                samples.bytes_read.append(record["upstream_bytes"])
+            continue
+        samples.requests += 1
+        samples.outcomes[str(outcome)] = samples.outcomes.get(str(outcome), 0) + 1
+        for key, collected in (
+            ("page_duration_ms", samples.page_millis),
+            ("page_identity_duration_ms", samples.identity_millis),
+            ("page_satellites_duration_ms", samples.satellites_millis),
+        ):
+            value = record.get(key)
+            if isinstance(value, int):
+                collected.append(float(value))
+    return samples
+
+
+def _report_phases(label: str, page: str, targets: list[tuple[str, str]], log_dir: Path) -> None:
+    """Phase and byte breakdown of the same requests, from the servers' logs."""
+    if not any(log_dir.glob("*.log")):
+        return
+    print(f"\n{label}: where the time and bytes went (from each server's own records)")
+    for name, _ in targets:
+        samples = _read_phase_samples(log_dir / f"{name.replace('/', '_')}.log", page)
+        if not samples.requests:
+            print(f"  {name:<6} no phase records (a baseline that predates the instrumentation emits none)")
+            continue
+        outcomes = ", ".join(f"{key}={count}" for key, count in sorted(samples.outcomes.items()))
+        bytes_note = ""
+        if samples.bytes_read:
+            fetches = len(samples.bytes_read)
+            bytes_note = (
+                f", upstream median {_median([float(value) for value in samples.bytes_read]) / 1024:.0f} KiB"
+                f" (total {sum(samples.bytes_read) / 1024:.0f} KiB over {fetches} fetch{'' if fetches == 1 else 'es'})"
+            )
+        print(
+            f"  {name:<6} n={samples.requests} ({outcomes}), page median {_median(samples.page_millis):.0f} ms ="
+            f" identity {_median(samples.identity_millis):.0f} ms + satellites {_median(samples.satellites_millis):.0f} ms"
+            f"{bytes_note}"
+        )
+    print("  (medians of the same requests; the identity/satellite phases overlap on the run page)")
 
 
 def _bench(targets: list[tuple[str, str]], paths: list[tuple[str, str]], requests: int, warmup: int, pause: float) -> None:
@@ -307,7 +404,12 @@ def _compare(baseline_ref: str, fetch: bool, startup_timeout: float,
             _server(baseline_ref, baseline_command, baseline_backend, env, log_dir, startup_timeout))
         branch_url = stack.enter_context(
             _server(branch_name, branch_command, BACKEND_DIR, env, log_dir, startup_timeout))
-        _bench([(baseline_ref, baseline_url), (branch_name, branch_url)], paths, requests, warmup, pause)
+        targets = [(baseline_ref, baseline_url), (branch_name, branch_url)]
+        _bench(targets, paths, requests, warmup, pause)
+        for label, _path in paths:
+            page = _PAGE_BY_LABEL.get(label)
+            if page is not None:
+                _report_phases(label, page, targets, log_dir)
 
 
 def _exit_on_sigterm(signum: int, _frame: FrameType | None) -> None:
