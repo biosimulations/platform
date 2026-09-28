@@ -31,6 +31,9 @@ class JsonFormatter(logging.Formatter):
         "upstream_bytes",
     )
 
+    _LEGACY_FIELDS = ("legacy_operation", "legacy_outcome", "legacy_status",
+                      "legacy_duration_ms", "legacy_bytes")
+
     def format(self, record: logging.LogRecord) -> str:
         event: dict[str, Any] = {
             "timestamp": self.formatTime(record, self.datefmt),
@@ -38,7 +41,7 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        for field in (*self._AUTH_FIELDS, *self._PAGE_FIELDS):
+        for field in (*self._AUTH_FIELDS, *self._PAGE_FIELDS, *self._LEGACY_FIELDS):
             value = getattr(record, field, None)
             if value is not None:
                 event[field] = value

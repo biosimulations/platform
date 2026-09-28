@@ -270,6 +270,172 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /runs/summary:
+    get:
+      tags:
+      - Runs
+      summary: Get Legacy Runs Summary
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed.
+      operationId: get-legacy-runs-summary
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
+  /runs/{run_id}:
+    get:
+      tags:
+      - Runs
+      summary: Get Legacy Run
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed.
+      operationId: get-legacy-run
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
+    patch:
+      tags:
+      - Runs
+      summary: Update Legacy Run
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed. PATCH
+        forwards raw bytes and Content-Type, bounded to 20 MiB before sending; field
+        validation belongs to the legacy service.
+      operationId: update-legacy-run
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
+        '413':
+          description: PATCH body exceeds 20 MiB; no upstream request is sent.
+      requestBody:
+        required: false
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+    delete:
+      tags:
+      - Runs
+      summary: Delete Legacy Run
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed.
+      operationId: delete-legacy-run
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
+  /runs/{run_id}/download:
+    get:
+      tags:
+      - Runs
+      summary: Download Legacy Run
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed. Streams
+        raw binary bytes, including error bodies. Range and conditional headers are
+        forwarded; upstream support determines the result.
+      operationId: download-legacy-run
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
+  /runs/{run_id}/validate:
+    get:
+      tags:
+      - Runs
+      summary: Validate Legacy Run
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed.
+      operationId: validate-legacy-run
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
   /runs/{run_id}/summary:
     get:
       tags:

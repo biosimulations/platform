@@ -22,6 +22,7 @@ from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkf
 from biosim_server.common.auth import get_current_user
 from biosim_server.rbac_demo.models import PublicMessage
 from biosim_server.version import __version__
+from biosim_server.dependencies import get_http_client
 from tests.fixtures.auth_fixtures import make_authenticated_user
 
 _PATH_PARAMS = ("processing_id", "workflow_id", "run_id", "project_id")
@@ -35,6 +36,10 @@ _CORE_PATHS = frozenset({
     "/simulations/{processing_id}/results",
     "/simulations/{processing_id}/logs",
     "/simulations/{processing_id}/cancel",
+    "/runs/{run_id}",
+    "/runs/summary",
+    "/runs/{run_id}/download",
+    "/runs/{run_id}/validate",
     "/runs/{run_id}/summary",
     "/runs/{run_id}/page",
     "/projects",
@@ -116,6 +121,13 @@ OPERATIONS: tuple[Operation, ...] = tuple(_operations())
 OPERATION_IDS: frozenset[str] = frozenset(op.operation_id for op in OPERATIONS)
 
 AUTH_MODE: dict[str, AuthMode] = {
+    "get-legacy-run": AuthMode.NONE,
+    "update-legacy-run": AuthMode.NONE,
+    "delete-legacy-run": AuthMode.NONE,
+    "download-legacy-run": AuthMode.NONE,
+    "validate-legacy-run": AuthMode.NONE,
+    "get-legacy-runs-summary": AuthMode.NONE,
+
     "check-compatibility": AuthMode.NONE,
     "run-simulations": AuthMode.OPTIONAL,
     "list-simulation-runs": AuthMode.OPTIONAL,
@@ -148,6 +160,13 @@ AUTH_MODE: dict[str, AuthMode] = {
 }
 
 VALIDATION_SKIP: dict[str, str] = {
+    "get-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "update-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "delete-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "download-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "validate-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "get-legacy-runs-summary": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+
     "get-simulation-status": "path-only; omitting the id is a different route",
     "get-simulation-status-explicit": "path-only; omitting the id is a different route",
     "get-simulation-results": "path-only; omitting the id is a different route",
@@ -286,7 +305,50 @@ def _probe_version(client: TestClient) -> None:
     assert response.json() == __version__
 
 
+def _probe_get_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("GET", "/runs/%2E"), 404)
+
+
+def _probe_update_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("PATCH", "/runs/%2E"), 404)
+
+
+def _probe_delete_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("DELETE", "/runs/%2E"), 404)
+
+
+def _probe_download_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("GET", "/runs/%2E/download"), 404)
+
+
+def _probe_validate_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("GET", "/runs/%2E/validate"), 404)
+
+
+def _probe_get_legacy_runs_summary(client: TestClient) -> None:
+    # A static route has no dot-id rejection. Use a hermetic upstream failure.
+    def unavailable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("unavailable", request=request)
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(unavailable), base_url="https://upstream.test")
+    app.dependency_overrides[get_http_client] = lambda: upstream
+    try:
+        _assert_status(client.get("/runs/summary"), 502)
+    finally:
+        app.dependency_overrides.pop(get_http_client, None)
+        # MockTransport owns no sockets, but close the client lifecycle as well.
+        import asyncio
+        asyncio.run(upstream.aclose())
+
+
 UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
+    "get-legacy-run": _probe_get_legacy_run,
+    "update-legacy-run": _probe_update_legacy_run,
+    "delete-legacy-run": _probe_delete_legacy_run,
+    "download-legacy-run": _probe_download_legacy_run,
+    "validate-legacy-run": _probe_validate_legacy_run,
+    "get-legacy-runs-summary": _probe_get_legacy_runs_summary,
+
     "check-compatibility": _probe_check_compatibility,
     "run-simulations": _probe_run_simulations,
     "list-simulation-runs": _probe_list_simulation_runs,

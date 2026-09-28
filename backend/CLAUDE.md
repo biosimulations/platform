@@ -220,7 +220,7 @@ These point at the public biosimulations.org services. Defaults are production; 
 
 | Variable | Default | Used by |
 | --- | --- | --- |
-| `BIOSIMULATIONS_API_BASE_URL` | `https://api.biosimulations.org` | `BiosimServiceRest` — submit and poll simulation jobs |
+| `BIOSIMULATIONS_API_BASE_URL` | `https://api.biosimulations.org` | `BiosimServiceRest` submission/polling, typed summaries/pages, and legacy `/runs` proxies |
 | `SIMDATA_API_BASE_URL` | `https://simdata.api.biosimulations.org` | `BiosimServiceRest` — fetch HDF5 outputs |
 | `BIOSIMULATORS_API_BASE_URL` | `https://api.biosimulators.org` | Simulator version metadata |
 
@@ -237,6 +237,71 @@ These point at the public biosimulations.org services. Defaults are production; 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CORS_EXTRA_ORIGINS` | _empty_ | Comma-separated list of additional CORS origins appended to the built-in allowlist in `api/main.py`. **Required** for every deployment so the deployed frontend host (e.g. `https://biosim.biosimulations.org`) is allowed. The built-in list only covers local-dev loopbacks and cross-org trusted services — deploy-specific URLs are not hardcoded by design. |
+
+### Legacy runs proxy
+
+Six transparent operations share the existing pooled HTTP client and
+`BIOSIMULATIONS_API_BASE_URL`: GET/PATCH/DELETE `/runs/{id}`, GET
+`/runs/{id}/download`, GET `/runs/{id}/validate`, and GET `/runs/summary`.
+`GET /runs/{id}/summary` keeps the existing typed `RunSummary` projection,
+credential/query isolation, size cap and sanitized upstream errors.
+
+The transparent operations forward caller `Authorization` without local Auth0
+validation or platform ownership checks. Authorization belongs to the upstream;
+no service credentials are added, and neither caller nor pooled-client cookies
+are sent. Requests are attempted once, with no retry and no redirect following.
+A returned redirect retains `Location`. Received statuses and opaque bodies,
+including 4xx/5xx, are relayed with allowlisted headers. Transport failures before
+response delivery are sanitized 502/504; failures after download headers have
+been sent abort the stream and close upstream resources.
+
+PATCH forwards raw bytes and the caller's Content-Type; upstream owns field
+validation. `LEGACY_PATCH_MAX_BYTES` is **20 MiB**, matching the existing gke/rke
+20m ingress ceiling (not the unrelated 16 MiB JSON response cap). Actual chunks
+are counted, including requests without Content-Length. Over-limit requests
+return 413 before any mutation is sent. GET and DELETE send no body.
+
+Query bytes retain repeated keys and original escaping. IDs use `upstream_url`:
+dot-only IDs are rejected, special characters quoted, and decoded slashes do
+not match the single-segment route. Accept and Authorization are allowlisted;
+GET also forwards If-None-Match/If-Modified-Since, download additionally Range,
+and PATCH additionally Content-Type. Connection-nominated headers are stripped.
+Host/framing are generated afresh; arbitrary X-* and proxy headers are not sent.
+
+Downloads stream raw bytes (also for non-success bodies), remain open through
+downstream iteration, and close on completion, disconnect or failure. Upstream
+Content-Encoding is preserved with raw bytes so compression cannot invalidate
+Content-Length, Content-Range or ETag. Accept-Encoding is explicitly `identity`,
+but compressed responses are still handled correctly. Metadata responses buffer
+opaque bytes and recalculate length; downloads are never buffered. Response
+headers are limited to Content-Type/Disposition/Length/Range/Encoding,
+Accept-Ranges, ETag, Last-Modified, Cache-Control, Expires, Vary, Location and
+Retry-After; Set-Cookie and hop-by-hop headers are stripped.
+
+Each operation logs only `legacy_operation`, `legacy_outcome`, `legacy_status`,
+`legacy_duration_ms`, and `legacy_bytes`. The proxy suppresses httpx's full-URL
+INFO line for its outbound request. Deployment access-log policy remains owned
+by the ingress/server; do not enable logs containing credentials or query values.
+
+Contract evidence: read-only inspection of the live
+[legacy OpenAPI](https://api.biosimulations.org/openapi.json) on 2026-09-28 found:
+PATCH `application/json` / `UpdateSimulationRun` (status, fileUrl, projectSize,
+resultsSize), OAuth scopes `write:SimulationRuns` for PATCH and
+`delete:SimulationRuns` for DELETE, and DELETE success 204. Collection summaries
+are a JSON array with `read:SimulationRuns`; no pagination parameters are
+specified. Validation documents 204/400 and `validateSimulationResultsData`.
+Download documents 200/301/404. No PATCH size or Range/conditional support is
+specified. The proxy's raw-body policy, 20 MiB bound, optional header forwarding
+and permissive query relay are platform compatibility decisions, not claims of
+additional upstream support. Platform Auth0 tokens are not guaranteed to have
+the legacy audience/scopes; upstream 401/403 remain visible. No live mutation
+was performed to verify the documentation.
+
+Frontend rollout is separate: switch direct legacy calls and download links to
+the platform base URL after deployment. The current legacy summary consumer
+expects an array of metadata; it must adapt to the typed platform summary before
+switching that URL. Prefer same-origin download navigation; cross-origin fetch
+clients must not assume Content-Disposition is exposed by CORS.
 
 ### Page aggregation (public page endpoints)
 
