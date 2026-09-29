@@ -433,6 +433,11 @@ class Settings(BaseSettings):
     # SHARED-MAJ-001: hard ceiling on the *decoded* body of one upstream JSON
     # fetch (bytes). The page assemblers buffer whatever biosimulations.org
     # returns for a files/specifications/logs resource, and nothing bounded it.
+    # Second consumer: the legacy runs proxy's buffered responses (non-download,
+    # non-204/304). The proxy measures *raw* bytes via aiter_raw(), not decoded
+    # bytes, because it relays raw bytes and never decodes them -- that is what
+    # keeps Content-Encoding, Content-Length, Content-Range and ETag valid. A
+    # compressed buffered response is therefore capped on the wire.
     # Provisional default pending the representative-payload measurements the
     # audit asks for -- raise it per cluster if a legitimate resource exceeds it.
     # An oversized response is a sanitized 502, never a truncated payload.

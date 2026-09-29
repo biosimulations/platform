@@ -14,6 +14,7 @@ from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
 from biosim_server.common.upstream import upstream_url
+from biosim_server.config import get_settings
 
 logger = logging.getLogger(__name__)
 Operation = Literal["get", "update", "delete", "download", "validate", "summary"]
@@ -105,6 +106,42 @@ class _Transfer:
                     await response.aclose()
             finally:
                 self.log()
+
+
+# Consumer-facing detail for a buffered response that exceeds the configured
+# cap. Sanitized: it names nothing about the limit, the size, the body, or the
+# upstream. Distinct wording from common.upstream._OVERSIZE_DETAIL because the
+# two are different failures - a platform-owned contract could not be loaded,
+# versus an opaque response the proxy is refusing to relay truncated.
+_OVERSIZE_DETAIL = "The legacy runs service returned a response that is too large to relay."
+
+
+async def _read_capped_raw(
+    upstream: httpx.Response, transfer: _Transfer, limit: int
+) -> bytes:
+    """Buffer the relayed body, refusing to hold more than ``limit`` raw bytes.
+
+    Counted on ``aiter_raw``, unlike ``common.upstream._read_capped_body``'s
+    ``aiter_bytes``: the proxy relays raw bytes and never decodes them, which is
+    what keeps Content-Encoding, Content-Length, Content-Range and ETag valid.
+    The raw length *is* the memory cost, so this bounds what it actually holds -
+    a compressed body is measured on the wire and costs this worker only its
+    compressed size.
+
+    Content-Length is not consulted: one that overstates the body would reject
+    a legitimate small response, and one that understates it changes nothing,
+    because the decision is made from the bytes actually read. The stream is
+    abandoned the moment the cap is crossed and the caller's ``finally`` closes
+    it, so a breach never buffers the oversized remainder.
+    """
+    body = bytearray()
+    async for chunk in upstream.aiter_raw():
+        body += chunk
+        transfer.size += len(chunk)
+        if len(body) > limit:
+            transfer.outcome = "too_large"
+            raise HTTPException(502, _OVERSIZE_DETAIL)
+    return bytes(body)
 
 
 class _DownloadResponse(StreamingResponse):
@@ -201,17 +238,23 @@ async def proxy_run(
             response_body = b""
             if upstream.status_code == 204:
                 response_headers.pop("content-length", None)
-        elif upstream.is_stream_consumed:
-            # MockTransport may supply an already buffered response. Real
-            # responses always take the raw stream path below.
-            response_body = upstream.content
         else:
-            response_body = b"".join([chunk async for chunk in upstream.aiter_raw()])
-        transfer.size = len(response_body)
-        if upstream.status_code not in (204, 304):
-            response_headers.pop(
-                "content-length", None
-            )  # Starlette computes actual length.
+            limit = get_settings().upstream_max_response_bytes
+            if upstream.is_stream_consumed:
+                # MockTransport may supply an already buffered response. Real
+                # responses always take the raw stream path below. Already in
+                # memory, so this is a correctness guard, not a memory guard -
+                # but leaving it out would give the cap a second, test-only hole.
+                response_body = upstream.content
+                transfer.size = len(response_body)
+                if transfer.size > limit:
+                    transfer.outcome = "too_large"
+                    raise HTTPException(502, _OVERSIZE_DETAIL)
+            else:
+                response_body = await _read_capped_raw(upstream, transfer, limit)
+            # Starlette computes the actual length; the upstream value must go
+            # either way now that a relayed body is known to be bounded.
+            response_headers.pop("content-length", None)
         return Response(
             response_body, status_code=upstream.status_code, headers=response_headers
         )
@@ -227,7 +270,11 @@ async def proxy_run(
         transfer.outcome = "cancelled"
         raise
     except HTTPException:
-        transfer.outcome = "client_error"
+        # A specific outcome (the buffered-body cap's `too_large`) is recorded at
+        # its raise site; do not relabel it. A bare HTTPException here is
+        # upstream_url's 404 or the inbound PATCH 413, both client errors.
+        if transfer.outcome == "ok":
+            transfer.outcome = "client_error"
         raise
     finally:
         _proxy_active.reset(token)

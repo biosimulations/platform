@@ -13,8 +13,13 @@ from fastapi import Request
 from starlette.types import Message
 
 from biosim_server.api.main import app
-from biosim_server.biosim_runs.legacy_api import LEGACY_PATCH_MAX_BYTES, proxy_run
+from biosim_server.biosim_runs.legacy_api import (
+    LEGACY_PATCH_MAX_BYTES,
+    _OVERSIZE_DETAIL,
+    proxy_run,
+)
 from biosim_server.common.upstream import upstream_url
+from biosim_server.config import get_settings
 from biosim_server.dependencies import get_http_client
 from biosim_server.log_config import JsonFormatter
 
@@ -581,3 +586,267 @@ async def test_configured_base_prefix_is_preserved_without_default_query() -> No
     async with caller, upstream:
         await caller.get("/runs/example?x=1&x=2")
     assert seen[0].url.raw_path == b"/legacy/v1/runs/example?x=1&x=2"
+
+
+# ---------------------------------------------------------------------------
+# Section 16: Capping Buffered Legacy Proxy Responses
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cap(monkeypatch: pytest.MonkeyPatch) -> int:
+    """A small, explicit cap so the boundary is testable without megabyte payloads."""
+    limit = 64
+    monkeypatch.setattr(get_settings(), "upstream_max_response_bytes", limit)
+    return limit
+
+
+async def test_oversize_buffered_response_is_rejected_and_the_stream_is_abandoned(
+    cap: int,
+) -> None:
+    """Chunked body crossing the cap: 502, correct detail, stream closed, remainder not read."""
+    # Four chunks; the cap is crossed partway through — not all should be read.
+    half = cap // 2
+    chunks = [
+        b"A" * half,
+        b"B" * half,
+        b"C" * half,  # this crosses the cap
+        b"D" * half,  # this must never be read
+    ]
+    stream = Chunks(chunks)
+
+    caller, upstream = clients(
+        lambda request: httpx.Response(200, stream=stream, headers={"Content-Type": "application/json"})
+    )
+    async with caller, upstream:
+        response = await caller.get("/runs/example")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == _OVERSIZE_DETAIL
+    assert stream.closed, "upstream stream must be closed after breach"
+    assert stream.reads < len(chunks), "the remainder of the body must not have been read"
+
+
+async def test_buffered_body_at_the_cap_is_relayed_exactly(cap: int) -> None:
+    """A body of exactly cap bytes comes back whole with the original status."""
+    body = b"x" * cap
+    stream = Chunks([body])
+
+    caller, upstream = clients(
+        lambda request: httpx.Response(
+            200, stream=stream, headers={"Content-Type": "application/json"}
+        )
+    )
+    async with caller, upstream:
+        response = await caller.get("/runs/example")
+
+    assert response.status_code == 200
+    assert response.content == body
+
+
+@pytest.mark.parametrize(
+    "declared_cl,large_body",
+    [
+        ("lying-large", False),   # huge Content-Length over a small body → 200
+        ("absent", True),         # no Content-Length, large body → 502
+    ],
+)
+async def test_declared_content_length_is_not_trusted(
+    cap: int, declared_cl: str, large_body: bool
+) -> None:
+    """Content-Length must never decide the outcome; only bytes actually read matter."""
+    if not large_body:
+        # Overstated Content-Length but tiny body → must relay successfully.
+        body = b"[]"
+        stream = Chunks([body])
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Content-Length": str(10 * cap),
+        }
+        caller, upstream = clients(
+            lambda request: httpx.Response(200, stream=stream, headers=headers)
+        )
+        async with caller, upstream:
+            response = await caller.get("/runs/example")
+        assert response.status_code == 200
+        assert response.content == body
+    else:
+        # No Content-Length, large body → must reject with 502.
+        large = b"Z" * (cap + 1)
+        stream = Chunks([large])
+        caller, upstream = clients(
+            lambda request: httpx.Response(
+                200, stream=stream, headers={"Content-Type": "application/json"}
+            )
+        )
+        async with caller, upstream:
+            response = await caller.get("/runs/example")
+        assert response.status_code == 502
+
+
+async def test_oversize_upstream_error_is_not_relayed(cap: int) -> None:
+    """An oversized upstream 500 body becomes 502, not a truncated 500 (D3)."""
+    large = b"E" * (cap + 1)
+    stream = Chunks([large])
+
+    caller, upstream = clients(
+        lambda request: httpx.Response(
+            500, stream=stream, headers={"Content-Type": "application/json"}
+        )
+    )
+    async with caller, upstream:
+        response = await caller.get("/runs/example")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == _OVERSIZE_DETAIL
+
+
+async def test_oversize_is_recorded_as_too_large_without_the_body(
+    cap: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Breach log has too_large outcome, correct fields, and SECRET never leaks (D7)."""
+    SECRET = "SECRET_BODY_MARKER_XYZ"
+    # Build an oversized body that contains the secret marker.
+    filler = b"F" * (cap + 1)
+    secret_bytes = SECRET.encode()
+    chunks = [filler, secret_bytes]
+    stream = Chunks(chunks)
+
+    caller, upstream = clients(
+        lambda request: httpx.Response(
+            200, stream=stream, headers={"Content-Type": "application/json"}
+        )
+    )
+    with caplog.at_level(logging.INFO):
+        async with caller, upstream:
+            response = await caller.get("/runs/example")
+
+    assert response.status_code == 502
+
+    records = [
+        r for r in caplog.records if r.name == "biosim_server.biosim_runs.legacy_api"
+    ]
+    assert len(records) == 1
+    log = json.loads(JsonFormatter().format(records[0]))
+
+    assert log["legacy_outcome"] == "too_large"
+    assert log["legacy_operation"] == "get"
+    assert log["legacy_status"] == 200
+    assert log["legacy_bytes"] > 0
+
+    # The secret must not appear in the formatted log record or the 502 body.
+    assert SECRET not in json.dumps(log)
+    assert SECRET not in response.text
+
+
+async def test_buffered_compressed_response_stays_compressed_under_the_cap(
+    cap: int,
+) -> None:
+    """A gzip body under the cap is relayed as raw compressed bytes with Content-Encoding intact (D2)."""
+    import gzip as _gzip
+
+    raw = b'{"status": "ok"}'
+    compressed = _gzip.compress(raw)
+    assert len(compressed) < cap, "fixture must be under the cap on the wire"
+
+    stream = Chunks([compressed])
+
+    caller, upstream = clients(
+        lambda request: httpx.Response(
+            200,
+            stream=stream,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Encoding": "gzip",
+            },
+        )
+    )
+    async with caller, upstream:
+        # Use aiter_raw() to avoid the caller's transparent decompression so we
+        # can assert on the wire bytes, mirroring test_download_range_binary_and_compression.
+        async with caller.stream("GET", "/runs/example") as response:
+            wire = b"".join([chunk async for chunk in response.aiter_raw()])
+
+    assert response.status_code == 200
+    assert wire == compressed
+    assert response.headers.get("content-encoding") == "gzip"
+
+
+async def test_downloads_are_not_capped(cap: int) -> None:
+    """A download body larger than the cap streams to completion unchanged (16.3)."""
+    large = b"G" * (cap * 4)
+    stream = Chunks([large])
+
+    caller, upstream = clients(
+        lambda request: httpx.Response(
+            200,
+            stream=stream,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(len(large)),
+            },
+        )
+    )
+    async with caller, upstream:
+        response = await caller.get("/runs/example/download")
+
+    assert response.status_code == 200
+    assert response.content == large
+    assert stream.closed
+
+
+async def test_empty_and_not_modified_responses_are_unaffected(cap: int) -> None:
+    """204 and 304 return empty bodies and correct headers even under a tiny cap."""
+    for status, extra_headers in [
+        (204, {}),
+        (304, {"content-length": "0"}),
+    ]:
+        def _make_handler(
+            s: int, h: dict[str, str]
+        ) -> Callable[[httpx.Request], httpx.Response]:
+            def handler(request: httpx.Request) -> httpx.Response:
+                return httpx.Response(s, stream=Chunks([]), headers=h)
+
+            return handler
+
+        caller, upstream = clients(_make_handler(status, extra_headers))
+        async with caller, upstream:
+            response = await caller.get("/runs/example")
+
+        assert response.status_code == status
+        assert response.content == b""
+        # 204 must have content-length removed.
+        if status == 204:
+            assert "content-length" not in response.headers
+
+
+async def test_the_cap_is_read_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Changing the setting changes the boundary, proving the proxy reads it rather than a constant."""
+    # Set a very small cap: 4 bytes.
+    small_cap = 4
+    monkeypatch.setattr(get_settings(), "upstream_max_response_bytes", small_cap)
+
+    # A body at the cap passes.
+    ok_body = b"x" * small_cap
+    caller, upstream = clients(
+        lambda request: httpx.Response(
+            200, stream=Chunks([ok_body]), headers={"Content-Type": "application/json"}
+        )
+    )
+    async with caller, upstream:
+        response = await caller.get("/runs/example")
+    assert response.status_code == 200
+    assert response.content == ok_body
+
+    # A body one byte over fails.
+    large_body = b"x" * (small_cap + 1)
+    caller2, upstream2 = clients(
+        lambda request: httpx.Response(
+            200,
+            stream=Chunks([large_body]),
+            headers={"Content-Type": "application/json"},
+        )
+    )
+    async with caller2, upstream2:
+        response2 = await caller2.get("/runs/example")
+    assert response2.status_code == 502
+    assert response2.json()["detail"] == _OVERSIZE_DETAIL

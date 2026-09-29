@@ -49,11 +49,5 @@ echo "Generating shared-secrets (Mongo + GCS)..."
     > "${SECRETS_DIR}/secret-shared.yaml"
 echo "✓ secret-shared.yaml"
 
-echo "Generating ghcr-secret (GHCR image pulls)..."
-"${SCRIPTS_DIR}/sealed_secret_ghcr.sh" ${KUBESEAL_ARGS[@]+"${KUBESEAL_ARGS[@]}"} \
-    "${NAMESPACE}" "${GH_USER_NAME}" "${GH_USER_EMAIL}" "${GH_PAT}" \
-    > "${SECRETS_DIR}/secret-ghcr.yaml"
-echo "✓ secret-ghcr.yaml"
-
 echo ""
 echo "=== Done. Review the regenerated secret-*.yaml, then commit them. ==="

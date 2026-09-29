@@ -38,5 +38,3 @@ spec:
                     secretKeyRef:
                       name: shared-secrets
                       key: mongodb-uri
-          imagePullSecrets:
-            - name: ghcr-secret

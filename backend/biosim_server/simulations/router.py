@@ -102,7 +102,16 @@ async def get_legacy_run(
     "/{run_id}", response_class=Response, operation_id="update-legacy-run",
     description=_LEGACY_DESCRIPTION + " PATCH forwards raw bytes and Content-Type, bounded to 20 MiB before sending; field validation belongs to the legacy service.",
     responses={**_LEGACY_RESPONSES, 413: {"description": "PATCH body exceeds 20 MiB; no upstream request is sent."}},
-    openapi_extra={"requestBody": {"required": False, "content": {"*/*": {"schema": {"type": "string", "format": "binary"}}}}},
+    openapi_extra={"requestBody": {"required": False, "content": {"application/json": {"schema": {
+        "type": "object",
+        "description": "UpdateSimulationRun — upstream PATCH contract (api.biosimulations.org). All fields are optional; the proxy forwards raw bytes and Content-Type without validation.",
+        "properties": {
+            "status": {"type": "string"},
+            "fileUrl": {"type": "string"},
+            "projectSize": {"type": "number"},
+            "resultsSize": {"type": "number"},
+        },
+    }}}}},
 )
 async def update_legacy_run(
     request: Request, run_id: str,

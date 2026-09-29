@@ -257,7 +257,7 @@ been sent abort the stream and close upstream resources.
 
 PATCH forwards raw bytes and the caller's Content-Type; upstream owns field
 validation. `LEGACY_PATCH_MAX_BYTES` is **20 MiB**, matching the existing gke/rke
-20m ingress ceiling (not the unrelated 16 MiB JSON response cap). Actual chunks
+20m ingress ceiling (not the unrelated 16 MiB `UPSTREAM_MAX_RESPONSE_BYTES` cap on buffered *response* bodies). Actual chunks
 are counted, including requests without Content-Length. Over-limit requests
 return 413 before any mutation is sent. GET and DELETE send no body.
 
@@ -272,8 +272,14 @@ Downloads stream raw bytes (also for non-success bodies), remain open through
 downstream iteration, and close on completion, disconnect or failure. Upstream
 Content-Encoding is preserved with raw bytes so compression cannot invalidate
 Content-Length, Content-Range or ETag. Accept-Encoding is explicitly `identity`,
-but compressed responses are still handled correctly. Metadata responses buffer
-opaque bytes and recalculate length; downloads are never buffered. Response
+but compressed responses are still handled correctly. Metadata responses (all
+buffered non-download, non-204/304 paths) buffer opaque raw bytes and recalculate
+length; they are capped at `UPSTREAM_MAX_RESPONSE_BYTES` raw bytes (the Page
+aggregation table below documents that setting's two consumers and their
+differing measurement bases). A buffered body that exceeds the cap is refused
+with a sanitized **502** (`legacy_outcome: too_large`), never relayed truncated.
+The cap is measured on raw wire bytes, not decoded bytes, so `Content-Encoding`
+cannot widen it. Downloads stream lazily and are never buffered or capped. Response
 headers are limited to Content-Type/Disposition/Length/Range/Encoding,
 Accept-Ranges, ETag, Last-Modified, Cache-Control, Expires, Vary, Location and
 Retry-After; Set-Cookie and hop-by-hop headers are stripped.
@@ -311,7 +317,12 @@ bound what they will buffer from the upstream API this project does not own.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `UPSTREAM_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Hard ceiling on one upstream JSON body's **decoded** size (`common/upstream.py`). Measured on the bytes actually read through `aiter_bytes()`, so neither a declared `Content-Length` nor `Content-Encoding` can slip past it, and the stream is abandoned the moment it is crossed. A breach is a sanitized **502** (`too_large` in the logs) — never a truncated payload. Provisional pending the representative-payload measurements the page audit asks for; raise it per cluster if a legitimate files/specifications/logs response exceeds it. |
+| `UPSTREAM_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Hard ceiling on one upstream response body, on a different measurement basis per consumer. **Page aggregations** (this section): one upstream JSON body's **decoded** size, measured on the bytes actually read through `aiter_bytes()` (`common/upstream.py`), so neither a declared `Content-Length` nor `Content-Encoding` can slip past it. **Legacy runs proxy** (see Legacy runs proxy): buffered non-download responses are counted on **raw** bytes through `aiter_raw()` (`biosim_runs/legacy_api.py`), because the proxy relays raw bytes and never decodes them — so a compressed body is capped on the wire, not after expansion. In both consumers a declared `Content-Length` decides nothing, the stream is abandoned the moment the cap is crossed, and a breach is a sanitized **502** (`too_large` in the logs) — never a truncated payload. Provisional pending the representative-payload measurements the page audit asks for; raise it per cluster if a legitimate response exceeds it. |
+
+`UPSTREAM_MAX_RESPONSE_BYTES` is not page-specific: it is the single shared ceiling for
+every buffered upstream body the API relays, including the legacy runs proxy's opaque
+responses. Both consumers measure the bytes they actually read, so the one setting is
+enforced without either consumer widening the other's semantics.
 
 Both pages also carry a total time budget derived from the shared per-phase httpx timeout
 (`common/upstream.UPSTREAM_TIMEOUT_SECONDS`, 30 s) and the assembler's real serial depth —

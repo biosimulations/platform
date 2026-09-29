@@ -738,3 +738,473 @@ The frontend should stop constructing direct `https://api.biosimulations.org` UR
 9. **Frontend rollout:** Should frontend changes migrate all direct legacy URLs at once, or should the platform routes be introduced first and adopted incrementally?
 
 Facts established from repository inspection are separated above from recommendations and these unresolved external-contract questions. No endpoint implementation should begin until the mutation/auth and response-shape questions are answered.
+
+## 16. Follow-up: Capping Buffered Legacy Proxy Responses
+
+### 16.1 Status and problem statement
+
+Sections 1-15 of this document describe the implemented proxy. Everything in them
+is present and verified except one boundedness property, so this section closes
+that gap and is the condition for calling the implementation 100% complete.
+
+`backend/biosim_server/biosim_runs/legacy_api.py::proxy_run` splits its responses
+in two. `operation == "download"` hands off to `_DownloadResponse`, which yields
+`upstream.aiter_raw()` lazily and never holds more than one chunk. Every other
+operation takes the buffered branch:
+
+```python
+elif upstream.is_stream_consumed:
+    # MockTransport may supply an already buffered response. Real
+    # responses always take the raw stream path below.
+    response_body = upstream.content
+else:
+    response_body = b"".join([chunk async for chunk in upstream.aiter_raw()])
+```
+
+That `b"".join` reads an upstream body of any size into worker memory and then
+copies it into a second contiguous allocation, on the request path, with no
+bound. The configured ceiling `UPSTREAM_MAX_RESPONSE_BYTES` exists
+(`Settings.upstream_max_response_bytes`, default 16 MiB, `gt=0`) and is documented
+as "a hard ceiling on one upstream JSON body's decoded size" - but the proxy
+never consults it.
+
+This is not an oversight of a setting that was forgotten. The cap was introduced
+as `SHARED-MAJ-001` against the page aggregators, which are platform-owned JSON
+contracts, and section 3 of this document deliberately declined to route the proxy
+through `fetch_upstream_json` ("must not be expanded into a transparent
+passthrough helper"). The consequence is that the one code path that buffers an
+*opaque* body - where the platform cannot validate the shape and therefore cannot
+reason about the size - is the one path that inherited no bound.
+
+The exposure is real: `GET /runs/{run_id}`, `GET /runs/{run_id}/validate`,
+`GET /runs/summary`, and every PATCH/DELETE response body are attacker-influenced
+in size whenever the upstream (or a network position between it and the platform)
+chooses them. A single large or slow-drip metadata or error response is unbounded
+worker memory per in-flight request.
+
+### 16.2 Design decisions
+
+#### D1. Reuse `UPSTREAM_MAX_RESPONSE_BYTES`; add no new setting
+
+The memory risk is the one that setting already documents: one upstream body read
+whole into a worker. Sixteen MiB is far above any legitimate run metadata,
+validation, or run-summary response. Introducing `LEGACY_MAX_RESPONSE_BYTES`
+would add a ConfigMap key, an `.env.example` line, a `config.py` field, an alias,
+per-cluster values, and a second number for operators to reason about - in
+exchange for no additional safety. Reuse the existing cap and update its
+documentation to cover both consumers.
+
+#### D2. Cap RAW bytes, not decoded bytes - and why this is the opposite of `common/upstream.py`
+
+`common/upstream.py::_read_capped_body` measures `aiter_bytes()`, i.e. *decoded*
+bytes, and that is correct there: the platform is about to `json.loads` the body,
+so the decoded length is the memory and CPU it is about to spend.
+
+Copying that helper verbatim would be a correctness regression, and this is the
+single most important decision in this section.
+
+The proxy deliberately never decodes. `aiter_raw()` is what keeps
+`Content-Encoding`, `Content-Length`, `Content-Range` and `ETag` mutually
+consistent - documented in `backend/CLAUDE.md` ("Upstream Content-Encoding is
+preserved with raw bytes so compression cannot invalidate Content-Length,
+Content-Range or ETag") and pinned by
+`test_download_range_binary_and_compression`. `httpx`'s `aiter_bytes()` *decodes*
+content-encoding, so a `Content-Encoding: gzip` metadata response would be
+silently decompressed while the forwarded header still said `gzip`, handing the
+caller bytes that do not match the declared encoding.
+
+So the cap must be measured on `aiter_raw()`. This is not a weakening:
+
+- the proxy's memory cost *is* the raw byte count, because the raw bytes are what
+  it retains and relays. Decoded size is not a quantity the proxy ever materializes;
+- the gzip-bomb scenario that motivates the decoded cap does not apply to this
+  worker. A 1 MiB gzip body that would expand to 200 MiB costs *this* process
+  1 MiB; the expansion is paid by the client that requested it. That exposure
+  already exists, deliberately, on the download path, and capping it here would
+  be capping someone else's decoder;
+- the invariant that actually matters - memory held is bounded - holds either way.
+
+Consequence to state explicitly in review: a compressed buffered response is
+capped by its **on-the-wire** size. A 20 MiB `Content-Encoding: gzip` body that
+decodes to 4 KiB is rejected. That is intended, and it is the conservative
+direction.
+
+#### D3. Over-limit is a sanitized platform 502, never a truncated relay
+
+The proxy's contract is "received statuses and opaque bodies are relayed". A body
+that exceeds the cap cannot be relayed faithfully, and relaying the first N bytes
+with the upstream's status code would be worse than useless: the caller would
+parse a truncated JSON document and see a schema error, or worse, accept a
+truncated array. So the breach terminates the response with a platform-generated
+error, matching `common/upstream.py`:
+
+- status: **502** (the upstream produced something the platform cannot serve).
+  Not 413 - the caller's request is not oversized; it is the upstream's response.
+- detail: a static sanitized string naming no limit, no size, no body, no URL.
+- the upstream status is *still recorded* in the log, so an operator sees
+  `legacy_status: 200, legacy_outcome: too_large`.
+
+This is a deliberate, documented exception to "received statuses are preserved",
+and it is the "over-limit outcome" this section exists to preserve. It applies
+equally to 2xx and to 4xx/5xx bodies: an oversized upstream 500 is a 502, because
+a truncated error body is not a relayable error body.
+
+#### D4. The cap is read from bytes actually read; `Content-Length` is not consulted
+
+A declared `Content-Length` must not decide anything:
+
+- overstating it would reject a legitimately small response, and
+- understating or omitting it changes nothing.
+
+`tests/common/test_upstream_bounds.py::test_declared_content_length_is_not_trusted`
+already pins this semantics for the shared cap; the proxy must not introduce a
+second, looser contract for the same setting. (This deliberately rules out the
+tempting "reject early on a huge `Content-Length` without reading" optimization -
+see 16.7.)
+
+#### D5. Abandon the stream at the breach; never buffer the oversized body
+
+The rejection must not first read the rest of the body to be sure. Iteration stops
+at the first chunk that crosses the cap, and `proxy_run`'s existing `finally`
+already calls `await transfer.close(upstream)` on the non-handed-off path, which
+closes the upstream response. No new cleanup machinery is needed - but a test must
+assert `closed` and that not all chunks were read, or a future refactor could
+quietly reintroduce the buffering.
+
+#### D6. Cap both buffered branches, including the pre-consumed one
+
+`upstream.is_stream_consumed` is reached when `MockTransport` supplies an
+already-buffered response. Its bytes are already in memory, so the cap there is a
+correctness guard rather than a memory guard - but it must be enforced anyway, so
+that every buffered response has exactly one outcome and no test can observe an
+uncapped path. (Reading `upstream.content` on an *un*consumed response would
+buffer the whole stream unbounded; that is precisely why the `is_stream_consumed`
+guard stays.)
+
+Caveat on what this branch measures: `httpx.Response(..., content=/text=/json=...)`
+calls `read()` in its constructor, and `read()` goes through `iter_bytes()`, so
+`upstream.content` here is already **decoded**. This branch therefore caps decoded
+length, not raw length, and relays decoded bytes under an unchanged
+`Content-Encoding`. That is a pre-existing, test-only wart (real responses from
+`client.send(..., stream=True)` are never pre-consumed) and is not fixed here. Its
+practical consequence is for tests: any test that asserts raw-byte or
+stream-abandonment behavior **must** build the upstream response with
+`stream=Chunks([...])`, never `content=`/`text=`, or it silently exercises this
+branch instead of `_read_capped_raw` (see 16.5).
+
+#### D7. `too_large` is recorded as its own outcome, and it wins over the status-derived outcome
+
+`_Transfer.outcome` currently derives from the upstream status at
+`legacy_api.py:188-194` (`upstream_error` / `client_error` / `ok`). A breach is
+the terminal cause and must not be relabelled, so the raise site sets
+`transfer.outcome = "too_large"` before raising.
+
+This exposes a trap in the existing handler: `except HTTPException:` currently
+does `transfer.outcome = "client_error"` unconditionally, which would overwrite
+`too_large` and mislabel the breach as a client error. See 16.4, step 3.
+
+`too_large` is already established vocabulary in this repo - it is the
+`upstream_outcome` asserted by `test_page_instrumentation.py` - so reuse it rather
+than inventing a proxy-specific value. `log_config.py` allowlists the *field*
+`legacy_outcome`, not its values, so no formatter change is required.
+
+`transfer.size` is incremented per chunk inside the read helper rather than
+assigned once at the end, so the breach log carries an accurate `legacy_bytes`.
+This mirrors how `_DownloadResponse.chunks` accumulates `self.transfer.size`.
+
+### 16.3 What deliberately stays uncapped
+
+- **`download` responses.** They stream and never buffer, so they have no
+  memory exposure to bound. Capping them would break legitimate large archives.
+- **`204` / `304` responses.** The body is never read at all on these paths;
+  there is nothing to bound.
+- **The inbound PATCH body.** Already bounded independently by
+  `LEGACY_PATCH_MAX_BYTES` (20 MiB, `413`, rejected before any mutation is sent).
+  That is a different direction of flow and a different limit; it is unaffected
+  and must stay distinct. Reusing the 16 MiB JSON cap for inbound PATCH bodies
+  was explicitly rejected in section 9.
+
+### 16.4 Implementation
+
+All source changes are in `backend/biosim_server/biosim_runs/legacy_api.py`. No
+route, signature, or OpenAPI change.
+
+**Step 1 - import the setting.**
+
+```python
+from biosim_server.config import get_settings
+```
+
+**Step 2 - add the sanitized detail and the capped raw read, immediately after
+the `_Transfer` class** (not next to `_patch_body`, which precedes it). The module
+has no `from __future__ import annotations` and targets Python 3.13, so the
+`transfer: _Transfer` annotation is evaluated at definition time; placing the
+helper above `_Transfer` would raise `NameError` on import.
+
+```python
+# Consumer-facing detail for a buffered response that exceeds the configured
+# cap. Sanitized: it names nothing about the limit, the size, the body, or the
+# upstream. Distinct wording from common.upstream._OVERSIZE_DETAIL because the
+# two are different failures - a platform-owned contract could not be loaded,
+# versus an opaque response the proxy is refusing to relay truncated.
+_OVERSIZE_DETAIL = "The legacy runs service returned a response that is too large to relay."
+
+
+async def _read_capped_raw(
+    upstream: httpx.Response, transfer: _Transfer, limit: int
+) -> bytes:
+    """Buffer the relayed body, refusing to hold more than ``limit`` raw bytes.
+
+    Counted on ``aiter_raw``, unlike ``common.upstream._read_capped_body``'s
+    ``aiter_bytes``: the proxy relays raw bytes and never decodes them, which is
+    what keeps Content-Encoding, Content-Length, Content-Range and ETag valid.
+    The raw length *is* the memory cost, so this bounds what it actually holds -
+    a compressed body is measured on the wire and costs this worker only its
+    compressed size.
+
+    Content-Length is not consulted: one that overstates the body would reject
+    a legitimate small response, and one that understates it changes nothing,
+    because the decision is made from the bytes actually read. The stream is
+    abandoned the moment the cap is crossed and the caller's ``finally`` closes
+    it, so a breach never buffers the oversized remainder.
+    """
+    body = bytearray()
+    async for chunk in upstream.aiter_raw():
+        body += chunk
+        transfer.size += len(chunk)
+        if len(body) > limit:
+            transfer.outcome = "too_large"
+            raise HTTPException(502, _OVERSIZE_DETAIL)
+    return bytes(body)
+```
+
+**Step 3 - cap the buffered branch in `proxy_run`.**
+
+Replace the `if upstream.status_code in (204, 304): ... elif ... else ...` block:
+
+```python
+        response_headers = _headers(upstream.headers, _RESPONSE_HEADERS)
+        if upstream.status_code in (204, 304):
+            response_body = b""
+            if upstream.status_code == 204:
+                response_headers.pop("content-length", None)
+        else:
+            limit = get_settings().upstream_max_response_bytes
+            if upstream.is_stream_consumed:
+                # MockTransport may supply an already buffered response. Real
+                # responses always take the raw stream path below. Already in
+                # memory, so this is a correctness guard, not a memory guard -
+                # but leaving it out would give the cap a second, test-only hole.
+                response_body = upstream.content
+                transfer.size = len(response_body)
+                if transfer.size > limit:
+                    transfer.outcome = "too_large"
+                    raise HTTPException(502, _OVERSIZE_DETAIL)
+            else:
+                response_body = await _read_capped_raw(upstream, transfer, limit)
+            # Starlette computes the actual length; the upstream value must go
+            # either way now that a relayed body is known to be bounded.
+            response_headers.pop("content-length", None)
+        return Response(
+            response_body, status_code=upstream.status_code, headers=response_headers
+        )
+```
+
+Note that `transfer.size = len(response_body)` moves out of the old unconditional
+position: the streamed branch now accumulates it inside `_read_capped_raw`, and
+setting it afterwards would double-count.
+
+**Step 4 - stop the `HTTPException` handler from clobbering the outcome.**
+
+```python
+    except HTTPException:
+        # A specific outcome (the buffered-body cap's `too_large`) is recorded at
+        # its raise site; do not relabel it. A bare HTTPException here is
+        # upstream_url's 404 or the inbound PATCH 413, both client errors.
+        if transfer.outcome == "ok":
+            transfer.outcome = "client_error"
+        raise
+```
+
+Invariant for future raise sites inside this `try`: **set
+`transfer.outcome` before raising, or it will be recorded as `client_error`.**
+
+**Step 5 - nothing else in source.** No route handler, `config.py` field,
+`log_config.py` field, or OpenAPI entry changes. `get_settings()` is already
+`@lru_cache`d, so the per-request cost is a cached attribute read.
+
+### 16.5 Test plan
+
+Extend `backend/tests/simulations/test_legacy_runs_proxy.py` - it already has
+`Chunks` (records `reads` and `closed`), the `clients()` two-client harness, and
+the `JsonFormatter` log-capture pattern, so no new harness is needed. The shared
+`_Body`-style semantics are already pinned by
+`backend/tests/common/test_upstream_bounds.py`; mirror that file's structure
+rather than inventing a third idiom.
+
+Every upstream body below that is expected to reach `_read_capped_raw` must be
+supplied as `httpx.Response(..., stream=Chunks([...]))`. A `content=`/`text=`
+response is pre-consumed (and pre-decoded) by httpx and takes the
+`is_stream_consumed` branch instead - see D6. The existing module tests already
+use `Chunks` throughout, so follow them rather than the `text=` form used in
+`test_page_instrumentation.py`.
+
+Add a module-level fixture so the boundary is testable without megabyte payloads:
+
+```python
+@pytest.fixture
+def cap(monkeypatch: pytest.MonkeyPatch) -> int:
+    limit = 64
+    monkeypatch.setattr(get_settings(), "upstream_max_response_bytes", limit)
+    return limit
+```
+
+Cases:
+
+1. **`test_oversize_buffered_response_is_rejected_and_the_stream_is_abandoned`** -
+   chunked body crossing the cap: status 502, detail `== _OVERSIZE_DETAIL`,
+   `stream.closed`, and `stream.reads < len(chunks)` (proves the remainder was
+   never buffered). This is the test that prevents the regression.
+2. **`test_buffered_body_at_the_cap_is_relayed_exactly`** - a body of exactly
+   `cap` bytes comes back whole, status preserved.
+3. **`test_declared_content_length_is_not_trusted`** - parameterized like the
+   `tests/common/test_upstream_bounds.py` original: a `Content-Length` of `10 * cap` over a
+   small body is relayed as 200; an absent `Content-Length` over a large body is
+   502.
+4. **`test_oversize_upstream_error_is_not_relayed`** - upstream `500` with an
+   oversized body returns 502, not a truncated 500. Locks D3 for the error case.
+5. **`test_oversize_is_recorded_as_too_large_without_the_body`** - build the
+   oversized body from a `SECRET` marker string, capture records with `caplog`
+   and format them through `JsonFormatter` (the pattern
+   `test_static_route_and_safe_structured_logging` already uses); assert exactly
+   one `biosim_server.biosim_runs.legacy_api` record with
+   `legacy_outcome == "too_large"`, `legacy_operation == "get"`,
+   `legacy_status == 200`, `legacy_bytes > 0`, and that `SECRET` appears neither
+   in the formatted log nor in the 502 response body. Do **not** assert that the
+   numeric limit is absent from the log text: with `cap = 64` the substring
+   `"64"` can legitimately appear in `legacy_duration_ms` or elsewhere, and
+   `legacy_bytes` is by design within one chunk of the limit. The analogue,
+   `tests/pages/test_page_instrumentation.py::test_oversize_body_is_recorded_without_the_body_or_limit`,
+   likewise asserts only the secret marker despite its name.
+6. **`test_buffered_compressed_response_stays_compressed_under_the_cap`** -
+   a `Content-Encoding: gzip` body supplied via `stream=Chunks([...])` (not
+   `content=`; see D6), under the cap, is relayed as the *compressed* bytes with
+   the header intact - read it back with `caller.stream(...)` + `aiter_raw()` as
+   `test_download_range_binary_and_compression` does, since the caller client
+   would otherwise transparently decode it. This is the regression guard for
+   D2: it fails loudly if someone swaps `aiter_raw` for `aiter_bytes`.
+7. **`test_downloads_are_not_capped`** - a download body larger than the cap
+   streams to completion with its status and headers intact. Guards 16.3.
+8. **`test_empty_and_not_modified_responses_are_unaffected`** - `204`/`304` still
+   return bodyless with `content-length` removed, under a tiny cap.
+9. **`test_the_cap_is_read_from_settings`** - a second limit value changes the
+   boundary, proving the proxy reads the setting rather than a constant.
+
+No existing test should change. Specifically: the largest response body any
+current test produces is a few bytes; `test_patch_at_limit_is_forwarded_exactly`
+sends 20 MiB as a *request* body and its upstream response is `204` (uncapped
+path); and the only compressed-response test,
+`test_download_range_binary_and_compression`, is on the download path. If any
+test does start failing, treat it as a real finding about that test's payload,
+not as a cap to be loosened.
+
+### 16.6 Documentation and configuration changes
+
+Documentation only - no new configuration key, so no `kustomize` overlay edit.
+
+| Path | Change |
+|---|---|
+| `backend/biosim_server/config.py` | Extend the `SHARED-MAJ-001` comment on `upstream_max_response_bytes` to name its second consumer (the legacy proxy's buffered responses) and note the proxy measures raw bytes. |
+| `backend/.env.example` | Amend the `UPSTREAM_MAX_RESPONSE_BYTES` block (currently "Ceiling on one upstream JSON body's DECODED size ... for the page aggregations") to cover the legacy proxy, and distinguish raw-byte measurement there from decoded-byte measurement for pages. |
+| `backend/CLAUDE.md` | In "Legacy runs proxy", amend "Metadata responses buffer opaque bytes and recalculate length" to state the cap, the 502 outcome, the raw-byte basis, and that downloads are not capped. Cross-reference the existing `UPSTREAM_MAX_RESPONSE_BYTES` row. |
+| `kustomize/README-config.md` | The existing row for `UPSTREAM_MAX_RESPONSE_BYTES` ("decoded-body ceiling for one upstream fetch") is now slightly under-describing; broaden to cover the buffered proxy body. No new row, no new key. |
+| `.agents/legacy-runs-proxy-implementation-plan.md` | This section. |
+
+### 16.7 Considered and rejected alternatives
+
+- **Share/generalize `common/upstream.py::_read_capped_body`.** Rejected: the two
+  measure different things (decoded vs raw), sanitize differently, and log into
+  different vocabularies. A shared helper with a flag would be a helper with two
+  behaviors, and section 3 of this document already commits to not turning that
+  module into a passthrough helper.
+- **Reject early on an oversized declared `Content-Length` without reading the
+  body.** Rejected: it contradicts the "Content-Length is never trusted"
+  semantics the shared cap is already tested for, and an upstream that
+  overstates `Content-Length` on a small body would have that body refused.
+- **Return 413 on breach.** Rejected: 413 describes the caller's request. The
+  caller's request was fine; the upstream response was not relayable. 502 matches
+  `common/upstream.py` and the existing sanitized-upstream-failure convention.
+- **Truncate at the cap and relay.** Rejected: hands the caller a body that
+  contradicts the upstream status, in the one place - a transparent proxy - where
+  the caller has no way to detect it.
+- **Apply the cap to downloads as well.** Rejected: downloads are streamed and
+  have no memory exposure; a cap there only breaks large legitimate archives.
+- **A separate, lower cap for `GET /runs/summary`.** Deferred to 16.10: a
+  collection is the one buffered route whose legitimate size is not predictable
+  from the route's shape, and the right fix if it grows is upstream pagination
+  (already an open question in section 15, item 4), not a second number.
+
+### 16.8 Verification
+
+```bash
+cd backend
+uv run pytest tests/simulations/test_legacy_runs_proxy.py -v
+uv run pytest tests/simulations/test_legacy_runs_proxy.py \
+  tests/common/test_upstream_bounds.py tests/pages/test_page_instrumentation.py -v
+uv run ruff check .
+uv run mypy biosim_server tests
+uv run pytest -m "not integration"
+```
+
+`ruff` and `mypy` are the `lefthook` pre-commit/pre-push gates (same invocations
+as `lefthook.yml`); `backend-ci` (`.github/workflows/ci.yaml`) itself runs only
+`uv run python -m pytest`, so a clean local `ruff`/`mypy` run is what actually
+gates those two.
+
+The OpenAPI artifact should be **byte-identical** after this change - no route,
+signature, or schema changes. Regenerate and run the equality check anyway, to
+prove the drift check itself is still green:
+
+```bash
+uv run python -m scripts.generate_openapi
+uv run pytest tests/api/test_openapi_endpoints.py -v
+```
+
+### 16.9 Acceptance criteria
+
+- Every non-download legacy proxy response is refused above
+  `UPSTREAM_MAX_RESPONSE_BYTES`, counted on bytes actually read.
+- A breach is a sanitized 502 whose detail names no limit, size, body, or
+  upstream; it is never a truncated body under the upstream's own status.
+- The upstream response is closed and the remainder of the body is never read at
+  the breach.
+- The breach is observable as exactly one bounded log record carrying
+  `legacy_outcome: too_large`, the received `legacy_status`, and a non-zero
+  `legacy_bytes`, with no body content.
+- Download, `204` and `304` responses are unchanged.
+- Compressed buffered responses are still relayed as raw compressed bytes with
+  `Content-Encoding` intact.
+- No new setting, ConfigMap key, or environment variable is introduced.
+- The nine cases in 16.5 pass; no previously passing test changes.
+- `ruff`, `mypy`, the non-integration suite, and the OpenAPI equality check pass.
+
+### 16.10 Open questions for this follow-up
+
+1. **Cap adequacy.** Is 16 MiB comfortably above every legitimate buffered legacy
+   response in production? It is an order of magnitude above plausible run
+   metadata and validation bodies. If measurement shows otherwise, raise it per
+   cluster exactly as the page aggregations do - do not add a second setting.
+2. **`GET /runs/summary` growth.** This is a collection, so its size is not
+   bounded by the shape of any one run. 16 MiB is generous for run summaries, but
+   if the legacy collection grows unbounded the fix is upstream pagination, which
+   depends on the unresolved section 15 question 4. Until then the cap is the
+   backstop.
+3. **Over-limit visibility.** Should a `too_large` breach raise an alert
+   threshold, or is a warning-level log record sufficient? `_Transfer.log` emits
+   at INFO for every operation and has no severity distinction; `common/upstream`
+   logs its equivalent at WARNING. Aligning the severity is a small, separate
+   change and is deliberately out of scope here.
+4. **Frontend impact.** A caller whose response is now refused sees a 502 with a
+   sanitized detail instead of a body. No frontend change is required for the
+   cap, but if any client has a retry-on-502 path it should be confirmed not to
+   amplify against an upstream that is genuinely over-producing.
