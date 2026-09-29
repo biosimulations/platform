@@ -6,8 +6,8 @@ set -eu
 #
 #   1. cp secrets.dat.template secrets.dat   # secrets.dat is gitignored
 #   2. edit secrets.dat with your real values
-#   3. ./secrets.sh                          # rewrites secret-shared.yaml + secret-ghcr.yaml
-#   4. review + commit the regenerated secret-*.yaml
+#   3. ./secrets.sh                          # rewrites secret-shared.yaml
+#   4. review + commit the regenerated secret-shared.yaml
 #
 # Plaintext lives only in secrets.dat (never committed); the sealed output is
 # safe to commit. This replaces the old flow of stashing secrets in ~/.ssh.
@@ -50,4 +50,4 @@ echo "Generating shared-secrets (Mongo + GCS)..."
 echo "✓ secret-shared.yaml"
 
 echo ""
-echo "=== Done. Review the regenerated secret-*.yaml, then commit them. ==="
+echo "=== Done. Review the regenerated secret-shared.yaml, then commit it. ==="
