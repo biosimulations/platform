@@ -233,7 +233,7 @@ async function checkOmexCompatibility() {
     compatibilityResponse.value = res
 
     if (res && res.eligible_simulators) {
-      compatibleSimulators.value = res.eligible_simulators.map((elig) => ({
+      compatibleSimulators.value = res.eligible_simulators.map(elig => ({
         id: elig.id,
         name: elig.name,
         exact: elig.exact,
@@ -674,7 +674,7 @@ const excludedSimulatorsList = computed<ExcludedSimulatorInfo[]>(() => {
     const submitted = getSubmittedSimulatorsForWorkflow(activeWorkflowId.value)
     if (submitted.length > 0) {
       const runInfos = workflowOutput.value?.workflow_results?.sims_run_info || []
-      const succeededIds = new Set(runInfos.map(info => {
+      const succeededIds = new Set(runInfos.map((info) => {
         const v = info.biosim_sim_run.simulator_version
         return (v?.id || info.biosim_sim_run.simulator || '').toLowerCase()
       }))
@@ -838,6 +838,7 @@ onMounted(() => {
               Cross-verify SBML/SED-ML models across multiple independent simulation solvers
               (AMICI, COPASI, PySCeS, Tellurium, VCell). Quantify numerical equivalence, detect solver-specific outliers, and inspect time-series concordance.
             </p>
+          </div>
         </div>
       </div>
 
