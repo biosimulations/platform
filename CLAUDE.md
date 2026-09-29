@@ -113,16 +113,15 @@ Each deploy overlay (`kustomize/overlays/biosim-{gke,rke,local}/`) owns its
 cluster secrets via three files, modeled on `../sms-api`:
 
 - **`secrets.dat.template`** (committed) — documents the required keys
-  (`MONGODB_URI`, `GCS_CREDENTIALS_FILE`, `GH_USER_NAME/EMAIL/PAT`, optional
-  kubeseal targeting).
+  (`MONGODB_URI`, `GCS_CREDENTIALS_FILE`, optional kubeseal targeting).
 - **`secrets.dat`** (gitignored — `kustomize/overlays/**/secrets.dat`) — your
   filled-in plaintext values. Never committed.
 - **`secrets.sh`** (committed) — sources `secrets.dat` and regenerates the
-  overlay's `secret-shared.yaml` + `secret-ghcr.yaml` (the committed, encrypted
-  `SealedSecret`s) via `kustomize/scripts/sealed_secret_{shared,ghcr}.sh`.
+  overlay's committed, encrypted `secret-shared.yaml` `SealedSecret` via
+  `kustomize/scripts/sealed_secret_shared.sh`.
 
 Workflow: `cp secrets.dat.template secrets.dat`, fill it in, `./secrets.sh`,
-review + commit the regenerated `secret-*.yaml`. Plaintext lives only in
+review + commit the regenerated `secret-shared.yaml`. Plaintext lives only in
 `secrets.dat` — this replaces the old flow of stashing secrets in `~/.ssh`.
 Get the hosted `MONGODB_URI` / GCS creds from the `../deployment` / `../secrets`
 repos. For local backend dev against real project data, point
