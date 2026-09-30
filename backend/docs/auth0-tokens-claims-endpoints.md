@@ -194,8 +194,9 @@ return 401.
 | `GET /simulations/{id}/results`, `/logs` | `get_optional_user` | `authorize_resource_access`: public/legacy readable; private owner-only. **No admin bypass** on private. | `sub` vs `owner_sub` |
 | `POST /simulations/{id}/cancel` | `get_current_user` | Private: owner-only (no admin bypass). Public: `require_owner_or_admin` (admin may cancel a public run). | `sub` / verified email vs `owner_sub` |
 | `DELETE /simulations/{id}` | `get_current_user` | `require_roles(admin, publisher)` first, then the same mutation rule as cancel: private is owner-only (admin non-owner **denied**). | roles, then `sub` / verified email vs `owner_sub` |
-| `POST /verify/omex`, `POST /verify/runs` | `get_current_user` | any valid access token; OMEX verify stamps `owner=sub` and `visibility=private`. Query-param `owner=` is ignored. | `sub` |
-| `GET /verify/{workflow_id}` | `get_current_user` | owner-or-admin when `owner_sub` is set; any authenticated caller for legacy payloads with `owner_sub` unset. **Breaking:** anonymous pollers receive 401. | `sub` |
+| `POST /verify/omex`, `POST /verify/runs` | `get_optional_user` | anonymous allowed (legacy API): ownerless verification, OMEX stored `visibility=public`. A valid token stamps `owner_sub=sub` (OMEX `owner=sub`, `visibility=private`); an invalid token is 401, never anonymous. Query-param `owner=` is ignored. Persists a ledger row in `BiosimCompare` before starting the Temporal workflow. | `sub` if present |
+| `GET /verify/{workflow_id}` | `get_optional_user` | ownerless (anonymous/legacy) verifications are public; owned ones are owner-or-admin (anonymous → 401, other user → 403). Temporal unavailable → 503 (not 404). | `sub` if present |
+| `GET /verification_ids` | none | public (matches the legacy API); lists every verification workflow ID. Results of verifications started with a token stay behind `GET /verify/{workflow_id}`'s owner-or-admin check; ownerless ones are public. | n/a |
 | `GET /projects`, `GET /projects/stats` | none | public published search | n/a |
 | `POST /projects/reindex` | shared secret, **not** Auth0 | `PROJECT_REINDEX_TOKEN` | n/a |
 | `GET /api/v1/me` | `get_current_user` | any valid access token | `sub`, namespaced email (display) |

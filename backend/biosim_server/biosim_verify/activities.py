@@ -65,18 +65,35 @@ async def generate_statistics_activity(gen_stats_input: GenerateStatisticsActivi
                 sim_run_info_i = gen_stats_input.sim_run_info_list[run_index_i]
                 run_id_i = sim_run_info_i.biosim_sim_run.id
                 results_i: dict[str, Hdf5DataValues] = datasets[run_id_i]
-                labels_i = sim_run_info_i.hdf5_file.datasets[dataset_name].sedml_labels
-                data_i: Hdf5DataValues = results_i[dataset_name]
-                array_i: NDArray[np.float64] = np.array(data_i.values, dtype=np.float64).reshape(data_i.shape)
                 simulation_version_i = f"{sim_run_info_i.biosim_sim_run.simulator_version.id}:{sim_run_info_i.biosim_sim_run.simulator_version.version}"
 
                 ds_comparison_i: list[ComparisonStatistics] = []  # holds comparisons [i,:] for this dataset
+
+                # If run i doesn't have this dataset, produce an error cell for every j.
+                if dataset_name not in results_i or dataset_name not in sim_run_info_i.hdf5_file.datasets:
+                    for run_index_j in range(num_runs):
+                        sim_run_info_j = gen_stats_input.sim_run_info_list[run_index_j]
+                        simulation_version_j = f"{sim_run_info_j.biosim_sim_run.simulator_version.id}:{sim_run_info_j.biosim_sim_run.simulator_version.version}"
+                        err_msg = f"Dataset {dataset_name} not found in results for {simulation_version_i}"
+                        activity.logger.error(err_msg)
+                        ds_comparison_i.append(ComparisonStatistics(
+                            simulator_version_i=simulation_version_i,
+                            simulator_version_j=simulation_version_j,
+                            dataset_name=dataset_name,
+                            var_names=[],
+                            error_message=err_msg,
+                        ))
+                    ds_comparison.append(ds_comparison_i)
+                    continue
+
+                labels_i = sim_run_info_i.hdf5_file.datasets[dataset_name].sedml_labels
+                data_i: Hdf5DataValues = results_i[dataset_name]
+                array_i: NDArray[np.float64] = np.array(data_i.values, dtype=np.float64).reshape(data_i.shape)
 
                 for run_index_j in range(num_runs):
                     sim_run_info_j = gen_stats_input.sim_run_info_list[run_index_j]
                     run_id_j = sim_run_info_j.biosim_sim_run.id
                     results_j: dict[str, Hdf5DataValues] = datasets[run_id_j]
-                    labels_j = sim_run_info_j.hdf5_file.datasets[dataset_name].sedml_labels
                     simulation_version_j = f"{sim_run_info_j.biosim_sim_run.simulator_version.id}:{sim_run_info_j.biosim_sim_run.simulator_version.version}"
 
                     # create a comparison statistics object with default values, add data or error message if needed
@@ -84,14 +101,16 @@ async def generate_statistics_activity(gen_stats_input: GenerateStatisticsActivi
                                                      simulator_version_j=simulation_version_j, dataset_name=dataset_name,
                                                      var_names=labels_i)  # for runs i,j
 
-                    if labels_i != labels_j:
-                        stats_i_j.error_message = f"Variables of {simulation_version_i} and {simulation_version_j} do not match, {labels_i} != {labels_j}"
+                    if dataset_name not in results_j or dataset_name not in sim_run_info_j.hdf5_file.datasets:
+                        stats_i_j.error_message = f"Dataset {dataset_name} not found in results for {simulation_version_j}"
                         activity.logger.error(stats_i_j.error_message)
                         ds_comparison_i.append(stats_i_j)
                         continue
 
-                    if dataset_name not in results_i or dataset_name not in results_j:
-                        stats_i_j.error_message = f"Dataset {dataset_name} not found in results for {simulation_version_i} or {simulation_version_j}"
+                    labels_j = sim_run_info_j.hdf5_file.datasets[dataset_name].sedml_labels
+
+                    if labels_i != labels_j:
+                        stats_i_j.error_message = f"Variables of {simulation_version_i} and {simulation_version_j} do not match, {labels_i} != {labels_j}"
                         activity.logger.error(stats_i_j.error_message)
                         ds_comparison_i.append(stats_i_j)
                         continue

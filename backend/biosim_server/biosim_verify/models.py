@@ -1,7 +1,8 @@
+from datetime import datetime
 from enum import StrEnum
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from biosim_server.biosim_runs import BiosimSimulationRun, HDF5File, Hdf5DataValues
 
@@ -80,3 +81,30 @@ class VerifyWorkflowOutput(BaseModel):
     # Auth0 `sub` of the caller who started the workflow. Optional so in-flight
     # Temporal histories that predate this field still deserialize.
     owner_sub: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Verification ledger (BiosimCompare collection)
+# ---------------------------------------------------------------------------
+
+class VerificationType(StrEnum):
+    OMEX = "omex"
+    RUNS = "runs"
+
+
+class VerificationRecord(BaseModel):
+    workflow_id: str
+    verify_type: VerificationType
+    # Caller's verified sub, or None for an anonymous (legacy API) submission,
+    # which makes the verification publicly readable.
+    owner_sub: Optional[str] = None
+    created: datetime
+
+
+class VerificationIdsResponse(BaseModel):
+    verification_ids: list[str] = Field(
+        description=(
+            "Workflow IDs that can be passed to GET /verify/{workflow_id}, "
+            "ordered newest-first. Lists every verification; no token is required."
+        )
+    )

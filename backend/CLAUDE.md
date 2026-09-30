@@ -8,7 +8,7 @@ All commands below assume the working directory is `backend/` (i.e., `cd backend
 
 The platform backend is a distributed microservices application for biosimulation verification and comparison. It runs biological simulations across multiple simulators (AMICI, COPASI, PySCES, Tellurium, VCell) and compares outputs to verify model correctness.
 
-**Version:** 0.4.0
+**Version:** 0.10.0
 **Python:** 3.13
 **Production URL:** [https://biosim.biosimulations.org/docs](https://biosim.biosimulations.org/docs)
 
@@ -91,8 +91,10 @@ backend/
 │   │   ├── models.py          # Pydantic models (BiosimulatorVersion, etc.)
 │   │   └── workflows.py       # OmexSimWorkflow
 │   ├── biosim_verify/         # Verification workflows
-│   │   ├── activities.py      # generate_statistics_activity
-│   │   ├── models.py          # Verification models
+│   │   ├── activities.py      # generate_statistics_activity (tolerates missing datasets)
+│   │   ├── compatibility.py   # find_common_datasets — preflight overlap check
+│   │   ├── database.py        # VerificationDatabaseService + Mongo impl (BiosimCompare ledger)
+│   │   ├── models.py          # Verification models (incl. VerificationRecord, VerificationType)
 │   │   ├── omex_verify_workflow.py  # Multi-simulator OMEX verification
 │   │   ├── runs_verify_workflow.py  # Compare existing runs
 │   │   └── hdf5_compare.py    # Comparison logic
@@ -141,9 +143,10 @@ backend/
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
 | `/simulations/runs` | POST | List simulation runs (`type=all` public with email redacted; `type=user` scoped to `owner_sub`) |
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
-| `/verify/omex` | POST | Verify OMEX file across simulators (authenticated; persists `owner_sub`) |
-| `/verify/{workflow_id}` | GET | Get verification results (authenticated; owner-or-admin when `owner_sub` is set) |
-| `/verify/runs` | POST | Compare existing biosimulation runs (authenticated; persists `owner_sub`) |
+| `/verification_ids` | GET | List all verification workflow IDs (public; no token, like the legacy API) |
+| `/verify/omex` | POST | Verify OMEX file across simulators (token optional; a valid token persists `owner_sub`) |
+| `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin) |
+| `/verify/runs` | POST | Compare existing biosimulation runs (token optional; a valid token persists `owner_sub`) |
 | `/version` | GET | Get API version |
 | `/docs` | GET | Swagger UI |
 
@@ -151,7 +154,7 @@ backend/
 
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
-- **BiosimCompare** - Comparison results
+- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired.
 - **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns
@@ -278,15 +281,35 @@ and frontend-originated runs persist `owner_sub = NULL` until the frontend
 attaches tokens. This is an explicit product decision, not an omission.
 Revisit when the frontend sends bearer tokens (that is the gate for Option A).
 
-The frontend does **not** call `POST /verify/omex` or `POST /verify/runs`;
-those two endpoints require authentication. **`GET /verify/{workflow_id}`
-also requires an access token** (breaking change for anonymous Swagger/poll
-clients). When the workflow payload includes `owner_sub` (set from the
-starter's token on POST), GET is owner-or-admin; in-flight Temporal histories
-with `owner_sub` unset remain readable by any authenticated caller. External
-consumers of `/verify/*` must send a bearer token. No inventory of those
-consumers exists in this repository — treat that as an operational follow-up
-before advertising the gated contract as a breaking API change.
+**Anonymous `/verify/*` (legacy API).** The verification endpoints serve the
+legacy API, which has no authentication, so all of them work without a token.
+The pattern is the same as `POST /simulations/run`, using `get_optional_user`:
+
+- `POST /verify/omex` and `POST /verify/runs` accept anonymous callers. With no
+  token the verification is **ownerless** (`owner_sub = NULL`; an uploaded
+  archive is stored `visibility=public`). With a valid token the caller's `sub`
+  is persisted as `owner_sub` (archive `private`). Both are rate-limited by the
+  shared workflow budget (anonymous callers are keyed on client IP).
+- `GET /verify/{workflow_id}`: an ownerless verification is readable by
+  anyone. One started with a token stays owner-or-admin: **401** without a
+  token, **403** for another user.
+- A **present-but-invalid token is rejected with 401**, never downgraded to
+  anonymous. Omit the `Authorization` header entirely to call anonymously; in
+  Swagger, use *Authorize → Logout* to clear a stale token.
+
+Both POST handlers persist a ledger row in `BiosimCompare` before starting the
+Temporal workflow. Temporal unavailable returns **503**, not 404. The frontend
+does not call `/verify/*`.
+
+**`GET /verification_ids`** is the listing endpoint for verification workflow
+IDs. It is **public** -- no token, matching the legacy API -- and returns every
+ledger row's ID, newest-first: `{"verification_ids": [...]}`, or
+`{"verification_ids": []}` when there are none. A token, if sent, is ignored.
+Listed IDs of ownerless (anonymous) verifications are readable by anyone via
+`GET /verify/{workflow_id}`. IDs of verifications started with a token remain
+owner-or-admin. Note that `workflow_id_prefix` is
+caller-chosen and therefore publicly visible in this listing. 503 when the
+ledger service is unavailable.
 
 **Which token to send:** the Platform API is an OAuth resource server and
 accepts **access tokens** only. Do not send an OIDC ID token in
