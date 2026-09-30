@@ -567,10 +567,12 @@ async def test_openapi_opaque_patch_and_upstream_authorization_contract() -> Non
         assert "content" not in operation["responses"]["200"]  # no invented JSON schema
     patch = spec["paths"]["/runs/{run_id}"]["patch"]
     assert "413" in patch["responses"]
-    assert patch["requestBody"]["content"]["*/*"]["schema"] == {
-        "type": "string",
-        "format": "binary",
-    }
+    # Documents the upstream UpdateSimulationRun contract; the proxy still forwards raw bytes.
+    assert list(patch["requestBody"]["content"]) == ["application/json"]
+    schema = patch["requestBody"]["content"]["application/json"]["schema"]
+    assert schema["type"] == "object"
+    assert set(schema["properties"]) == {"status", "fileUrl", "projectSize", "resultsSize"}
+    assert patch["requestBody"]["required"] is False
 
 
 async def test_configured_base_prefix_is_preserved_without_default_query() -> None:

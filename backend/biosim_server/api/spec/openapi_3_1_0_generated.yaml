@@ -350,10 +350,21 @@ paths:
       requestBody:
         required: false
         content:
-          '*/*':
+          application/json:
             schema:
-              type: string
-              format: binary
+              type: object
+              description: "UpdateSimulationRun \u2014 upstream PATCH contract (api.biosimulations.org).\
+                \ All fields are optional; the proxy forwards raw bytes and Content-Type\
+                \ without validation."
+              properties:
+                status:
+                  type: string
+                fileUrl:
+                  type: string
+                projectSize:
+                  type: number
+                resultsSize:
+                  type: number
     delete:
       tags:
       - Runs
