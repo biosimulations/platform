@@ -16,11 +16,14 @@ export default defineNuxtPlugin((nuxtApp) => {
   nuxtApp.vueApp.use(auth0)
 
   // Only the configured Platform API receives the Platform audience token.
+  // Other destinations (e.g. the public api.biosimulators.org) are left untouched.
   globalThis.$fetch = $fetch.create({
     async onRequest({ request, options }) {
       if (!isPlatformApiRequest(request, options.baseURL, config.public.api_url, window.location.origin)) return
 
-      options.credentials = 'include'
+      if (options.credentials === undefined) {
+        options.credentials = 'include'
+      }
 
       if (auth0.isAuthenticated.value) {
         try {

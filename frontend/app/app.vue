@@ -220,7 +220,7 @@ const navigation_items = ref<NavigationMenuItem[][]>([
         {
           label: 'Describe visualizations',
           icon: 'i-lucide-bar-chart-3',
-          to: 'utilities/describe-visualizations',
+          to: '/utilities/describe-visualizations',
           class: 'cursor-pointer',
         },
         {
@@ -314,23 +314,6 @@ onMounted(() => {
       <NuxtPage />
     </UMain>
 
-    <UFooter>
-      <template #left>
-        <p class="text-sm text-muted">
-          Built with Nuxt UI • © {{ new Date().getFullYear() }}
-        </p>
-      </template>
-
-      <template #right>
-        <UButton
-          to="https://github.com/nuxt-ui-templates/starter"
-          target="_blank"
-          icon="i-simple-icons-github"
-          aria-label="GitHub"
-          color="neutral"
-          variant="ghost"
-        />
-      </template>
-    </UFooter>
+    <AppFooter />
   </UApp>
 </template>
