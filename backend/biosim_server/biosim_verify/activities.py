@@ -133,7 +133,7 @@ async def generate_statistics_activity(gen_stats_input: GenerateStatisticsActivi
                     score_list: list[float] = score.tolist()
 
                     activity.logger.info(
-                        f"Comparing {simulation_version_j}:run={run_id_i} and {simulation_version_j}:run={run_id_j} for dataset {dataset_name} score: {score} is_close: {is_close}")
+                        f"Comparing {simulation_version_i}:run={run_id_i} and {simulation_version_j}:run={run_id_j} for dataset {dataset_name} score: {score} is_close: {is_close}")
 
                     stats_i_j.score = score_list
                     stats_i_j.is_close = is_close_list

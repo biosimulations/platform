@@ -1,20 +1,37 @@
 """Tests for the compatibility router endpoint."""
 
+import asyncio
+import contextlib
 import socket
+import time
 from pathlib import Path
+from typing import Any, AsyncIterator
 from unittest.mock import patch, AsyncMock
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+from httpx import ASGITransport
 
 from biosim_server.api.main import app
+from biosim_server.biosim_omex.omex_storage import MAX_OMEX_BYTES
 from biosim_server.biosim_runs import BiosimulatorVersion
+
+
+def _sample_omex_file() -> Path:
+    """Path to the sample OMEX file in fixtures."""
+    return Path(__file__).parent.parent / "fixtures" / "local_data" / "BIOMD0000000010_tellurium_Negative_feedback_and_ultrasen.omex"
 
 
 @pytest.fixture
 def sample_omex_path() -> Path:
     """Path to sample OMEX file in fixtures."""
-    return Path(__file__).parent.parent / "fixtures" / "local_data" / "BIOMD0000000010_tellurium_Negative_feedback_and_ultrasen.omex"
+    return _sample_omex_file()
+
+
+def sample_omex_bytes() -> bytes:
+    """Bytes of the sample OMEX archive (for the fake-download tests)."""
+    return _sample_omex_file().read_bytes()
 
 
 @pytest.fixture
@@ -292,3 +309,160 @@ def test_check_compatibility_rejects_resolved_private_host(mock_getaddrinfo: obj
     )
     assert response.status_code == 400
     assert "private or reserved" in response.json()["detail"]
+
+
+# --- audit P1 items 6 & 7: non-blocking DNS, capped archive/upload reads --- #
+
+_PUBLIC_ADDR: list[tuple[int, int, int, str, tuple[str, int]]] = [
+    (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))
+]
+
+
+class _FakeContent:
+    """Minimal stand-in for the ``aiohttp`` response body stream."""
+
+    def __init__(self, payload: bytes, *, chunk_size: int = 8) -> None:
+        self._payload = payload
+        self._chunk_size = chunk_size
+
+    async def iter_chunked(self, size: int) -> AsyncIterator[bytes]:
+        del size  # the fake honours its own chunking
+        for start in range(0, len(self._payload), self._chunk_size):
+            yield self._payload[start : start + self._chunk_size]
+
+
+class _FakeResponse:
+    def __init__(self, payload: bytes, *, content_length: str | None = None, chunk_size: int = 8) -> None:
+        self.status = 200
+        self.headers = {} if content_length is None else {"Content-Length": content_length}
+        self.content = _FakeContent(payload, chunk_size=chunk_size)
+
+    async def __aenter__(self) -> "_FakeResponse":
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _FakeSession:
+    """``aiohttp.ClientSession`` stand-in that yields one canned response."""
+
+    def __init__(self, response: _FakeResponse) -> None:
+        self._response = response
+
+    async def __aenter__(self) -> "_FakeSession":
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    def get(self, *args: object, **kwargs: object) -> _FakeResponse:
+        return self._response
+
+
+def _fake_download(response: _FakeResponse) -> Any:
+    return patch(
+        "biosim_server.compatibility.router.aiohttp.ClientSession",
+        return_value=_FakeSession(response),
+    )
+
+
+@patch("biosim_server.compatibility.router.socket.getaddrinfo", return_value=_PUBLIC_ADDR)
+def test_check_compatibility_rejects_oversized_declared_content_length(mock_dns: object) -> None:
+    """A declared Content-Length over the cap is rejected with 413, never buffered."""
+    client = TestClient(app)
+    with _fake_download(_FakeResponse(b"", content_length=str(MAX_OMEX_BYTES + 1))):
+        response = client.post(
+            "/compatibility/check", params={"archive_url": "https://example.com/big.omex"}
+        )
+    assert response.status_code == 413
+    assert "MB limit" in response.json()["detail"]
+
+
+@patch("biosim_server.compatibility.router.socket.getaddrinfo", return_value=_PUBLIC_ADDR)
+def test_check_compatibility_rejects_oversized_stream(mock_dns: object) -> None:
+    """A body over the cap is caught mid-stream when Content-Length is absent."""
+    client = TestClient(app)
+    response_under_test = _FakeResponse(b"\0" * 4096, chunk_size=64)
+    with (
+        _fake_download(response_under_test),
+        patch("biosim_server.compatibility.router.MAX_OMEX_BYTES", 128),
+    ):
+        response = client.post(
+            "/compatibility/check", params={"archive_url": "https://example.com/lying.omex"}
+        )
+    assert response.status_code == 413
+    assert "MB limit" in response.json()["detail"]
+
+
+def test_check_compatibility_accepts_archive_under_the_cap() -> None:
+    """Control: a small streamed body still gets past the cap and is parsed."""
+    client = TestClient(app)
+    payload = sample_omex_bytes()
+    response_under_test = _FakeResponse(payload, content_length=str(len(payload)), chunk_size=1024)
+    with (
+        _fake_download(response_under_test),
+        patch("biosim_server.compatibility.router.socket.getaddrinfo", return_value=_PUBLIC_ADDR),
+        patch("biosim_server.compatibility.router.get_biosim_service", return_value=None),
+    ):
+        response = client.post(
+            "/compatibility/check", params={"archive_url": "https://example.com/small.omex"}
+        )
+    # Parsed fine; it fails later at the (deliberately absent) biosim service.
+    assert response.status_code == 503
+    assert "Failed to parse OMEX" not in response.json()["detail"]
+
+
+def test_check_compatibility_rejects_oversized_upload() -> None:
+    """An upload over the cap is rejected with 413 rather than buffered whole."""
+    client = TestClient(app)
+    with patch("biosim_server.biosim_omex.omex_storage.MAX_OMEX_BYTES", 4096):
+        response = client.post(
+            "/compatibility/check",
+            files={"uploaded_file": ("big.omex", b"\0" * (64 * 1024), "application/octet-stream")},
+        )
+    assert response.status_code == 413
+    assert "limit" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_archive_dns_resolution_does_not_block_event_loop() -> None:
+    """A slow resolver must not stall the event loop (P1 item 6).
+
+    ``getaddrinfo`` is a blocking syscall: run inline in the handler it freezes
+    every other request for its duration. The ticker below must keep ticking
+    while the lookup is in flight.
+    """
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    def slow_getaddrinfo(*args: object, **kwargs: object) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        del args, kwargs
+        time.sleep(0.5)
+        return _PUBLIC_ADDR
+
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        with (
+            patch("biosim_server.compatibility.router.socket.getaddrinfo", slow_getaddrinfo),
+            _fake_download(_FakeResponse(b"not-a-zip")),
+        ):
+            ticker_task = asyncio.create_task(ticker())
+            request = asyncio.create_task(
+                http.post("/compatibility/check", params={"archive_url": "https://slow.example/a.omex"})
+            )
+            # Sample the loop while the (blocking) DNS lookup is running.
+            await asyncio.sleep(0.2)
+            ticks_during_dns = ticks
+            await request
+            ticker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await ticker_task
+
+    # A blocking lookup would show ~0 ticks here.
+    assert ticks_during_dns >= 5, f"event loop stalled during DNS resolution (ticks={ticks_during_dns})"

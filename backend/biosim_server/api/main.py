@@ -331,7 +331,7 @@ async def verify_omex(
     for simulator in simulators:
         simulator_version: Optional[BiosimulatorVersion] = None
         if ":" in simulator:
-            name, version = simulator.split(":")
+            name, version = simulator.split(":", 1)
             for sv in all_simulator_versions:
                 if sv.id == name and sv.version == version:
                     simulator_version = sv

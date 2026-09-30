@@ -166,6 +166,110 @@ def test_verify_omex_unknown_simulator(
     mock_get_temporal.return_value.start_workflow.assert_not_called()
 
 
+def _post_verify_omex(
+    simulators: str,
+    biosim: AsyncMock,
+    ledger: AsyncMock,
+) -> Response:
+    """POST /verify/omex as an authenticated caller, with the heavy deps mocked out.
+
+    Mirrors the patching in test_verify_omex_unknown_simulator so simulator
+    resolution is the only thing under test.
+    """
+    omex_file = OmexFile(
+        file_hash_md5="abc123",
+        uploaded_filename="t.omex",
+        bucket_name="test-bucket",
+        omex_gcs_path="omex/abc123/t.omex",
+        file_size=1,
+    )
+    user = AuthenticatedUser(sub="auth0|test-user-id", email="user@example.com")
+    app.dependency_overrides[get_current_user] = app.dependency_overrides[get_optional_user] = lambda: user
+    try:
+        with (
+            patch("biosim_server.api.main.get_temporal_client") as mock_get_temporal,
+            patch("biosim_server.api.main.get_file_service", return_value=MagicMock()),
+            patch("biosim_server.api.main.get_omex_database_service", return_value=MagicMock()),
+            patch("biosim_server.api.main.get_biosim_service", return_value=biosim),
+            patch("biosim_server.api.main.get_cached_omex_file_from_upload", new=AsyncMock(return_value=omex_file)),
+            patch("biosim_server.api.main.get_verification_database_service", return_value=ledger),
+        ):
+            # The handler asserts the returned handle echoes back the id it asked for.
+            mock_get_temporal.return_value.start_workflow = AsyncMock(
+                side_effect=lambda *args, **kwargs: MagicMock(id=kwargs["id"], run_id="wf-run-1")
+            )
+            response = TestClient(app).post(
+                "/verify/omex",
+                files={"uploaded_file": ("t.omex", b"not-used", "application/zip")},
+                params={"simulators": simulators},
+            )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_optional_user, None)
+    return response
+
+
+@pytest.mark.parametrize(
+    "simulator",
+    [
+        pytest.param("copasi:4:34", id="too-many-colons"),
+        pytest.param("copasi:4.34.251:extra", id="trailing-segment"),
+        pytest.param("copasi:", id="empty-version"),
+        pytest.param(":4.34.251", id="empty-name"),
+        pytest.param(":", id="only-separator"),
+    ],
+)
+def test_verify_omex_malformed_simulator_returns_400_not_500(simulator: str) -> None:
+    """A malformed `simulator` param must be a 400, not an unhandled ValueError -> 500.
+
+    Regression test for the unbounded `simulator.split(":")`: a value like
+    `copasi:4:34` raised "too many values to unpack" inside the request handler.
+    """
+    biosim = AsyncMock()
+    biosim.get_simulator_versions.return_value = [
+        BiosimulatorVersion(
+            id="copasi",
+            name="COPASI",
+            version="4.34.251",
+            image_url="ghcr.io/biosimulators/copasi:4.34.251",
+            image_digest="sha256:deadbeef",
+            created="2026-01-01T00:00:00Z",
+            updated="2026-01-01T00:00:00Z",
+        )
+    ]
+    ledger = AsyncMock()
+
+    response = _post_verify_omex(simulators=simulator, biosim=biosim, ledger=ledger)
+
+    assert response.status_code == 400, f"expected 400 for {simulator!r}, got {response.status_code}"
+    assert simulator in response.json()["detail"]
+    # Rejected before any side effects -- no ledger row, no workflow.
+    ledger.insert_verification.assert_not_awaited()
+
+
+def test_verify_omex_wellformed_simulator_version_still_resolves() -> None:
+    """Control for the fix above: `id:version` still splits into exactly one name/version pair."""
+    biosim = AsyncMock()
+    biosim.get_simulator_versions.return_value = [
+        BiosimulatorVersion(
+            id="copasi",
+            name="COPASI",
+            version="4.34.251",
+            image_url="ghcr.io/biosimulators/copasi:4.34.251",
+            image_digest="sha256:deadbeef",
+            created="2026-01-01T00:00:00Z",
+            updated="2026-01-01T00:00:00Z",
+        )
+    ]
+    ledger = AsyncMock()
+
+    response = _post_verify_omex(simulators="copasi:4.34.251", biosim=biosim, ledger=ledger)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["workflow_status"] == VerifyWorkflowStatus.PENDING
+    ledger.insert_verification.assert_awaited_once()
+
+
 @pytest.fixture
 def authenticated_verify_user(authenticated_user: AuthenticatedUser) -> Iterator[AuthenticatedUser]:
     """``authenticated_user`` for the optional-auth /verify/* endpoints too."""

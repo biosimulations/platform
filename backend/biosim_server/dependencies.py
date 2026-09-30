@@ -228,6 +228,7 @@ async def shutdown_standalone() -> None:
     set_temporal_client(None)
     set_database_service(None)
     # Shares the motor client closed via db_service above; just clear the handles.
+    set_omex_database_service(None)
     set_simulation_run_database_service(None)
     set_project_database_service(None)
     set_verification_database_service(None)
