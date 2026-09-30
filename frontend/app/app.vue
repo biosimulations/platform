@@ -220,7 +220,7 @@ const navigation_items = ref<NavigationMenuItem[][]>([
         {
           label: 'Describe visualizations',
           icon: 'i-lucide-bar-chart-3',
-          to: 'utilities/describe-visualizations',
+          to: '/utilities/describe-visualizations',
           class: 'cursor-pointer',
         },
         {
