@@ -578,6 +578,67 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/v1/demo/public:
+    get:
+      tags:
+      - RBAC Demo
+      summary: Public endpoint -- accessible to everyone, no bearer token required
+      operationId: demo-public
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicMessage'
+  /api/v1/demo/private/me:
+    get:
+      tags:
+      - RBAC Demo
+      summary: Private endpoint -- any authenticated user, returns who the bearer
+        token identifies
+      operationId: demo-private-whoami
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhoAmIResponse'
+      security:
+      - HTTPBearer: []
+  /api/v1/demo/private/animal:
+    get:
+      tags:
+      - RBAC Demo
+      summary: Private endpoint -- requires admin, publisher, or user role; response
+        varies by role
+      operationId: demo-private-animal
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleAnimalResponse'
+      security:
+      - HTTPBearer: []
+  /api/v1/demo/private/permission:
+    get:
+      tags:
+      - RBAC Demo
+      summary: Private endpoint -- requires the demo:read permission on the access
+        token
+      operationId: demo-private-permission
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionCheckResponse'
+      security:
+      - HTTPBearer: []
   /:
     get:
       summary: Root
@@ -630,7 +691,9 @@ paths:
           type: array
           items:
             type: string
-          description: List of simulators 'name' or 'name:version' to compare.
+          maxItems: 10
+          description: List of simulators 'name' or 'name:version' to compare (at
+            most 10, no duplicates).
           default:
           - amici
           - copasi
@@ -638,7 +701,8 @@ paths:
           - tellurium
           - vcell
           title: Simulators
-        description: List of simulators 'name' or 'name:version' to compare.
+        description: List of simulators 'name' or 'name:version' to compare (at most
+          10, no duplicates).
       - name: include_outputs
         in: query
         required: false
@@ -723,7 +787,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/VerifyWorkflowOutput'
         '400':
-          description: Unknown simulator.
+          description: Unknown simulator, duplicate simulators, or simulators that
+            resolve to the same version.
         '401':
           description: Invalid bearer token (omit the header to call anonymously).
         '503':
@@ -797,12 +862,13 @@ paths:
           type: array
           items:
             type: string
-          description: List of biosimulations run IDs to compare.
+          maxItems: 10
+          description: List of biosimulations run IDs to compare (at most 10, no duplicates).
           default:
           - 67817a2e1f52f47f628af971
           - 67817a2eba5a3f02b9f2938d
           title: Biosimulations Run Ids
-        description: List of biosimulations run IDs to compare.
+        description: List of biosimulations run IDs to compare (at most 10, no duplicates).
       - name: include_outputs
         in: query
         required: false
@@ -874,7 +940,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/VerifyWorkflowOutput'
         '400':
-          description: Runs lack common datasets or requested observables.
+          description: Duplicate run IDs, or runs lack common datasets or requested
+            observables.
         '401':
           description: Invalid bearer token (omit the header to call anonymously).
         '503':
@@ -890,7 +957,33 @@ paths:
       tags:
       - Verification
       summary: List verification workflow IDs usable with GET /verify/{workflow_id}
+      description: Public, newest-first listing of every verification workflow ID,
+        one bounded page at a time. Follow `next_cursor` (pass it back as `cursor`)
+        for older IDs; it is null on the last page.
       operationId: list-verification-ids
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          description: Page size (1-1000).
+          default: 100
+          title: Limit
+        description: Page size (1-1000).
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          description: Opaque `next_cursor` from a previous page.
+          title: Cursor
+        description: Opaque `next_cursor` from a previous page.
       responses:
         '200':
           description: Successful Response
@@ -898,8 +991,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VerificationIdsResponse'
+        '400':
+          description: Malformed cursor.
         '503':
           description: Verification database unavailable.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     BiosimSimulationRun:
@@ -2154,6 +2255,19 @@ components:
       - status
       - id
       title: PageTaskLog
+    PermissionCheckResponse:
+      properties:
+        permission:
+          type: string
+          title: Permission
+        granted:
+          type: boolean
+          title: Granted
+      type: object
+      required:
+      - permission
+      - granted
+      title: PermissionCheckResponse
     ProjectQueryStat:
       properties:
         target:
@@ -2275,6 +2389,28 @@ components:
       - files
       - specifications
       title: ProjectsPagePayload
+    PublicMessage:
+      properties:
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - message
+      title: PublicMessage
+    RoleAnimalResponse:
+      properties:
+        role:
+          type: string
+          title: Role
+        animal:
+          type: string
+          title: Animal
+      type: object
+      required:
+      - role
+      - animal
+      title: RoleAnimalResponse
     RunData:
       properties:
         run_id:
@@ -2832,8 +2968,17 @@ components:
             type: string
           type: array
           title: Verification Ids
-          description: Workflow IDs that can be passed to GET /verify/{workflow_id},
-            ordered newest-first. Lists every verification; no token is required.
+          description: One page of workflow IDs that can be passed to GET /verify/{workflow_id},
+            newest first (created descending, then workflow_id ascending). Covers
+            every verification; no token is required. Follow `next_cursor` for older
+            IDs.
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+          description: 'Opaque continuation token: pass it as `cursor` to get the
+            next (older) page. null when this is the last page.'
       type: object
       required:
       - verification_ids
@@ -2885,6 +3030,15 @@ components:
       - FAILED
       - RUN_ID_NOT_FOUND
       title: VerifyWorkflowStatus
+    WhoAmIResponse:
+      properties:
+        name:
+          type: string
+          title: Name
+      type: object
+      required:
+      - name
+      title: WhoAmIResponse
   securitySchemes:
     HTTPBearer:
       type: http

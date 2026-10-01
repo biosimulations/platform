@@ -15,10 +15,15 @@ from biosim_server.biosim_omex.models import OmexFile
 
 logger = logging.getLogger(__name__)
 
-# OMEX archives are parsed in memory (zipfile), so every ingestion path is
-# capped. 100 MB is far above any real archive and well inside a pod's memory
-# budget; a hostile caller must not be able to OOM the process.
-MAX_OMEX_MB = 100
+# OMEX archives are parsed in memory (zipfile), so every caller-reachable HTTP
+# ingestion path is capped: multipart uploads are bounded while received
+# (common/upload_limit.py, this cap plus framing) and their content re-checked
+# exactly by read_upload_capped; `archive_url` downloads are streamed against
+# the same cap. Internal local/raw helpers below are not HTTP ingestion and are
+# not capped. 100 MiB (104,857,600 bytes) is far above any real archive and well
+# inside a pod's memory budget; a hostile caller must not be able to OOM the
+# process.
+MAX_OMEX_MB = 100  # MiB (1024 * 1024 bytes), despite the historical name
 MAX_OMEX_BYTES = MAX_OMEX_MB * 1024 * 1024
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
@@ -37,7 +42,7 @@ async def read_upload_capped(uploaded_file: UploadFile, *, max_bytes: int | None
     if declared is not None and declared > limit:
         raise HTTPException(
             status_code=413,
-            detail=f"Uploaded OMEX archive exceeds the {limit_mb} MB limit",
+            detail=f"Uploaded OMEX archive exceeds the {limit_mb} MiB limit",
         )
     chunks: list[bytes] = []
     total = 0
@@ -49,7 +54,7 @@ async def read_upload_capped(uploaded_file: UploadFile, *, max_bytes: int | None
         if total > limit:
             raise HTTPException(
                 status_code=413,
-                detail=f"Uploaded OMEX archive exceeds the {limit_mb} MB limit",
+                detail=f"Uploaded OMEX archive exceeds the {limit_mb} MiB limit",
             )
         chunks.append(chunk)
     return b"".join(chunks)

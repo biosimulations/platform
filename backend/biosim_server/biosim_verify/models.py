@@ -1,10 +1,18 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import Optional
+from typing import Final, Optional
 
 from pydantic import BaseModel, Field
 
 from biosim_server.biosim_runs import BiosimSimulationRun, HDF5File, Hdf5DataValues
+
+# Per-request selection bounds (PR #120, B2). One request is one workflow-start
+# quota unit, so these bound the work a single unit can buy: N run ids -> N result
+# downloads and an N x N comparison per dataset; N simulators -> N child
+# workflows, each a biosimulations.org simulation job. Same for every caller.
+# Module constants, not settings: they are published as OpenAPI `maxItems`.
+MAX_VERIFY_RUN_IDS: Final = 10
+MAX_VERIFY_SIMULATORS: Final = 10
 
 
 class ComparisonStatistics(BaseModel):
@@ -101,10 +109,24 @@ class VerificationRecord(BaseModel):
     created: datetime
 
 
+# GET /verification_ids page sizes (PR #120, B3). IDs are ~40-70 bytes, so a full
+# page is ~70 KB and one bounded index range read, however long the ledger grows.
+VERIFICATION_IDS_DEFAULT_PAGE_SIZE: Final = 100
+VERIFICATION_IDS_MAX_PAGE_SIZE: Final = 1000
+
+
 class VerificationIdsResponse(BaseModel):
     verification_ids: list[str] = Field(
         description=(
-            "Workflow IDs that can be passed to GET /verify/{workflow_id}, "
-            "ordered newest-first. Lists every verification; no token is required."
+            "One page of workflow IDs that can be passed to GET /verify/{workflow_id}, "
+            "newest first (created descending, then workflow_id ascending). Covers every "
+            "verification; no token is required. Follow `next_cursor` for older IDs."
         )
+    )
+    next_cursor: Optional[str] = Field(
+        default=None,
+        description=(
+            "Opaque continuation token: pass it as `cursor` to get the next (older) page. "
+            "null when this is the last page."
+        ),
     )

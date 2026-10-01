@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import AsyncIterator, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,7 +14,20 @@ from biosim_server.biosim_omex import OmexDatabaseServiceMongo, OmexFile
 from biosim_server.biosim_runs import BiosimServiceRest, BiosimulatorVersion, DatabaseServiceMongo
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
-from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
+from biosim_server.biosim_verify.database import (
+    VerificationCursor,
+    VerificationDatabaseServiceMongo,
+    VerificationIdPage,
+    encode_verification_cursor,
+)
+from biosim_server.biosim_verify.models import (
+    VERIFICATION_IDS_DEFAULT_PAGE_SIZE,
+    VERIFICATION_IDS_MAX_PAGE_SIZE,
+    VerificationRecord,
+    VerificationType,
+    VerifyWorkflowOutput,
+    VerifyWorkflowStatus,
+)
 from biosim_server.common.auth import AuthenticatedUser, get_current_user, get_optional_user
 from biosim_server.common.storage import FileServiceGCS
 from biosim_server.config import get_settings
@@ -164,6 +178,8 @@ def test_verify_omex_unknown_simulator(
     assert "unknown-sim" in response.json()["detail"]
     ledger.insert_verification.assert_not_awaited()
     mock_get_temporal.return_value.start_workflow.assert_not_called()
+    # Simulators are resolved before the upload is stored, so a bad one costs no write.
+    mock_get_cached.assert_not_awaited()
 
 
 def _post_verify_omex(
@@ -1057,38 +1073,87 @@ async def test_get_verify_temporal_unavailable_rpc_error_is_503() -> None:
 # GET /verification_ids — plan tests 10-16 (public: no token, every ID)
 # ---------------------------------------------------------------------------
 
-async def _get_verification_ids(ledger: object) -> Response:
+async def _get_verification_ids(ledger: object, params: dict[str, object] | None = None) -> Response:
     with patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            return await c.get("/verification_ids")
+            return await c.get("/verification_ids", params=params)  # type: ignore[arg-type]
+
+
+def _ledger_returning(ids: list[str], next_cursor: VerificationCursor | None = None) -> AsyncMock:
+    ledger = AsyncMock()
+    ledger.list_verification_ids = AsyncMock(
+        return_value=VerificationIdPage(verification_ids=ids, next_cursor=next_cursor)
+    )
+    return ledger
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ids", [["wf-b", "wf-a"], ["wf-only"], []])
-async def test_list_verification_ids_anonymous_gets_every_id(ids: list[str]) -> None:
-    """No token → 200 with the unfiltered ledger listing, in ledger order."""
+async def test_list_verification_ids_anonymous_gets_the_first_bounded_page(ids: list[str]) -> None:
+    """No token → 200 with the unfiltered first page, in ledger order."""
     app.dependency_overrides.pop(get_current_user, None)
     app.dependency_overrides.pop(get_optional_user, None)
-    ledger = AsyncMock()
-    ledger.list_verification_ids = AsyncMock(return_value=ids)
+    ledger = _ledger_returning(ids)
     resp = await _get_verification_ids(ledger)
     assert resp.status_code == 200
-    assert resp.json() == {"verification_ids": ids}
-    ledger.list_verification_ids.assert_awaited_once_with(None)
+    assert resp.json() == {"verification_ids": ids, "next_cursor": None}
+    ledger.list_verification_ids.assert_awaited_once_with(
+        None, limit=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, after=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_verification_ids_returns_and_accepts_an_opaque_cursor() -> None:
+    last = VerificationCursor(created=datetime(2025, 1, 2, 3, 4, 5), workflow_id="wf-b")
+    ledger = _ledger_returning(["wf-a", "wf-b"], next_cursor=last)
+    resp = await _get_verification_ids(ledger, {"limit": 2})
+    assert resp.status_code == 200
+    token = resp.json()["next_cursor"]
+    assert token == encode_verification_cursor(last)
+
+    ledger = _ledger_returning([])
+    resp = await _get_verification_ids(ledger, {"limit": 2, "cursor": token})
+    assert resp.status_code == 200
+    ledger.list_verification_ids.assert_awaited_once_with(None, limit=2, after=last)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "limit,status",
+    [(0, 422), (VERIFICATION_IDS_MAX_PAGE_SIZE + 1, 422), (VERIFICATION_IDS_MAX_PAGE_SIZE, 200), (1, 200)],
+)
+async def test_list_verification_ids_limit_bounds(limit: int, status: int) -> None:
+    ledger = _ledger_returning([])
+    resp = await _get_verification_ids(ledger, {"limit": limit})
+    assert resp.status_code == status, resp.text
+    if status == 422:
+        ledger.list_verification_ids.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cursor", ["!!!", "bm90IGpzb24", "W10", "x" * 600])
+async def test_list_verification_ids_malformed_cursor_is_rejected_without_db_call(cursor: str) -> None:
+    ledger = _ledger_returning([])
+    resp = await _get_verification_ids(ledger, {"cursor": cursor})
+    assert resp.status_code in (400, 422), resp.text
+    if resp.status_code == 400:
+        assert resp.json() == {"detail": "Invalid cursor"}
+    ledger.list_verification_ids.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("authorization", ["Bearer not-a-jwt", "Bearer "])
 async def test_list_verification_ids_ignores_any_token(authorization: str) -> None:
     """A token, even an invalid one, is neither validated nor used to scope the list."""
-    ledger = AsyncMock()
-    ledger.list_verification_ids = AsyncMock(return_value=["wf-a"])
+    ledger = _ledger_returning(["wf-a"])
     with patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/verification_ids", headers={"Authorization": authorization})
     assert resp.status_code == 200
-    assert resp.json() == {"verification_ids": ["wf-a"]}
-    ledger.list_verification_ids.assert_awaited_once_with(None)
+    assert resp.json() == {"verification_ids": ["wf-a"], "next_cursor": None}
+    ledger.list_verification_ids.assert_awaited_once_with(
+        None, limit=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, after=None
+    )
 
 
 @pytest.mark.asyncio
@@ -1106,6 +1171,34 @@ async def test_list_verification_ids_ledger_raises_503() -> None:
     resp = await _get_verification_ids(ledger)
     assert resp.status_code == 503
     assert "mongo exploded" not in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_verification_ids_follows_cursor_end_to_end(
+    verification_database_service_mongo: VerificationDatabaseServiceMongo,
+) -> None:
+    """Real Mongo through the route: following next_cursor yields every id once, in order."""
+    tie = datetime(2025, 9, 1, tzinfo=UTC)
+    for workflow_id, created in [
+        ("wf-e", datetime(2025, 9, 3, tzinfo=UTC)), ("wf-c", tie), ("wf-b", tie),
+        ("wf-d", datetime(2025, 9, 2, tzinfo=UTC)), ("wf-a", datetime(2025, 8, 1, tzinfo=UTC)),
+    ]:
+        await verification_database_service_mongo.insert_verification(VerificationRecord(
+            workflow_id=workflow_id, verify_type=VerificationType.RUNS, owner_sub=None, created=created,
+        ))
+
+    seen: list[str] = []
+    params: dict[str, object] = {"limit": 2}
+    while True:
+        resp = await _get_verification_ids(verification_database_service_mongo, params)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(body["verification_ids"]) <= 2
+        seen.extend(body["verification_ids"])
+        if body["next_cursor"] is None:
+            break
+        params = {"limit": 2, "cursor": body["next_cursor"]}
+    assert seen == ["wf-e", "wf-d", "wf-b", "wf-c", "wf-a"]
 
 
 # ---------------------------------------------------------------------------
@@ -1368,3 +1461,146 @@ async def test_verify_runs_preflight_skipped_when_only_one_metadata_available() 
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_optional_user, None)
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# PR #120 B2 — per-request selection bounds (anonymous callers unless stated)
+# ---------------------------------------------------------------------------
+
+from biosim_server.biosim_verify.models import MAX_VERIFY_RUN_IDS, MAX_VERIFY_SIMULATORS  # noqa: E402
+
+
+async def _post_verify_runs_anonymously(run_ids: list[str]) -> tuple[Response, MagicMock, AsyncMock, AsyncMock]:
+    temporal, ledger, preflight = _make_temporal_for_runs(), AsyncMock(), AsyncMock(return_value={})
+    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
+         patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=preflight):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/verify/runs", params={"biosimulations_run_ids": run_ids})
+    return response, temporal, ledger, preflight
+
+
+def _assert_no_runs_work(temporal: MagicMock, ledger: AsyncMock, preflight: AsyncMock) -> None:
+    preflight.assert_not_awaited()
+    ledger.insert_verification.assert_not_awaited()
+    temporal.start_workflow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_verify_runs_anonymous_duplicate_flood_is_rejected_before_any_work() -> None:
+    """Astra's reproduction: 100 copies of one run id for one quota unit."""
+    response, temporal, ledger, preflight = await _post_verify_runs_anonymously(["r1"] * 100)
+    assert response.status_code == 422, response.text
+    _assert_no_runs_work(temporal, ledger, preflight)
+
+
+@pytest.mark.asyncio
+async def test_verify_runs_rejects_duplicate_run_ids() -> None:
+    response, temporal, ledger, preflight = await _post_verify_runs_anonymously(["r1", "r2", "r1"])
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Duplicate run IDs are not allowed: r1"
+    _assert_no_runs_work(temporal, ledger, preflight)
+
+
+@pytest.mark.asyncio
+async def test_verify_runs_rejects_more_than_max_run_ids() -> None:
+    run_ids = [f"r{i}" for i in range(MAX_VERIFY_RUN_IDS + 1)]
+    response, temporal, ledger, preflight = await _post_verify_runs_anonymously(run_ids)
+    assert response.status_code == 422, response.text
+    _assert_no_runs_work(temporal, ledger, preflight)
+
+
+@pytest.mark.asyncio
+async def test_verify_runs_workflow_input_is_the_bounded_submitted_list() -> None:
+    run_ids = [f"r{i}" for i in reversed(range(MAX_VERIFY_RUN_IDS))]
+    response, temporal, ledger, preflight = await _post_verify_runs_anonymously(run_ids)
+    assert response.status_code == 200, response.text
+    workflow_input = temporal.start_workflow.call_args.kwargs["args"][0]
+    assert isinstance(workflow_input, RunsVerifyWorkflowInput)
+    assert workflow_input.biosimulations_run_ids == run_ids  # same ids, same order
+    ledger.insert_verification.assert_awaited_once()
+
+
+def _second_simulator() -> BiosimulatorVersion:
+    return BiosimulatorVersion(
+        id="tellurium", name="tellurium", version="2.2.10",
+        image_url="ghcr.io/biosimulators/tellurium:2.2.10", image_digest="sha256:def456",
+        created="2024-01-01T00:00:00Z", updated="2024-01-01T00:00:00Z",
+    )
+
+
+async def _post_verify_omex_anonymously(
+    simulators: list[str], *, extra_versions: list[BiosimulatorVersion] | None = None
+) -> tuple[Response, MagicMock, MagicMock, MagicMock, MagicMock, AsyncMock]:
+    file_service, omex_database, biosim_service, temporal = _verify_omex_mocks()
+    if extra_versions:
+        biosim_service.get_simulator_versions.return_value = [
+            *biosim_service.get_simulator_versions.return_value, *extra_versions
+        ]
+    ledger = AsyncMock()
+    with patch("biosim_server.api.main.get_file_service", return_value=file_service), \
+         patch("biosim_server.api.main.get_omex_database_service", return_value=omex_database), \
+         patch("biosim_server.api.main.get_biosim_service", return_value=biosim_service), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/verify/omex",
+                files={"uploaded_file": ("model.omex", b"PK\x03\x04fake", "application/zip")},
+                params={"simulators": simulators},
+            )
+    return response, file_service, omex_database, biosim_service, temporal, ledger
+
+
+def _assert_no_omex_storage_or_workflow(
+    file_service: MagicMock, omex_database: MagicMock, temporal: MagicMock, ledger: AsyncMock
+) -> None:
+    file_service.upload_bytes.assert_not_awaited()
+    omex_database.insert_omex_file.assert_not_awaited()
+    ledger.insert_verification.assert_not_awaited()
+    temporal.start_workflow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_verify_omex_rejects_more_than_max_simulators() -> None:
+    simulators = [f"sim{i}" for i in range(MAX_VERIFY_SIMULATORS + 1)]
+    response, files, omex, biosim, temporal, ledger = await _post_verify_omex_anonymously(simulators)
+    assert response.status_code == 422, response.text
+    biosim.get_simulator_versions.assert_not_awaited()
+    _assert_no_omex_storage_or_workflow(files, omex, temporal, ledger)
+
+
+@pytest.mark.asyncio
+async def test_verify_omex_rejects_duplicate_simulator_strings() -> None:
+    response, files, omex, biosim, temporal, ledger = await _post_verify_omex_anonymously(["copasi", "copasi"])
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Duplicate simulators are not allowed: copasi"
+    biosim.get_simulator_versions.assert_not_awaited()
+    _assert_no_omex_storage_or_workflow(files, omex, temporal, ledger)
+
+
+@pytest.mark.asyncio
+async def test_verify_omex_rejects_simulators_resolving_to_the_same_version() -> None:
+    response, files, omex, _biosim, temporal, ledger = await _post_verify_omex_anonymously(
+        ["copasi", "copasi:4.34.251"]
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == (
+        "Simulators copasi and copasi:4.34.251 resolve to the same simulator version copasi:4.34.251."
+    )
+    _assert_no_omex_storage_or_workflow(files, omex, temporal, ledger)
+
+
+@pytest.mark.asyncio
+async def test_verify_omex_workflow_input_simulators_are_bounded_and_ordered() -> None:
+    response, files, _omex, _biosim, temporal, ledger = await _post_verify_omex_anonymously(
+        ["tellurium", "copasi"], extra_versions=[_second_simulator()]
+    )
+    assert response.status_code == 200, response.text
+    workflow_input = temporal.start_workflow.call_args.kwargs["args"][0]
+    assert isinstance(workflow_input, OmexVerifyWorkflowInput)
+    assert [f"{sv.id}:{sv.version}" for sv in workflow_input.requested_simulators] == [
+        "tellurium:2.2.10", "copasi:4.34.251",
+    ]
+    files.upload_bytes.assert_awaited_once()
+    ledger.insert_verification.assert_awaited_once()

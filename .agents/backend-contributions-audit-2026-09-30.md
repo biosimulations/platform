@@ -197,6 +197,11 @@ rubber-stamp).
 **Status: FIXED** — the cap is the rubber-stamped **100 MB**
 (`MAX_OMEX_MB` / `MAX_OMEX_BYTES` in `biosim_omex/omex_storage.py`, one knob
 for both paths). All three ingestion paths are covered:
+*Corrected 2026-10:* the cap is 100 **MiB** (104,857,600 bytes), not 100 MB.
+"All three ingestion paths" means the three caller-reachable HTTP paths;
+internal local/raw helpers and worker archive reads are not capped. The
+multipart cap originally ran only after FastAPI had parsed and spooled the
+whole form; receipt is now bounded by `common/upload_limit.py` (PR #120, B1).
 - **Download** (`compatibility/router.py:_download_archive`) — rejects an
   oversized declared `Content-Length` up front, then streams via
   `resp.content.iter_chunked(1 MiB)` with a running total, so an absent or

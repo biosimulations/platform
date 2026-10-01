@@ -221,7 +221,7 @@ async def test_post_then_list_uses_real_ledger(client: AsyncClient, kind: str, a
         assert events == ["persisted-before-start"]
         listing = await client.get("/verification_ids")
         assert listing.status_code == 200
-        assert listing.json() == {"verification_ids": [workflow_id]}
+        assert listing.json() == {"verification_ids": [workflow_id], "next_cursor": None}
         handle = temporal.get_workflow_handle.return_value
         handle.describe = AsyncMock(return_value=MagicMock(workflow_type="RunsVerifyWorkflow", status=WorkflowExecutionStatus.COMPLETED))
         handle.query = AsyncMock(return_value=_make_verify_output(workflow_id=workflow_id, owner_sub=owner))
@@ -321,7 +321,7 @@ async def test_real_temporal_and_mongo_roundtrip(
             response = await client.post("/verify/runs", params={"biosimulations_run_ids": "run1"})
             assert response.status_code == 200
             workflow_id = response.json()["workflow_id"]
-            assert (await client.get("/verification_ids")).json() == {"verification_ids": [workflow_id]}
+            assert (await client.get("/verification_ids")).json() == {"verification_ids": [workflow_id], "next_cursor": None}
             handle = temporal_client.get_workflow_handle(workflow_id)
             if outcome == "failed":
                 with pytest.raises(WorkflowFailureError):
@@ -372,7 +372,7 @@ async def test_start_reply_loss_and_termination_before_first_task(
     assert desc.status == WorkflowExecutionStatus.RUNNING
     if lost_reply:
         assert response.json()["workflow_run_id"] == desc.run_id
-    assert (await client.get("/verification_ids")).json() == {"verification_ids": [wid]}
+    assert (await client.get("/verification_ids")).json() == {"verification_ids": [wid], "next_cursor": None}
     await handle.terminate("private termination reason")
     output = await client.get(f"/verify/{wid}")
     assert output.status_code == 200, output.text

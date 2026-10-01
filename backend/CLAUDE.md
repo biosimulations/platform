@@ -143,7 +143,7 @@ backend/
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
 | `/simulations/runs` | POST | List simulation runs (`type=all` public with email redacted; `type=user` scoped to `owner_sub`) |
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
-| `/verification_ids` | GET | List all verification workflow IDs (public; no token, like the legacy API) |
+| `/verification_ids` | GET | List verification workflow IDs, newest first, paginated (`limit` ≤ 1000, opaque `cursor`; public, no token, like the legacy API) |
 | `/verify/omex` | POST | Verify OMEX file across simulators (token optional; a valid token persists `owner_sub`) |
 | `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin) |
 | `/verify/runs` | POST | Compare existing biosimulation runs (token optional; a valid token persists `owner_sub`) |
@@ -296,15 +296,43 @@ The pattern is the same as `POST /simulations/run`, using `get_optional_user`:
 - A **present-but-invalid token is rejected with 401**, never downgraded to
   anonymous. Omit the `Authorization` header entirely to call anonymously; in
   Swagger, use *Authorize → Logout* to clear a stale token.
+- **Selection bounds.** One request is one workflow-start quota unit, so the
+  work it can buy is bounded (`MAX_VERIFY_*` in `biosim_verify/models.py`): at
+  most **10** `biosimulations_run_ids` and **10** `simulators` (more → **422**,
+  published as OpenAPI `maxItems`). Duplicate run IDs or simulator strings, and
+  two simulators that resolve to the same `id:version` (e.g. `copasi` and
+  `copasi:<latest>`), → **400**. The same limits apply to anonymous and
+  authenticated callers, and all of these are rejected before any storage
+  write, metadata lookup, ledger row or workflow start. Simulators are resolved
+  before the uploaded archive is stored, so a bad simulator costs no write.
+
+**Upload limits.** The OMEX cap is **100 MiB (104,857,600 bytes)**
+(`omex_storage.MAX_OMEX_BYTES`). Multipart bodies are bounded *while they are
+received* (`common/upload_limit.py`: the cap plus 64 KiB of framing) and
+rejected with **413** -- before authentication, rate limiting, or any handler
+runs, because FastAPI otherwise parses and spools the whole form first. A
+declared over-limit `Content-Length` is refused without reading the body; a
+missing or understated one cannot bypass the count. Spooled temp files are
+closed on rejection and on client disconnect. The file content is then
+re-checked exactly by `read_upload_capped`, and `archive_url` downloads are
+streamed against the same cap. Public ingresses additionally cap request bodies
+at `20m` (`proxy-body-size`). Internal worker/storage reads (local-file and raw
+helpers, worker archive reads) are not HTTP ingestion and are not covered.
 
 Both POST handlers persist a ledger row in `BiosimCompare` before starting the
 Temporal workflow. Temporal unavailable returns **503**, not 404. The frontend
 does not call `/verify/*`.
 
 **`GET /verification_ids`** is the listing endpoint for verification workflow
-IDs. It is **public** -- no token, matching the legacy API -- and returns every
-ledger row's ID, newest-first: `{"verification_ids": [...]}`, or
-`{"verification_ids": []}` when there are none. A token, if sent, is ignored.
+IDs. It is **public** -- no token, matching the legacy API -- and returns one
+bounded page at a time, newest first (`created` descending, `workflow_id`
+ascending as the tie-breaker): `{"verification_ids": [...], "next_cursor": ...}`.
+`limit` defaults to **100** and may not exceed **1000** (otherwise **422**).
+Pass a page's `next_cursor` back as `cursor` for the next, older page;
+`next_cursor` is `null` on the last page, and a malformed `cursor` is **400**.
+Callers that want the full history must follow `next_cursor`. Each request is a
+single `limit + 1` read over the `(created, workflow_id)` index, however large
+the ledger grows. A token, if sent, is ignored.
 Listed IDs of ownerless (anonymous) verifications are readable by anyone via
 `GET /verify/{workflow_id}`. IDs of verifications started with a token remain
 owner-or-admin. Note that `workflow_id_prefix` is

@@ -29,7 +29,7 @@ _DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 def _archive_too_large() -> HTTPException:
     return HTTPException(
         status_code=413,
-        detail=f"OMEX archive exceeds the {MAX_OMEX_BYTES // (1024 * 1024)} MB limit",
+        detail=f"OMEX archive exceeds the {MAX_OMEX_BYTES // (1024 * 1024)} MiB limit",
     )
 
 

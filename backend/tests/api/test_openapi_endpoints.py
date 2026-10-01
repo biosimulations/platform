@@ -16,7 +16,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from biosim_server.api.main import app
-from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
+from biosim_server.biosim_verify.database import VerificationIdPage
+from biosim_server.biosim_verify.models import (
+    MAX_VERIFY_RUN_IDS,
+    MAX_VERIFY_SIMULATORS,
+    VerifyWorkflowOutput,
+    VerifyWorkflowStatus,
+)
 from biosim_server.common.auth import get_current_user, get_optional_user
 from biosim_server.rbac_demo.models import PublicMessage
 from biosim_server.version import __version__
@@ -388,7 +394,7 @@ def test_verify_runs_authenticated_caller_starts_pending_workflow(client: TestCl
     temporal.start_workflow = start_workflow
     ledger = MagicMock()
     ledger.insert_verification = AsyncMock(return_value=None)
-    ledger.list_verification_ids = AsyncMock(return_value=[])
+    ledger.list_verification_ids = AsyncMock(return_value=VerificationIdPage(verification_ids=[], next_cursor=None))
     user = make_authenticated_user()
     app.dependency_overrides[get_optional_user] = lambda: user
     try:
@@ -416,6 +422,19 @@ def test_every_operation_id_is_accounted_for() -> None:
 
 def test_openapi_lists_expected_core_paths() -> None:
     assert _CORE_PATHS <= set(app.openapi()["paths"])
+
+
+def _query_param_schema(path: str, method: str, name: str) -> dict[str, object]:
+    operation = app.openapi()["paths"][path][method]
+    (param,) = [p for p in operation["parameters"] if p["name"] == name]
+    schema: dict[str, object] = param["schema"]
+    return schema
+
+
+def test_verification_selection_bounds_are_published() -> None:
+    """PR #120 B2: generated clients see the per-request selection bounds."""
+    assert _query_param_schema("/verify/runs", "post", "biosimulations_run_ids")["maxItems"] == MAX_VERIFY_RUN_IDS
+    assert _query_param_schema("/verify/omex", "post", "simulators")["maxItems"] == MAX_VERIFY_SIMULATORS
 
 
 def test_hidden_routes_are_not_in_openapi_paths() -> None:

@@ -25,7 +25,13 @@ from biosim_server.biosim_omex import OmexFile, get_cached_omex_file_from_upload
 from biosim_server.biosim_runs import BiosimulatorVersion, HDF5File
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.biosim_verify.compatibility import find_common_datasets
-from biosim_server.biosim_verify.database import VerificationDatabaseService
+from biosim_server.biosim_verify.database import (
+    InvalidVerificationCursor,
+    VerificationCursor,
+    VerificationDatabaseService,
+    decode_verification_cursor,
+    encode_verification_cursor,
+)
 from biosim_server.compatibility import compatibility_router
 from biosim_server.simulations import run_summary_router, simulations_router
 from biosim_server.projects.router import router as projects_router
@@ -34,9 +40,14 @@ from biosim_server.common.auth.auth0 import JwksCache, get_jwks_cache
 from biosim_server.common.auth.discovery import warm_discovery_cache
 from biosim_server.common.auth.roles import require_owner_or_admin, ADMIN_ROLE
 from biosim_server.common.ratelimit import workflow_rate_limit
+from biosim_server.common.upload_limit import MultipartBodyLimitMiddleware
 from biosim_server.rbac_demo.router import router as rbac_demo_router
 from biosim_server.users.router import router as users_router
 from biosim_server.biosim_verify.models import (
+    MAX_VERIFY_RUN_IDS,
+    MAX_VERIFY_SIMULATORS,
+    VERIFICATION_IDS_DEFAULT_PAGE_SIZE,
+    VERIFICATION_IDS_MAX_PAGE_SIZE,
     VerificationIdsResponse,
     VerificationRecord,
     VerificationType,
@@ -187,6 +198,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(openapi_url="/openapi.json", docs_url=None, redoc_url=None, title=APP_TITLE, version=APP_VERSION, servers=APP_SERVERS, lifespan=lifespan)
 
+# Bound multipart uploads while they are received. Registered *before* CORS:
+# the last-added middleware is outermost, so CORS stays outside and its headers
+# still reach the 413 this one returns.
+app.add_middleware(MultipartBodyLimitMiddleware)
+
 # add origins
 app.add_middleware(
     CORSMiddleware,
@@ -289,14 +305,16 @@ async def custom_swagger_ui_html() -> HTMLResponse:
     tags=["Verification"],
     dependencies=[Depends(get_temporal_client), Depends(get_file_service), Depends(get_local_cache_dir), Depends(get_omex_database_service), Depends(get_verification_database_service), Depends(workflow_rate_limit)],
     summary="Request verification report for OMEX/COMBINE archive across simulators",
-    responses={400: {"description": "Unknown simulator."}, 401: {"description": "Invalid bearer token (omit the header to call anonymously)."}, 503: {"description": "Verification database or Temporal unavailable."}},
+    responses={400: {"description": "Unknown simulator, duplicate simulators, or simulators that resolve to the same version."}, 401: {"description": "Invalid bearer token (omit the header to call anonymously)."}, 503: {"description": "Verification database or Temporal unavailable."}},
 )
 async def verify_omex(
         uploaded_file: UploadFile = File(..., description="OMEX/COMBINE archive containing a deterministic SBML model"),
         user: AuthenticatedUser | None = Depends(get_optional_user),
         workflow_id_prefix: str = Query(default="omex-verification-", pattern=r"^[^/]*$", description="Prefix for the workflow id; must not contain /."),
         simulators: list[str] = Query(default=["amici", "copasi", "pysces", "tellurium", "vcell"],
-                                      description="List of simulators 'name' or 'name:version' to compare."),
+                                      max_length=MAX_VERIFY_SIMULATORS,
+                                      description=f"List of simulators 'name' or 'name:version' to compare "
+                                                  f"(at most {MAX_VERIFY_SIMULATORS}, no duplicates)."),
         include_outputs: bool = Query(default=False,
                                       description="Whether to include the output data on which the comparison is based."),
         user_description: str = Query(default="my-omex-compare", description="User description of the verification run."),
@@ -307,6 +325,8 @@ async def verify_omex(
         observables: Optional[list[str]] = Query(default=None,
                                                  description="List of observables to include in the return data.")
 ) -> VerifyWorkflowOutput:
+    # Validation first: a duplicate selection is rejected before any service work.
+    _reject_duplicate_selections(simulators, label="simulators")
     temporal_client = get_temporal_client()
     if temporal_client is None:
         raise HTTPException(status_code=503, detail="Temporal service not available")
@@ -314,6 +334,14 @@ async def verify_omex(
     ledger = _require_verification_ledger()
     # Anonymous callers (the legacy API) create ownerless, publicly readable verifications.
     owner_sub = user.sub if user is not None else None
+
+    # ---- resolve simulators before the upload is stored ---- #
+    # An unknown or colliding simulator is a 400 that must not cost a storage write.
+    biosim_service = get_biosim_service()
+    assert biosim_service is not None
+    simulator_versions = _resolve_requested_simulators(
+        simulators, await biosim_service.get_simulator_versions()
+    )
 
     # ---- using hash to avoid saving multiple copies, upload to cloud storage if needed ---- #
     file_service = get_file_service()
@@ -324,26 +352,6 @@ async def verify_omex(
                                                                  uploaded_file=uploaded_file, owner=owner_sub)
 
     # ---- create workflow input ---- #
-    simulator_versions: list[BiosimulatorVersion] = []
-    biosim_service = get_biosim_service()
-    assert biosim_service is not None
-    all_simulator_versions = await biosim_service.get_simulator_versions()
-    for simulator in simulators:
-        simulator_version: Optional[BiosimulatorVersion] = None
-        if ":" in simulator:
-            name, version = simulator.split(":", 1)
-            for sv in all_simulator_versions:
-                if sv.id == name and sv.version == version:
-                    simulator_version = sv
-                    break
-        else:
-            for sv in all_simulator_versions:
-                if sv.id == simulator:
-                    simulator_version = sv  # don't break, we want the last one in the list
-        if simulator_version is not None:
-            simulator_versions.append(simulator_version)
-        else:
-            raise HTTPException(status_code=400, detail=f"Simulator {simulator} not found.")
 
     workflow_id = f"{workflow_id_prefix}{uuid.uuid4()}"
     compare_settings = CompareSettings(user_description=user_description, include_outputs=include_outputs,
@@ -387,6 +395,54 @@ async def verify_omex(
         owner_sub=owner_sub
     )
     return omex_verify_workflow_output
+
+
+def _reject_duplicate_selections(values: list[str], *, label: str) -> None:
+    """400 when a selection repeats: a duplicate has no meaning in a pairwise
+    comparison and would only multiply workflow work for one quota unit."""
+    duplicates = sorted({value for value in values if values.count(value) > 1})
+    if duplicates:
+        raise HTTPException(
+            status_code=400, detail=f"Duplicate {label} are not allowed: {', '.join(duplicates)}"
+        )
+
+
+def _resolve_requested_simulators(
+    simulators: list[str], all_simulator_versions: list[BiosimulatorVersion]
+) -> list[BiosimulatorVersion]:
+    """Map each requested 'name' or 'name:version' to one registry version, in order.
+
+    400 for an unknown simulator, and for two requests that resolve to the same
+    version (e.g. 'copasi' and 'copasi:<latest>'), which would run it twice.
+    """
+    resolved: list[BiosimulatorVersion] = []
+    requested_by_version: dict[tuple[str, str], str] = {}
+    for simulator in simulators:
+        simulator_version: Optional[BiosimulatorVersion] = None
+        if ":" in simulator:
+            name, version = simulator.split(":", 1)
+            for sv in all_simulator_versions:
+                if sv.id == name and sv.version == version:
+                    simulator_version = sv
+                    break
+        else:
+            for sv in all_simulator_versions:
+                if sv.id == simulator:
+                    simulator_version = sv  # don't break, we want the last one in the list
+        if simulator_version is None:
+            raise HTTPException(status_code=400, detail=f"Simulator {simulator} not found.")
+        key = (simulator_version.id, simulator_version.version)
+        if key in requested_by_version:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Simulators {requested_by_version[key]} and {simulator} resolve to the same "
+                    f"simulator version {simulator_version.id}:{simulator_version.version}."
+                ),
+            )
+        requested_by_version[key] = simulator
+        resolved.append(simulator_version)
+    return resolved
 
 
 class _VerifyOwnership:
@@ -701,13 +757,15 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None)
     tags=["Verification"],
     dependencies=[Depends(get_temporal_client), Depends(get_verification_database_service), Depends(get_biosim_service), Depends(workflow_rate_limit)],
     summary="Request verification report for biosimulation runs by run IDs",
-    responses={400: {"description": "Runs lack common datasets or requested observables."}, 401: {"description": "Invalid bearer token (omit the header to call anonymously)."}, 503: {"description": "Verification database or Temporal unavailable."}},
+    responses={400: {"description": "Duplicate run IDs, or runs lack common datasets or requested observables."}, 401: {"description": "Invalid bearer token (omit the header to call anonymously)."}, 503: {"description": "Verification database or Temporal unavailable."}},
 )
 async def verify_runs(
         user: AuthenticatedUser | None = Depends(get_optional_user),
         workflow_id_prefix: str = Query(default="runs-verification-", pattern=r"^[^/]*$", description="Prefix for the workflow id; must not contain /."),
         biosimulations_run_ids: list[str] = Query(default=["67817a2e1f52f47f628af971","67817a2eba5a3f02b9f2938d"],
-                                                  description="List of biosimulations run IDs to compare."),
+                                                  max_length=MAX_VERIFY_RUN_IDS,
+                                                  description=f"List of biosimulations run IDs to compare "
+                                                              f"(at most {MAX_VERIFY_RUN_IDS}, no duplicates)."),
         include_outputs: bool = Query(default=False,
                                       description="Whether to include the output data on which the comparison is based."),
         user_description: str = Query(default="my-verify-job", description="User description of the verification run."),
@@ -720,6 +778,8 @@ async def verify_runs(
                                                              "runs' common dataset labels. Not yet used to filter the "
                                                              "returned comparison.")
 ) -> VerifyWorkflowOutput:
+    # Validation first: a duplicate run id is rejected before any service work.
+    _reject_duplicate_selections(biosimulations_run_ids, label="run IDs")
     temporal_client = get_temporal_client()
     if temporal_client is None:
         raise HTTPException(status_code=503, detail="Temporal service not available")
@@ -835,23 +895,45 @@ async def _load_hdf5_metadata_for_preflight(
     tags=["Verification"],
     dependencies=[Depends(get_verification_database_service)],
     summary="List verification workflow IDs usable with GET /verify/{workflow_id}",
-    responses={503: {"description": "Verification database unavailable."}},
+    description=(
+        "Public, newest-first listing of every verification workflow ID, one bounded page "
+        "at a time. Follow `next_cursor` (pass it back as `cursor`) for older IDs; it is "
+        "null on the last page."
+    ),
+    responses={400: {"description": "Malformed cursor."}, 503: {"description": "Verification database unavailable."}},
 )
-async def list_verification_ids() -> VerificationIdsResponse:
+async def list_verification_ids(
+        limit: int = Query(default=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, ge=1, le=VERIFICATION_IDS_MAX_PAGE_SIZE,
+                           description=f"Page size (1-{VERIFICATION_IDS_MAX_PAGE_SIZE})."),
+        cursor: Optional[str] = Query(default=None, max_length=512,
+                                      description="Opaque `next_cursor` from a previous page."),
+) -> VerificationIdsResponse:
     # Public, like the legacy API: no token, every ID. The IDs alone expose no
     # results -- GET /verify/{workflow_id} still enforces owner-or-admin.
+    after: VerificationCursor | None = None
+    if cursor is not None:
+        try:
+            after = decode_verification_cursor(cursor)
+        except InvalidVerificationCursor:
+            raise HTTPException(status_code=400, detail="Invalid cursor") from None
     ledger = get_verification_database_service()
     if ledger is None:
         raise HTTPException(status_code=503, detail="Verification database service not available")
 
     try:
-        ids = await ledger.list_verification_ids(None)
+        page = await ledger.list_verification_ids(None, limit=limit, after=after)
     except Exception as e:
         logger.error("Failed to list verification IDs: %s", e, exc_info=e)
         raise HTTPException(status_code=503, detail="Failed to list verification IDs")
 
-    logger.info("listing verification ids (count=%d)", len(ids))
-    return VerificationIdsResponse(verification_ids=ids)
+    logger.info(
+        "listing verification ids (count=%d, has_more=%s)",
+        len(page.verification_ids), page.next_cursor is not None,
+    )
+    return VerificationIdsResponse(
+        verification_ids=page.verification_ids,
+        next_cursor=encode_verification_cursor(page.next_cursor) if page.next_cursor else None,
+    )
 
 
 if __name__ == "__main__":

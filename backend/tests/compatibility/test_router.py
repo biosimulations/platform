@@ -376,7 +376,7 @@ def test_check_compatibility_rejects_oversized_declared_content_length(mock_dns:
             "/compatibility/check", params={"archive_url": "https://example.com/big.omex"}
         )
     assert response.status_code == 413
-    assert "MB limit" in response.json()["detail"]
+    assert "MiB limit" in response.json()["detail"]
 
 
 @patch("biosim_server.compatibility.router.socket.getaddrinfo", return_value=_PUBLIC_ADDR)
@@ -392,7 +392,7 @@ def test_check_compatibility_rejects_oversized_stream(mock_dns: object) -> None:
             "/compatibility/check", params={"archive_url": "https://example.com/lying.omex"}
         )
     assert response.status_code == 413
-    assert "MB limit" in response.json()["detail"]
+    assert "MiB limit" in response.json()["detail"]
 
 
 def test_check_compatibility_accepts_archive_under_the_cap() -> None:
