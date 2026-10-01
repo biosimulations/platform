@@ -2,6 +2,9 @@ import fs from 'node:fs'
 
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
+  unhead: {
+    vite: false
+  },
   modules: [
     '@nuxt/eslint',
     '@nuxt/ui',
