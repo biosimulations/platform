@@ -4,8 +4,8 @@ import asyncio
 import gzip
 import json
 import logging
-from collections.abc import AsyncIterator, Callable, Iterator
-from typing import Any
+from collections.abc import AsyncIterator, Buffer, Callable, Iterable, Iterator
+from typing import Any, Self, SupportsIndex
 
 import httpx
 import pytest
@@ -13,6 +13,7 @@ from fastapi import Request
 from starlette.types import Message
 
 from biosim_server.api.main import app
+from biosim_server.biosim_runs import legacy_api as legacy_api_module
 from biosim_server.biosim_runs.legacy_api import (
     LEGACY_PATCH_MAX_BYTES,
     _OVERSIZE_DETAIL,
@@ -643,6 +644,66 @@ async def test_buffered_body_at_the_cap_is_relayed_exactly(cap: int) -> None:
 
     assert response.status_code == 200
     assert response.content == body
+
+
+class _PeakBuffer(bytearray):
+    """Stand-in accumulator that records the largest size it ever reached."""
+
+    peak = 0
+
+    def __iadd__(self, value: Buffer, /) -> Self:  # type: ignore[override]  # as typeshed's bytearray
+        result = super().__iadd__(value)
+        type(self).peak = max(type(self).peak, len(self))
+        return result
+
+    def extend(self, iterable_of_ints: Iterable[SupportsIndex], /) -> None:
+        super().extend(iterable_of_ints)
+        type(self).peak = max(type(self).peak, len(self))
+
+
+@pytest.fixture
+def peak_buffer(monkeypatch: pytest.MonkeyPatch) -> type[_PeakBuffer]:
+    """Swap the reader's module-global ``bytearray`` so its accumulator is observable."""
+    _PeakBuffer.peak = 0
+    monkeypatch.setattr(legacy_api_module, "bytearray", _PeakBuffer, raising=False)
+    return _PeakBuffer
+
+
+async def test_buffered_accumulator_never_exceeds_the_cap(
+    cap: int, peak_buffer: type[_PeakBuffer]
+) -> None:
+    """The cap is checked before a chunk is added, so the buffer never holds more than it."""
+    stream = Chunks([b"A" * (cap - 1), b"B" * 2, b"C"])
+
+    caller, upstream = clients(
+        lambda request: httpx.Response(200, stream=stream, headers={"Content-Type": "application/json"})
+    )
+    async with caller, upstream:
+        response = await caller.get("/runs/example")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == _OVERSIZE_DETAIL
+    assert stream.closed
+    assert stream.reads < 3
+    assert 0 < peak_buffer.peak <= cap
+
+
+async def test_multi_chunk_body_filling_the_cap_exactly_is_relayed(
+    cap: int, peak_buffer: type[_PeakBuffer]
+) -> None:
+    """A body that reaches exactly the cap across chunks is relayed whole."""
+    chunks = [b"x" * (cap - 1), b"y"]
+    stream = Chunks(chunks)
+
+    caller, upstream = clients(
+        lambda request: httpx.Response(200, stream=stream, headers={"Content-Type": "application/json"})
+    )
+    async with caller, upstream:
+        response = await caller.get("/runs/example")
+
+    assert response.status_code == 200
+    assert response.content == b"".join(chunks)
+    assert peak_buffer.peak == cap
 
 
 @pytest.mark.parametrize(

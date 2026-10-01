@@ -21,10 +21,13 @@ differs from the audit's own priority assignments.
    a static check, not a runtime one. It belongs in the evidence, and it changes the
    ranking.
 
-2. **AUTH-MAJ-002's suggested fix is half unimplementable.** It says "add required-exp
-   options or equivalent explicit validation." python-jose has no `require_exp` — this
-   was checked against `_validate_claims`, and the option does not exist. Only the
-   explicit check works.
+2. **AUTH-MAJ-002's suggested fix: prefer the explicit check.** It says "add required-exp
+   options or equivalent explicit validation." *Corrected 2026-10:* python-jose 3.5.0
+   does support `options={"require_exp": True}` (`_validate_claims` honours any
+   `require_<claim>` option), so both halves are implementable. The explicit check was
+   kept deliberately: it runs before the JWKS lookup, rejects `"exp": null` and
+   non-numeric types (`require_exp` only tests key presence), and yields distinct
+   `missing_exp`/`invalid_exp` reasons instead of a generic `JWTError`.
 
 3. **Numbering has holes** — §5.2 jumps to §5.4, §6.1 to §6.3. Presumably empty sections
    were dropped, but it reads like content was lost.
@@ -35,11 +38,16 @@ request fans out to 3–4 calls against `api.biosimulations.org`. That's a free 
 amplifier pointed at a third party. The plan discusses payload size and pool pressure,
 but never the amplification vector or a concurrency bound toward upstream.
 
-**Also missed:** the run page's 60 s budget is effectively dead code. `httpx.Timeout(30.0)`
-caps every phase at 30 s, and the run page's four calls all run in parallel — so the inner
-assembly can't exceed ~30 s and the 60 s `wait_for` never fires. The project page (30 s
-identity then 30 s satellites = 60 s > 45 s) genuinely can hit its budget. The plan
-correctly notes `Timeout(30.0)` isn't a total deadline but never draws this conclusion.
+**Also missed:** the run page's 60 s budget is sized for the wrong serial depth.
+*Corrected 2026-10:* an earlier version of this note claimed the 60 s `wait_for` could
+never fire. That was wrong. `httpx.Timeout(30.0)` is per phase, and its read timeout
+applies between response chunks, not to a response's total lifetime — a slow-drip body
+can keep one fetch alive well past 30 s, so the outer deadline can fire and is the only
+total bound. The real issue is sizing: the run page's four calls run in parallel (one
+serial hop), so a well-behaved upstream finishes in ~30 s, while 60 s was a two-hop
+budget. The project page (30 s identity then 30 s satellites = 60 s > 45 s) genuinely
+needs a two-hop budget. The run budget is now 40 s (one hop + 10 s slack) and the project
+budget 70 s.
 
 ## Auth — ranked by value
 
@@ -111,11 +119,12 @@ correctly notes `Timeout(30.0)` isn't a total deadline but never draws this conc
    most expensive item here and needs 3's numbers to size it. Limit decoded bytes, not
    `Content-Length`.
 
-5. **Fix the timeout asymmetry** (addition). The run page's 60 s budget can't fire behind a
-   30 s per-phase httpx timeout on parallel calls; the project page's 45 s can. Either set
-   the budgets from the real serial depth (project ≈ 2 hops, run ≈ 1) or drop the run
-   budget and document that httpx bounds it — right now the constant implies a guarantee
-   it doesn't provide.
+5. **Fix the timeout asymmetry** (addition). *Corrected 2026-10:* the run page's 60 s
+   budget can fire (slow-drip responses outlive the 30 s per-phase httpx timeout), but it
+   was sized for two serial hops on an assembly that has one; the project page's 45 s was
+   under its two-hop depth. Set the budgets from the real serial depth (project ≈ 2 hops,
+   run ≈ 1). Do not drop the run budget: httpx does not bound a request in total, so the
+   page budget is the only total deadline. Done: 70 s and 40 s.
 
 6. **Pin mixed-failure precedence with tests** (RUN-MIN-001). Cheap, and it locks in the
    deliberate "identity error wins" semantics before someone refactors it into fail-fast.

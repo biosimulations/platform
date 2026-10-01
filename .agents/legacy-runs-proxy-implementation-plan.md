@@ -970,11 +970,13 @@ async def _read_capped_raw(
     """
     body = bytearray()
     async for chunk in upstream.aiter_raw():
-        body += chunk
         transfer.size += len(chunk)
-        if len(body) > limit:
+        # Checked before appending (as _patch_body does), so the buffer itself
+        # never holds more than ``limit`` bytes.
+        if len(body) + len(chunk) > limit:
             transfer.outcome = "too_large"
             raise HTTPException(502, _OVERSIZE_DETAIL)
+        body += chunk
     return bytes(body)
 ```
 

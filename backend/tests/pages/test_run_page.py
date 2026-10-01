@@ -252,13 +252,14 @@ async def test_run_page_satellite_failure_cancels_siblings() -> None:
 
 
 async def test_run_page_budget_is_derived_from_the_upstream_serial_depth() -> None:
-    """The budget must be able to fire, and must not be dead code above the real cost.
+    """The budget is sized from the run page's real serial depth.
 
-    Every upstream call is bounded *per phase* by the shared client's httpx timeout,
-    so the run page (one serial hop: identity ∥ satellites) cannot take less than
-    one timeout and cannot legitimately need two. A budget under the serial depth
-    would cancel healthy requests; the old flat 60 s was above anything the
-    implementation could reach, so it could never fire.
+    The shared client's httpx timeout bounds each upstream call *per phase* only --
+    a slow-drip body can outlive it -- so this budget is the sole total deadline.
+    The run page has one serial hop (identity ∥ satellites): a budget under one
+    timeout would cancel healthy requests, and one far above it (the old flat 60 s
+    was sized for two hops) would let a slow-drip upstream hold the request longer
+    than the assembly needs.
     """
     budget = service._PAGE_TIMEOUTS["run"]
     assert UPSTREAM_TIMEOUT_SECONDS < budget < 2 * UPSTREAM_TIMEOUT_SECONDS

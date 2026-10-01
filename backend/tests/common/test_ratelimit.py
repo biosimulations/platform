@@ -225,6 +225,84 @@ class TestEviction:
         ]
         assert stale == []
 
+    # Buckets with different window lengths share one dict, so a sweep triggered
+    # by 60 s traffic must judge each bucket by its *own* expiry -- not by the
+    # triggering request's window -- or it refills an exhausted 300 s reset quota.
+    _RESET_USER = AuthenticatedUser(sub="auth0|abc", issuer="https://tenant.us.auth0.com/")
+    _RESET_KEY = "password-reset:sub:https://tenant.us.auth0.com/:auth0|abc"
+
+    @staticmethod
+    def _configure_mixed_windows(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+        # Aligned to both 60 and 300, so every window boundary below is exact.
+        clock = FakeClock(start=1_700_000_100.0)
+        monkeypatch.setattr(ratelimit_module, "time", clock)
+        settings = get_settings().ratelimit
+        settings.password_reset_per_window = 5
+        settings.password_reset_window_seconds = 300
+        settings.page_per_window = 10_000
+        settings.page_window_seconds = 60
+        settings.anonymous_per_window = 10_000
+        settings.window_seconds = 60
+        return clock
+
+    @staticmethod
+    def _short_window_hit(source: str, client_host: str) -> None:
+        request = _make_request(client_host=client_host)
+        if source == "page":
+            ratelimit_module.page_rate_limit(request)
+        else:
+            ratelimit_module.workflow_rate_limit(request=request, user=None)
+
+    def _drive_sweeps(self, source: str) -> None:
+        # Twice the sampling interval guarantees at least one sweep runs.
+        for i in range(2 * ratelimit_module._EVICT_EVERY_N_CHECKS):
+            self._short_window_hit(source, f"198.51.100.{i}")
+
+    def _assert_reset_denied(self, retry_after: str) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            ratelimit_module.password_reset_rate_limit(_make_request(), self._RESET_USER)
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.headers == {"Retry-After": retry_after}
+
+    @pytest.mark.parametrize("source", ["page", "workflow"])
+    def test_short_window_sweep_does_not_evict_an_active_reset_bucket(
+        self, source: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = self._configure_mixed_windows(monkeypatch)
+        sentinel_key = "pages:ip:10.9.9.9" if source == "page" else "ip:10.9.9.9"
+        # A short-window bucket that expires at +60 s: its eviction proves a sweep ran.
+        self._short_window_hit(source, "10.9.9.9")
+
+        for _ in range(5):
+            ratelimit_module.password_reset_rate_limit(_make_request(), self._RESET_USER)
+        self._assert_reset_denied("301")
+
+        clock.advance(60)
+        self._drive_sweeps(source)
+        assert sentinel_key not in ratelimit_module._rate_limit_buckets
+        assert self._RESET_KEY in ratelimit_module._rate_limit_buckets
+        self._assert_reset_denied("241")
+
+        clock.advance(239)
+        self._drive_sweeps(source)
+        self._assert_reset_denied("2")
+
+        # Usable again only at the reset bucket's own expiry boundary.
+        clock.advance(1)
+        ratelimit_module.password_reset_rate_limit(_make_request(), self._RESET_USER)
+
+    def test_reset_bucket_is_evicted_once_its_own_window_expires(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = self._configure_mixed_windows(monkeypatch)
+        for _ in range(5):
+            ratelimit_module.password_reset_rate_limit(_make_request(), self._RESET_USER)
+        self._assert_reset_denied("301")
+
+        clock.advance(301)
+        self._drive_sweeps("page")
+        assert self._RESET_KEY not in ratelimit_module._rate_limit_buckets
+
 
 class TestConcurrency:
     def test_concurrent_hits_do_not_undercount_the_quota(self) -> None:

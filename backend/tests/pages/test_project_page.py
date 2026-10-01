@@ -190,10 +190,12 @@ async def test_embedded_dot_run_id_is_rejected(run_id: str) -> None:
 async def test_project_page_budget_is_derived_from_the_upstream_serial_depth() -> None:
     """Two serial hops (identity → run id → satellites) plus bounded local slack.
 
-    Each upstream call is bounded per phase by the shared client's httpx timeout, so
-    a budget below two timeouts would cancel healthy requests and one far above it
-    would never fire. Pinning the derivation here keeps the constant and the
-    assembler it bounds from drifting apart silently.
+    The shared client's httpx timeout bounds each upstream call *per phase* only --
+    a slow-drip body can outlive it -- so this budget is the sole total deadline. A
+    budget below two timeouts would cancel healthy requests, and one far above it
+    would let a slow-drip upstream hold the request longer than the assembly needs.
+    Pinning the derivation here keeps the constant and the assembler it bounds from
+    drifting apart silently.
     """
     budget = service._PAGE_TIMEOUTS["project"]
     assert 2 * UPSTREAM_TIMEOUT_SECONDS < budget < 3 * UPSTREAM_TIMEOUT_SECONDS

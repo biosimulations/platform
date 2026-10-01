@@ -464,11 +464,15 @@ def _unauthorized(
 def _require_expiration_claim(unverified_claims: dict[str, Any]) -> None:
     """Refuse a bearer token that carries no usable ``exp``.
 
-    python-jose has **no** ``require_exp`` option -- ``jose.jwt._validate_exp``
-    returns immediately when the claim is absent, and an explicit JSON ``null``
-    reaches ``int(None)`` and raises a bare ``TypeError`` -- so a correctly
-    signed token with no expiry used to be accepted *forever*, in every
-    configuration, single-issuer included. Presence is therefore enforced here.
+    By default ``jose.jwt._validate_exp`` returns immediately when the claim is
+    absent, so a correctly signed token with no expiry used to be accepted
+    *forever*, in every configuration, single-issuer included. python-jose 3.5.0
+    does offer ``options={"require_exp": True}``, but it is not used: it runs only
+    inside ``jwt.decode`` (after the JWKS lookup and signature check), it tests key
+    presence only -- an explicit JSON ``null`` passes it and then reaches
+    ``int(None)`` as a bare ``TypeError`` -- and a missing claim surfaces as a
+    generic ``JWTError`` rather than a distinct reason. Presence and type are
+    therefore enforced here.
 
     Deliberately checked against the *unverified* claims, before any
     verification work: the claim's presence is not secret, and rejecting a

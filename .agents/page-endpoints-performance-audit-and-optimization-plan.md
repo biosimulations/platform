@@ -925,7 +925,7 @@ async def assemble_run_page(client: httpx.AsyncClient, run_id: str) -> RunsPageP
         _satellite(client, "specifications", run_id),
         _satellite(client, "logs", run_id),
     ]
-    
+
     # Wait for identity first (we need it for info/summary).
     try:
         payload = await identity_task
@@ -934,7 +934,7 @@ async def assemble_run_page(client: httpx.AsyncClient, run_id: str) -> RunsPageP
         for task in satellite_tasks:
             task.cancel()
         raise
-    
+
     try:
         run = parse_run(payload)
         files, specifications, logs = await asyncio.gather(*satellite_tasks)
@@ -1171,19 +1171,19 @@ Add a test that uses `asyncio.Event` to prove that satellite tasks are created b
 async def test_run_page_satellites_start_before_identity_completes():
     """Prove that satellites are created before identity completes."""
     events = {"satellite_created": asyncio.Event(), "identity_completed": asyncio.Event()}
-    
+
     call_order = []
-    
+
     async def delayed_fetch_upstream_json(client, path, *, resource):
         call_order.append(resource)
         if resource == "run summary":
             await events["satellite_created"].wait()  # Delay identity until satellites are created
         return _fake_response(resource)
-    
+
     # ... set up dependency override with delayed_fetch_upstream_json ...
-    
+
     response = await client.get(f"/runs/{RUN_ID}/page")
-    
+
     assert response.status_code == 200
     assert "files" in call_order  # files was called before identity completed
     assert "run summary" in call_order
@@ -1369,14 +1369,14 @@ async def benchmark_page_latency():
         "/runs/61fea483f499ccf25faafc4d/specifications": 0.1,
         "/runs/61fea483f499ccf25faafc4d/logs": 0.1,
     }
-    
+
     mock = httpx.MockTransport(...)
     client = httpx.AsyncClient(transport=mock, base_url="http://platform.test")
-    
+
     start = time.monotonic()
     response = await client.get("/runs/61fea483f499ccf25faafc4d/page")
     elapsed = time.monotonic() - start
-    
+
     print(f"Run page latency: {elapsed*1000:.1f}ms")
     # Expected before fix: ~200ms + overhead
     # Expected after fix: ~100ms + overhead

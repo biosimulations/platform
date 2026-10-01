@@ -36,17 +36,18 @@ _RUN_SATELLITES = ("files", "specifications", "logs")
 # ceiling rather than a number nobody can justify.
 _LOCAL_WORK_SLACK_SECONDS = 10.0
 
-# The budgets below are derived from the real serial depth of each assembler, not
-# chosen independently of it. Every upstream call is bounded per phase by the shared
-# client's httpx timeout (UPSTREAM_TIMEOUT_SECONDS = 30 s, and it is a *per-phase*
-# bound, not a total deadline), so:
+# Every upstream call is bounded per phase by the shared client's httpx timeout
+# (UPSTREAM_TIMEOUT_SECONDS = 30 s). That is not a total bound: the read timeout
+# restarts on every received chunk, so a slow-drip body can keep one fetch alive
+# well past 30 s. These budgets are therefore the *only* total deadline on page
+# assembly. They are sized from the serial depth of a well-behaved upstream:
 #
 #   project: identity -> run id -> satellites            = 2 serial hops
 #   run:     identity ∥ satellites (parallel branches)   = 1 hop
 #
-# The run page used to carry a flat 60 s, which was dead code: its four calls all
-# run in parallel behind 30 s per-phase timeouts, so assembly could not reach 60 s
-# and the budget could never fire. It is now one hop plus slack.
+# The run page used to carry a flat 60 s. That could fire (slow-drip responses
+# reach it), but it was sized for two serial hops when run assembly has one. It is
+# now one hop plus slack.
 _PAGE_TIMEOUTS = {
     "project": 2 * UPSTREAM_TIMEOUT_SECONDS + _LOCAL_WORK_SLACK_SECONDS,
     "run": UPSTREAM_TIMEOUT_SECONDS + _LOCAL_WORK_SLACK_SECONDS,

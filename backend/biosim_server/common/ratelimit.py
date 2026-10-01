@@ -57,8 +57,9 @@ logger = logging.getLogger(__name__)
 
 # Module-level rate-limit state: one entry per caller-identity key. Each value
 # is a fixed window -- {"window_start": <epoch seconds, floored to the window
-# boundary>, "count": <requests seen so far in this window>}. Mirrors the
-# shape and naming convention of auth0.py's `_jwks_cache`.
+# boundary>, "expires_at": <window_start + that bucket's own window length>,
+# "count": <requests seen so far in this window>}. Mirrors the shape and naming
+# convention of auth0.py's `_jwks_cache`.
 
 _rate_limit_buckets: dict[str, dict[str, float | int]] = {}
 # Serialises increment + eviction. workflow_rate_limit is a sync FastAPI
@@ -167,8 +168,15 @@ def client_identity(
         return f"sub:{user.sub}", True
     return f"ip:{_client_ip(request)}", False
 
-def _evict_stale_buckets(window_start: float) -> None:
-    stale = [k for k, bucket in _rate_limit_buckets.items() if bucket["window_start"] < window_start]
+def _evict_stale_buckets(now: float) -> None:
+    """Drop buckets whose own window has ended.
+
+    Judged per bucket, not by the triggering request's window: buckets with
+    different window lengths (60 s pages/workflow, 300 s password reset) share
+    this dict, so a short-window sweep must not delete a long window that is
+    still active -- that would refill an exhausted quota early.
+    """
+    stale = [k for k, bucket in _rate_limit_buckets.items() if bucket["expires_at"] <= now]
     for k in stale:
         del _rate_limit_buckets[k]
 
@@ -185,16 +193,23 @@ def _check_and_increment(
     """
     global _rate_limit_check_count
     window_start = (now // window_seconds) * window_seconds
+    expires_at = window_start + window_seconds
     with _rate_limit_lock:
         _rate_limit_check_count += 1
         if _rate_limit_check_count % _EVICT_EVERY_N_CHECKS == 0:
-            _evict_stale_buckets(window_start)
+            _evict_stale_buckets(now)
         bucket = _rate_limit_buckets.get(key)
-        if bucket is None or bucket["window_start"] != window_start:
-            bucket = {"window_start": window_start, "count": 0}
+        # Comparing expires_at too catches a window length changed at runtime
+        # that happens to share an aligned window_start.
+        if (
+            bucket is None
+            or bucket["window_start"] != window_start
+            or bucket["expires_at"] != expires_at
+        ):
+            bucket = {"window_start": window_start, "expires_at": expires_at, "count": 0}
             _rate_limit_buckets[key] = bucket
         bucket["count"] = int(bucket["count"]) + 1
-        retry_after = max(1, int(window_start + window_seconds - now) + 1)
+        retry_after = max(1, int(expires_at - now) + 1)
         return int(bucket["count"]) <= limit, retry_after
 
 def _enforce_rate_limit(

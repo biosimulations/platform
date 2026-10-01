@@ -86,7 +86,9 @@ matches no token. Since P0 #5 this is caught at startup, but catch it in review 
 When set, it must be a JSON **object** mapping each issuer URL to
 `{"audiences": ["..."], "jwks_uri": "https://..."}`. This is a pairing, not two
 independent allowlists: an audience listed under issuer A is not valid for issuer B.
-See `backend/docs/auth0-tokens-claims-endpoints.md`.
+See `backend/docs/auth0-tokens-claims-endpoints.md`. Resource ownership (`owner_sub`) is
+subject-only: do not trust a second issuer for owned resources until ownership is
+issuer-bound (see `roles.is_owner`).
 
 Every `.env` file here is `KEY=VALUE`, one per line, `#` comments, **and must end with a
 newline.**

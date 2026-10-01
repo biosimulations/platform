@@ -110,9 +110,10 @@ async def _read_capped_body(response: httpx.Response, resource: str, limit: int)
     """
     body = bytearray()
     async for chunk in response.aiter_bytes():
-        body += chunk
-        if len(body) > limit:
+        # Checked before appending, so the buffer itself never exceeds ``limit``.
+        if len(body) + len(chunk) > limit:
             raise HTTPException(502, _OVERSIZE_DETAIL.format(resource=resource))
+        body += chunk
     return bytes(body)
 
 

@@ -17,12 +17,14 @@ wrong:
 network, no real upstream.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Buffer, Iterable
+from typing import Self, SupportsIndex
 
 import httpx
 import pytest
 from fastapi import HTTPException
 
+from biosim_server.common import upstream as upstream_module
 from biosim_server.common.upstream import fetch_upstream_json_value
 from biosim_server.config import get_settings
 
@@ -119,6 +121,50 @@ async def test_a_compressed_body_is_capped_by_decoded_size(cap: int) -> None:
             await fetch_upstream_json_value(client, "/logs/x", resource="run logs")
     assert error.value.status_code == 502
     assert error.value.detail == "The upstream service returned a run logs that is too large to load."
+
+
+class _PeakBuffer(bytearray):
+    """Stand-in accumulator that records the largest size it ever reached."""
+
+    peak = 0
+
+    def __iadd__(self, value: Buffer, /) -> Self:  # type: ignore[override]  # as typeshed's bytearray
+        result = super().__iadd__(value)
+        type(self).peak = max(type(self).peak, len(self))
+        return result
+
+    def extend(self, iterable_of_ints: Iterable[SupportsIndex], /) -> None:
+        super().extend(iterable_of_ints)
+        type(self).peak = max(type(self).peak, len(self))
+
+
+@pytest.fixture
+def peak_buffer(monkeypatch: pytest.MonkeyPatch) -> type[_PeakBuffer]:
+    """Swap the reader's module-global ``bytearray`` so its accumulator is observable."""
+    _PeakBuffer.peak = 0
+    monkeypatch.setattr(upstream_module, "bytearray", _PeakBuffer, raising=False)
+    return _PeakBuffer
+
+
+@pytest.mark.asyncio
+async def test_accumulator_never_exceeds_the_cap(cap: int, peak_buffer: type[_PeakBuffer]) -> None:
+    """The cap is checked before a chunk is added, so the buffer never holds more than it."""
+    body = _Body([b"[" + b" " * (cap - 2), b"  ", b"]"])
+    async with _client(body) as client:
+        with pytest.raises(HTTPException) as error:
+            await fetch_upstream_json_value(client, "/files/x", resource=RESOURCE)
+
+    assert error.value.status_code == 502
+    assert error.value.detail == _OVERSIZE
+    assert body.closed
+    assert 0 < peak_buffer.peak <= cap
+
+
+@pytest.mark.asyncio
+async def test_multi_chunk_body_at_the_cap_is_accepted(cap: int, peak_buffer: type[_PeakBuffer]) -> None:
+    async with _client(_Body([b"[", b" " * (cap - 2), b"]"])) as client:
+        assert await fetch_upstream_json_value(client, "/files/x", resource=RESOURCE) == []
+    assert peak_buffer.peak == cap
 
 
 @pytest.mark.asyncio

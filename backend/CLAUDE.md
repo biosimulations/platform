@@ -327,9 +327,12 @@ enforced without either consumer widening the other's semantics.
 Both pages also carry a total time budget derived from the shared per-phase httpx timeout
 (`common/upstream.UPSTREAM_TIMEOUT_SECONDS`, 30 s) and the assembler's real serial depth —
 two hops for the project page (identity → embedded run id → satellites) and one for the run
-page (identity ∥ satellites) — plus 10 s of bounded local slack: **70 s** and **40 s**. A
-budget below the serial depth would cancel healthy requests; one above it can never fire,
-which is what the run page's old flat 60 s did.
+page (identity ∥ satellites) — plus 10 s of bounded local slack: **70 s** and **40 s**. The
+httpx timeout is per phase, not per request: the read timeout restarts on every received
+chunk, so a slow-drip body can keep one fetch alive well past 30 s, and these budgets are
+the only total deadline on page assembly. A budget below the serial depth would cancel
+healthy requests; one far above it (the run page's old flat 60 s, sized for two hops) lets
+a slow-drip upstream hold the request longer than the assembly needs.
 
 Each page emits one structured record per request (`page`, `page_outcome`, `page_status`,
 `page_duration_ms`, `page_identity_duration_ms`, `page_satellites_duration_ms`) and one
@@ -379,9 +382,9 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | Auth0 unreachable, warm JWKS cache | Tokens still validate for up to 24 h; a WARN is logged per request. |
 | Auth0 unreachable, cold JWKS cache | **503** with `Retry-After: 10`. |
 | Invalid, expired, or wrongly-audienced token | **401**. |
-| Signed token with **no `exp`** claim, or a non-numeric one | **401** (`missing_exp` / `invalid_exp`). python-jose does not require `exp`, so the presence check is explicit. |
+| Signed token with **no `exp`** claim, or a non-numeric one | **401** (`missing_exp` / `invalid_exp`). python-jose does not require `exp` by default; its `require_exp` option runs only after the JWKS lookup and lets `"exp": null` through, so the presence and type check is explicit and runs first. |
 | Signed token whose `sub` has leading/trailing whitespace (or is whitespace-only) | **401**. Identity keys are never rewritten; `owner_sub` comparisons stay exact. |
-| Auth0 Management call for a principal whose issuer is not the configured tenant | **403** (`GET` stays JWT-only, no enrichment). Applies to `GET`/`PATCH`/`DELETE /api/v1/me`. |
+| Token from a trusted issuer that is not the configured tenant | `GET /api/v1/me`: **200**, JWT-only profile, no Management call or enrichment. `PATCH`/`DELETE /api/v1/me`: **403**, no Management call. |
 | `POST /api/v1/me/password-reset` with `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true` and missing/stale/future `auth_time` | **403**, no ticket. |
 | Valid token, missing role | **403**. |
 | Valid token, missing required permission/scope | **403**. |
