@@ -113,6 +113,7 @@ export default defineNuxtConfig({
       biosimulations_api_url: process.env.BIOSIMULATIONS_API_URL,
       legacy_api_url: process.env.LEGACY_API_URL,
       legacy_simulators_api_url: process.env.LEGACY_SIMULATORS_API_URL || 'https://api.biosimulators.org',
+      combine_api_url: process.env.COMBINE_API_URL || 'https://combine.api.biosimulations.org',
       auth0Domain: process.env.NUXT_PUBLIC_AUTH0_DOMAIN,
       auth0ClientId: process.env.NUXT_PUBLIC_AUTH0_CLIENT_ID,
       auth0Audience: process.env.NUXT_PUBLIC_AUTH0_AUDIENCE
