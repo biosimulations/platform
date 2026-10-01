@@ -2,6 +2,7 @@ import fs from 'node:fs'
 
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
+
   modules: [
     '@nuxt/eslint',
     '@nuxt/ui',
@@ -88,6 +89,10 @@ export default defineNuxtConfig({
   },
 
   css: ['~/assets/css/main.css'],
+
+  unhead: {
+    vite: false
+  },
 
   site: {
     url: 'https://biosimulations.org',
