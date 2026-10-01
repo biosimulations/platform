@@ -76,7 +76,15 @@ useSeoMeta({
   title: () => project_summary.value ? project_summary.value.simulationRun.name : 'Project',
   description: () => project_summary.value?.simulationRun?.metadata?.[0]?.abstract || 'Explore this project on BioSimulations.',
   author: () => project_summary.value?.simulationRun?.metadata?.[0]?.creators?.map((c: any) => c.label).join(', ') || 'BioSimulations',
-  keywords: () => project_summary.value?.simulationRun?.metadata?.[0]?.keywords?.map((k: any) => k.label).join(', ') || 'biosimulations, project'
+})
+
+useHead({
+  meta: [
+    {
+      name: 'keywords',
+      content: () => project_summary.value?.simulationRun?.metadata?.[0]?.keywords?.map((k: any) => k.label).join(', ') || 'biosimulations, project'
+    }
+  ]
 })
 
 async function fetch_run() {

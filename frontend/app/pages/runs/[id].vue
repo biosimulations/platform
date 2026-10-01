@@ -114,7 +114,15 @@ useSeoMeta({
   title: () => run_summary.value ? run_summary.value.name : 'Run',
   description: () => run_summary.value?.metadata?.[0]?.abstract || 'Explore this simulation run on BioSimulations.',
   author: () => run_summary.value?.metadata?.[0]?.creators?.map((c: any) => c.label).join(', ') || 'BioSimulations',
-  keywords: () => run_summary.value?.metadata?.[0]?.keywords?.map((k: any) => k.label).join(', ') || 'biosimulations, run, simulation'
+})
+
+useHead({
+  meta: [
+    {
+      name: 'keywords',
+      content: () => run_summary.value?.metadata?.[0]?.keywords?.map((k: any) => k.label).join(', ') || 'biosimulations, run, simulation'
+    }
+  ]
 })
 
 async function fetch_run() {

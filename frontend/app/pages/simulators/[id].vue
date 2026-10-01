@@ -108,7 +108,15 @@ useSeoMeta({
   title: () => (simulator.value ? `${simulator.value.name} (v${simulator.value.version}) - Simulator` : 'Simulator Details'),
   description: () => simulator.value?.description || 'Explore simulator details, algorithms, and validation results on BioSimulations.',
   author: () => simulator.value?.authors?.map(a => a.name).join(', ') || 'BioSimulators',
-  keywords: () => `biosimulators, simulator, ${simulator.value?.name || ''}, systems biology, computational modeling`,
+})
+
+useHead({
+  meta: [
+    {
+      name: 'keywords',
+      content: () => `biosimulators, simulator, ${simulator.value?.name || ''}, systems biology, computational modeling`
+    }
+  ]
 })
 
 async function loadSimulator() {

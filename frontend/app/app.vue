@@ -8,7 +8,6 @@ const keywords = 'biomodel, biosimulation, mathematical model, numerical simulat
 useSeoMeta({
   title,
   description,
-  keywords,
   author: 'Center for Reproducible Biomedical Modeling, info@biosimulations.org',
   ogTitle: title,
   ogDescription: description,
@@ -21,6 +20,7 @@ useSeoMeta({
 
 useHead({
   meta: [
+    { name: 'keywords', content: keywords },
     { name: 'viewport', content: 'width=device-width, initial-scale=1' },
     { name: 'language', content: 'EN' },
     { name: 'copyright', content: 'Center for Reproducible Biomedical Modeling' },
