@@ -225,6 +225,8 @@ _NO_EVIDENCE: dict[str, Callable[[int], dict[str, Any]]] = {
     "boolean": lambda now: {"auth_time": True},
     "null": lambda now: {"auth_time": None},
     "list": lambda now: {"auth_time": [now]},
+    "infinite": lambda now: {"auth_time": float("inf")},
+    "nan": lambda now: {"auth_time": float("nan")},
 }
 
 
@@ -265,3 +267,19 @@ def test_a_recent_interactive_sign_in_reaches_exactly_one_ticket(step_up: _Auth0
     assert response.headers["cache-control"] == "no-store"
     assert step_up.ticket_posts == 1
     assert step_up.ticket_requests[0]["user_id"] == "auth0|composition"
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")], ids=["inf", "-inf", "nan"])
+def test_a_non_finite_auth_time_is_no_evidence_on_any_authenticated_route(
+    auth0: _Auth0, value: float
+) -> None:
+    """Not just the reset route: the claim is parsed for every authenticated request."""
+    token = TENANT_KEY.token(
+        sub="auth0|composition", issuer=TENANT_ISSUER, audience=AUDIENCE,
+        extra_claims={"auth_time": value},
+    )
+    response = TestClient(app, raise_server_exceptions=False).get(
+        "/api/v1/me", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == "auth0|composition"

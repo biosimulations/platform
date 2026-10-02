@@ -142,7 +142,7 @@ tokens.
 | `sub` | standard | Stable user id. Required, and accepted exactly as sent: a padded or whitespace-only value is rejected (401), never trimmed into a different identity. Persisted as `owner_sub` on simulation runs. Primary ownership key (`roles.is_owner`). |
 | `https://api.biosimulations.org/email` | `AUTH0_EMAIL_CLAIM` | Email. Fallback: plain `email` (Keycloak test tokens). Informational on `/api/v1/me`; **authorization** only via the verified-email ownership fallback. |
 | `https://api.biosimulations.org/email_verified` | `AUTH0_EMAIL_VERIFIED_CLAIM` | Whether that email is verified. Fallback: plain `email_verified`. Missing → `False` (fail closed). A legacy run without `owner_sub` is owned only when this is true **and** the emails match. |
-| `auth_time` | `AUTH0_AUTH_TIME_CLAIM` (default `auth_time`) | Optional. The end-user's last **interactive** authentication time (OIDC `auth_time`), read into `AuthenticatedUser.auth_time`. Absent or malformed → `None`. Used only by the password-reset step-up gate (below), never as an authorization input. |
+| `auth_time` | `AUTH0_AUTH_TIME_CLAIM` (default `auth_time`) | Optional. The end-user's last **interactive** authentication time (OIDC `auth_time`), read into `AuthenticatedUser.auth_time`. Absent or malformed (including non-finite `1e309`/`Infinity`/`NaN`) → `None`. Used only by the password-reset step-up gate (below), never as an authorization input. |
 
 These namespaced claims are stamped onto the **access token** by
 `auth0/actions/post-login.js`. They are not present on Auth0 access tokens by default.

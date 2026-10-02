@@ -166,7 +166,11 @@ async def test_malformed_auth_time_never_satisfies_a_step_up_check(
 ) -> None:
     """A present-but-malformed `auth_time` is parsed as absent, not as a value."""
     _install(monkeypatch, _endpoint())
-    malformed: tuple[object, ...] = ("not-a-number", None, True, [], {})
+    # Non-finite values arrive as JSON `1e309`, `Infinity` or `NaN`; converting
+    # them used to raise past the dependency and turn every request into a 500.
+    malformed: tuple[object, ...] = (
+        "not-a-number", None, True, [], {}, float("inf"), float("-inf"), float("nan"),
+    )
     for value in malformed:
         user = await get_current_user(_creds(KEY.token(extra_claims={"auth_time": value})))
         assert user.auth_time is None, value

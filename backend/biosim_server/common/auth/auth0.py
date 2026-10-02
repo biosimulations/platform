@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import math
 import time
 from typing import Annotated, Any
 
@@ -579,13 +580,17 @@ def _extract_string_list(payload: dict[str, Any], claim: str) -> tuple[list[str]
 def _extract_auth_time(payload: dict[str, Any], settings: Auth0Settings) -> int | None:
     """The end-user's last interactive-authentication time, or None.
 
-    NumericDate semantics, strictly: only an ``int``/``float`` (never ``bool``,
-    never a numeric string) counts. Anything else -- including a present but
-    malformed claim -- yields ``None``, and the step-up gate treats ``None`` as
-    "no evidence", so a malformed claim can never satisfy it.
+    NumericDate semantics, strictly: only a finite ``int``/``float`` (never
+    ``bool``, never a numeric string) counts. Anything else -- including a present
+    but malformed claim -- yields ``None``, and the step-up gate treats ``None`` as
+    "no evidence", so a malformed claim can never satisfy it. Non-finite values
+    (JSON ``1e309``, ``Infinity``, ``NaN``) are malformed too: ``int()`` would raise
+    on them, past the dependency, as a 500 on every authenticated request.
     """
     raw = payload.get(settings.auth_time_claim)
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    if isinstance(raw, float) and not math.isfinite(raw):
         return None
     return int(raw)
 
