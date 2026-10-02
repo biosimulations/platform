@@ -19,10 +19,13 @@ from biosim_server.biosim_runs.legacy_api import (
     _OVERSIZE_DETAIL,
     proxy_run,
 )
+from biosim_server.common.ratelimit import page_rate_limit
 from biosim_server.common.upstream import upstream_url
 from biosim_server.config import get_settings
 from biosim_server.dependencies import get_http_client
 from biosim_server.log_config import JsonFormatter
+from tests.pages.test_mapping import satellite
+from tests.summaries.test_mapping import payload
 
 pytestmark = pytest.mark.asyncio
 ROUTES = [
@@ -913,3 +916,126 @@ async def test_the_cap_is_read_from_settings(monkeypatch: pytest.MonkeyPatch) ->
         response2 = await caller2.get("/runs/example")
     assert response2.status_code == 502
     assert response2.json()["detail"] == _OVERSIZE_DETAIL
+
+
+# ---------------------------------------------------------------------------
+# Pooled-client isolation between the proxy and platform-owned public fetches
+# ---------------------------------------------------------------------------
+# One pooled client serves both. httpx's send() stores every upstream Set-Cookie
+# in that client's jar, including the proxy's, so isolation must come from how
+# each request is built -- never from what the jar happens to hold.
+
+PUBLIC_ROUTES = [
+    "/runs/example/summary",
+    "/projects/example/summary",
+    "/runs/example/page",
+    "/projects/example/page",
+]
+
+
+@pytest.fixture
+def unmetered_pages() -> None:
+    """The page routes are metered per IP; that budget is not under test here."""
+    app.dependency_overrides[page_rate_limit] = lambda: None
+
+
+def public_upstream(request: httpx.Request) -> httpx.Response:
+    """A valid answer for every platform-owned fetch the public routes make."""
+    path = request.url.path
+    if path.endswith("/summary"):
+        return httpx.Response(200, json=payload(path.split("/")[1].removesuffix("s")))
+    return httpx.Response(200, json=satellite(path.split("/")[1]))
+
+
+@pytest.mark.parametrize("public_route", PUBLIC_ROUTES)
+async def test_proxy_session_cookie_never_reaches_a_later_public_fetch(
+    public_route: str, unmetered_pages: None
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/runs/example":
+            return httpx.Response(
+                200, stream=Chunks([b"{}"]), headers={"Set-Cookie": "session=user-A; Path=/"}
+            )
+        return public_upstream(request)
+
+    caller, upstream = clients(handler)
+    async with caller, upstream:
+        proxied = await caller.get(
+            "/runs/example", headers={"Authorization": "Bearer user-A"}
+        )
+        assert proxied.status_code == 200
+        assert "set-cookie" not in proxied.headers
+        # Precondition, not the contract: the proxy's send() has filled the jar.
+        assert upstream.cookies.get("session") == "user-A"
+        response = await caller.get(public_route)
+
+    assert response.status_code == 200, response.text
+    assert seen[0].headers["authorization"] == "Bearer user-A"
+    public_requests = seen[1:]
+    assert public_requests
+    for request in public_requests:
+        assert "cookie" not in request.headers, request.url.path
+        assert "authorization" not in request.headers, request.url.path
+
+
+async def test_interleaved_callers_never_share_pooled_client_state(
+    unmetered_pages: None,
+) -> None:
+    """Two callers on one pooled client, ordered by events rather than sleeps.
+
+    Anonymous caller B's project page is parked with its identity request in
+    flight. Authenticated caller A's proxy request then completes and its
+    response sets a session cookie. Only then is B's identity answered (setting a
+    cookie of its own), so B's satellites are built while the jar holds A's
+    session, and A's next request is built while it holds B's.
+    """
+    identity_arrived = asyncio.Event()
+    a_finished = asyncio.Event()
+    seen: list[tuple[str, httpx.Request]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/runs/example":
+            seen.append(("A", request))
+            return httpx.Response(
+                200, stream=Chunks([b"{}"]), headers={"Set-Cookie": "session=user-A; Path=/"}
+            )
+        seen.append(("B", request))
+        if request.url.path == "/projects/example/summary":
+            identity_arrived.set()
+            await asyncio.wait_for(a_finished.wait(), timeout=2)
+            return httpx.Response(
+                200, json=payload("project"), headers={"Set-Cookie": "public=caller-B; Path=/"}
+            )
+        return public_upstream(request)
+
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://upstream.test"
+        ) as upstream,
+        httpx.AsyncClient(transport=transport, base_url="http://platform.test") as caller_a,
+        httpx.AsyncClient(transport=transport, base_url="http://platform.test") as caller_b,
+    ):
+        app.dependency_overrides[get_http_client] = lambda: upstream
+        page = asyncio.create_task(caller_b.get("/projects/example/page"))
+        await asyncio.wait_for(identity_arrived.wait(), timeout=2)
+
+        first = await caller_a.get("/runs/example", headers={"Authorization": "Bearer user-A"})
+        assert upstream.cookies.get("session") == "user-A"  # precondition
+        a_finished.set()
+        page_response = await asyncio.wait_for(page, timeout=2)
+        assert upstream.cookies.get("public") == "caller-B"  # precondition
+        second = await caller_a.get("/runs/example", headers={"Authorization": "Bearer user-A"})
+
+    assert first.status_code == second.status_code == 200
+    assert page_response.status_code == 200, page_response.text
+    assert [caller for caller, _ in seen] == ["B", "A", "B", "B", "A"]
+    for caller, request in seen:
+        assert "cookie" not in request.headers, (caller, request.url.path)
+        if caller == "A":
+            assert request.headers["authorization"] == "Bearer user-A"
+        else:
+            assert "authorization" not in request.headers, request.url.path

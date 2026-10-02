@@ -3,6 +3,8 @@
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
 
@@ -30,6 +32,15 @@ UPSTREAM_TIMEOUT_SECONDS = 30.0
 # Consumer-facing detail for a body that exceeds the configured cap. Sanitized:
 # it names the resource class and nothing about the limit, the body, or upstream.
 _OVERSIZE_DETAIL = "The upstream service returned a {resource} that is too large to load."
+
+# The complete header set of a platform-owned fetch. Accept-Encoding and
+# User-Agent are the values the pooled client sent before requests were built
+# afresh; the decoded-size cap below is what makes compression safe to accept.
+_PUBLIC_FETCH_HEADERS = {
+    "accept": "application/json",
+    "accept-encoding": "gzip, deflate",
+    "user-agent": f"python-httpx/{httpx.__version__}",
+}
 
 
 def upstream_url(*segments: str) -> str:
@@ -93,11 +104,34 @@ def _failure(
 async def fetch_upstream_json(
     client: httpx.AsyncClient, path: str, *, resource: str, page: str | None = None
 ) -> dict[str, Any]:
-    """Fetch one JSON object without caller headers or query parameters."""
+    """Fetch one JSON object without caller headers, query parameters or pooled-client state."""
     payload = await fetch_upstream_json_value(client, path, resource=resource, page=page)
     if not isinstance(payload, dict):
         raise HTTPException(502, f"The upstream service returned an unexpected {resource}.")
     return payload
+
+
+@asynccontextmanager
+async def _public_stream(client: httpx.AsyncClient, path: str) -> AsyncIterator[httpx.Response]:
+    """Stream one GET that carries nothing from the pooled client but its pool.
+
+    The client is shared with the legacy runs proxy, and httpx's ``send`` stores
+    every upstream ``Set-Cookie`` in the client's jar -- the proxy's included.
+    ``client.stream`` would replay that jar, plus the client's default headers,
+    auth and query parameters, on this anonymous request. So the request is
+    built afresh: the client contributes only its base URL (stripped of query
+    defaults and credentials) and timeout, and the jar is never read. Clearing
+    the jar instead would race concurrent requests.
+    """
+    url = client.build_request("GET", path).url.copy_with(query=None, userinfo=b"")
+    request = httpx.Request(
+        "GET", url, headers=_PUBLIC_FETCH_HEADERS, extensions={"timeout": client.timeout.as_dict()},
+    )
+    response = await client.send(request, stream=True, follow_redirects=False, auth=None)
+    try:
+        yield response
+    finally:
+        await response.aclose()
 
 
 async def _read_capped_body(response: httpx.Response, resource: str, limit: int) -> bytes:
@@ -134,7 +168,7 @@ async def fetch_upstream_json_value(
     limit = get_settings().upstream_max_response_bytes
     started = time.monotonic()
     try:
-        async with client.stream("GET", path) as response:
+        async with _public_stream(client, path) as response:
             if response.status_code >= 500:
                 raise _failure(
                     502, f"The upstream service failed while loading the {resource}.",

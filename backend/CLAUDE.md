@@ -324,6 +324,17 @@ every buffered upstream body the API relays, including the legacy runs proxy's o
 responses. Both consumers measure the bytes they actually read, so the one setting is
 enforced without either consumer widening the other's semantics.
 
+Every platform-owned upstream fetch -- these pages and the typed `GET /runs/{id}/summary`
+and `GET /projects/{id}/summary` -- is built afresh in `common/upstream.py`, never through
+the pooled client's request builder. That client is shared with the legacy runs proxy, and
+httpx stores every upstream `Set-Cookie` in its jar, so `client.get()`/`client.stream()`
+would replay one caller's session (plus any client default headers, auth or query
+parameters) on another caller's anonymous request. A public fetch takes only the client's
+base URL (query defaults and URL credentials stripped) and timeout, sends a fixed
+`Accept`/`Accept-Encoding`/`User-Agent` set, never follows redirects, and never reads the
+jar. Clearing the jar instead would race concurrent requests. Any new consumer of
+`get_http_client()` must build its requests the same way.
+
 Both pages also carry a total time budget derived from the shared per-phase httpx timeout
 (`common/upstream.UPSTREAM_TIMEOUT_SECONDS`, 30 s) and the assembler's real serial depth —
 two hops for the project page (identity → embedded run id → satellites) and one for the run
