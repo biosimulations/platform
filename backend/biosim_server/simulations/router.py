@@ -17,6 +17,7 @@ from biosim_server.summaries.mapping import map_run_summary
 from biosim_server.summaries.models import RunSummary
 from biosim_server.dependencies import (
     get_http_client,
+    get_legacy_http_client,
     get_temporal_client,
     get_biosim_service,
     get_omex_database_service,
@@ -81,7 +82,7 @@ _LEGACY_DESCRIPTION = (
 )
 async def get_legacy_runs_summary(
     request: Request,
-    client: httpx.AsyncClient = Depends(get_http_client),
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
 ) -> Response:
     return await proxy_run(client, request, "summary", "summary")
 
@@ -93,7 +94,7 @@ async def get_legacy_runs_summary(
 )
 async def get_legacy_run(
     request: Request, run_id: str,
-    client: httpx.AsyncClient = Depends(get_http_client),
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
 ) -> Response:
     return await proxy_run(client, request, "get", run_id)
 
@@ -115,7 +116,7 @@ async def get_legacy_run(
 )
 async def update_legacy_run(
     request: Request, run_id: str,
-    client: httpx.AsyncClient = Depends(get_http_client),
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
 ) -> Response:
     return await proxy_run(client, request, "update", run_id)
 
@@ -127,7 +128,7 @@ async def update_legacy_run(
 )
 async def delete_legacy_run(
     request: Request, run_id: str,
-    client: httpx.AsyncClient = Depends(get_http_client),
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
 ) -> Response:
     return await proxy_run(client, request, "delete", run_id)
 
@@ -135,11 +136,14 @@ async def delete_legacy_run(
 @run_summary_router.get(
     "/{run_id}/download", response_class=Response, operation_id="download-legacy-run",
     description=_LEGACY_DESCRIPTION + " Streams raw binary bytes, including error bodies. Range and conditional headers are forwarded; upstream support determines the result.",
-    responses=_LEGACY_RESPONSES,
+    responses={**_LEGACY_RESPONSES, 503: {
+        "description": "Too many downloads are already in progress on this server; nothing was sent upstream. Retry after the indicated delay.",
+        "headers": {"Retry-After": {"description": "Seconds to wait before retrying.", "schema": {"type": "integer"}}},
+    }},
 )
 async def download_legacy_run(
     request: Request, run_id: str,
-    client: httpx.AsyncClient = Depends(get_http_client),
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
 ) -> Response:
     return await proxy_run(client, request, "download", run_id, "download")
 
@@ -151,7 +155,7 @@ async def download_legacy_run(
 )
 async def validate_legacy_run(
     request: Request, run_id: str,
-    client: httpx.AsyncClient = Depends(get_http_client),
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
 ) -> Response:
     return await proxy_run(client, request, "validate", run_id, "validate")
 

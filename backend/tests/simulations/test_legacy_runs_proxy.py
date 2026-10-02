@@ -9,7 +9,7 @@ from typing import Any, Self, SupportsIndex
 
 import httpx
 import pytest
-from fastapi import Request
+from fastapi import HTTPException, Request
 from starlette.types import Message
 
 from biosim_server.api.main import app
@@ -22,7 +22,8 @@ from biosim_server.biosim_runs.legacy_api import (
 from biosim_server.common.ratelimit import page_rate_limit
 from biosim_server.common.upstream import upstream_url
 from biosim_server.config import get_settings
-from biosim_server.dependencies import get_http_client
+from biosim_server import dependencies
+from biosim_server.dependencies import get_http_client, get_legacy_http_client
 from biosim_server.log_config import JsonFormatter
 from tests.pages.test_mapping import satellite
 from tests.summaries.test_mapping import payload
@@ -63,12 +64,27 @@ def clear_overrides() -> Iterator[None]:
     app.dependency_overrides.update(previous)
 
 
+@pytest.fixture(autouse=True)
+def no_leaked_download_slots() -> Iterator[None]:
+    """Every download path in this module must give its concurrency slot back."""
+    assert legacy_api_module._active_downloads == 0
+    yield
+    assert legacy_api_module._active_downloads == 0
+
+
 def clients(
     handler: Callable[[httpx.Request], httpx.Response],
 ) -> tuple[httpx.AsyncClient, httpx.AsyncClient]:
+    """A caller for the mounted app, with both upstream clients resolved to one.
+
+    Production gives the proxy its own client; resolving both to the same one here
+    is the worst case for request-level isolation, which the cookie tests rely on.
+    ``test_proxy_and_public_routes_use_separate_clients`` pins the real wiring.
+    """
     upstream = httpx.AsyncClient(
         transport=httpx.MockTransport(handler), base_url="https://upstream.test"
     )
+    app.dependency_overrides[get_legacy_http_client] = lambda: upstream
     app.dependency_overrides[get_http_client] = lambda: upstream
     caller = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://platform.test"
@@ -264,8 +280,6 @@ async def test_path_quoting(segment: str) -> None:
 
 
 async def test_literal_dot_helper_rejects() -> None:
-    from fastapi import HTTPException
-
     for segment in (".", ".."):
         with pytest.raises(HTTPException) as exc:
             upstream_url("runs", segment)
@@ -569,6 +583,7 @@ async def test_openapi_opaque_patch_and_upstream_authorization_contract() -> Non
         assert "Caller Authorization" in operation["description"]
         assert "default" in operation["responses"]
         assert "content" not in operation["responses"]["200"]  # no invented JSON schema
+    assert "503" in spec["paths"]["/runs/{run_id}/download"]["get"]["responses"]
     patch = spec["paths"]["/runs/{run_id}"]["patch"]
     assert "413" in patch["responses"]
     # Documents the upstream UpdateSimulationRun contract; the proxy still forwards raw bytes.
@@ -1019,6 +1034,8 @@ async def test_interleaved_callers_never_share_pooled_client_state(
         httpx.AsyncClient(transport=transport, base_url="http://platform.test") as caller_a,
         httpx.AsyncClient(transport=transport, base_url="http://platform.test") as caller_b,
     ):
+        # One client for both, as in clients(): isolation must not depend on the pools.
+        app.dependency_overrides[get_legacy_http_client] = lambda: upstream
         app.dependency_overrides[get_http_client] = lambda: upstream
         page = asyncio.create_task(caller_b.get("/projects/example/page"))
         await asyncio.wait_for(identity_arrived.wait(), timeout=2)
@@ -1039,3 +1056,125 @@ async def test_interleaved_callers_never_share_pooled_client_state(
             assert request.headers["authorization"] == "Bearer user-A"
         else:
             assert "authorization" not in request.headers, request.url.path
+
+
+
+# ---------------------------------------------------------------------------
+# Separate pools, and a cap on downloads that pin a pooled connection
+# ---------------------------------------------------------------------------
+# A download keeps its upstream connection for as long as its downstream reader
+# takes. Sharing the page/summary pool let ~100 slow anonymous downloads turn
+# those public routes into pool-timeout 504s.
+
+
+def _download_request() -> Request:
+    return Request({"type": "http", "method": "GET", "headers": [], "query_string": b""})
+
+
+async def _drain(response: Any) -> None:
+    async def receive() -> Message:
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        return None
+
+    await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+
+
+async def test_proxy_and_public_routes_use_separate_clients(unmetered_pages: None) -> None:
+    hits: list[tuple[str, str]] = []
+
+    def recording(name: str) -> httpx.AsyncClient:
+        def handler(request: httpx.Request) -> httpx.Response:
+            hits.append((name, request.url.path))
+            if request.url.path.endswith("/summary"):
+                return public_upstream(request)
+            return httpx.Response(200, stream=Chunks([b"{}"]))
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://upstream.test")
+
+    legacy, public = recording("legacy"), recording("public")
+    app.dependency_overrides[get_legacy_http_client] = lambda: legacy
+    app.dependency_overrides[get_http_client] = lambda: public
+    async with legacy, public, httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://platform.test"
+    ) as caller:
+        for method, path in ROUTES:
+            assert (await caller.request(method, path)).status_code == 200, path
+        assert (await caller.get("/runs/example/summary")).status_code == 200
+
+    assert [name for name, _ in hits[:len(ROUTES)]] == ["legacy"] * len(ROUTES)
+    assert hits[len(ROUTES):] == [("public", "/runs/example/summary")]
+
+
+async def test_the_proxy_pool_is_its_own_and_sized_for_the_download_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "legacy_download_max_concurrent", 5)
+    previous = dependencies.global_legacy_http_client, dependencies.global_http_client
+    dependencies.set_legacy_http_client(None)
+    dependencies.set_http_client(None)
+    try:
+        legacy, public = get_legacy_http_client(), get_http_client()
+        assert legacy is not public
+        legacy_pool = getattr(getattr(legacy, "_transport"), "_pool")
+        public_pool = getattr(getattr(public, "_transport"), "_pool")
+        assert legacy_pool is not public_pool
+        assert legacy_pool._max_connections == 5 + dependencies.LEGACY_POOL_HEADROOM
+        assert str(legacy.base_url) == str(public.base_url)
+        await legacy.aclose()
+        await public.aclose()
+    finally:
+        dependencies.set_legacy_http_client(previous[0])
+        dependencies.set_http_client(previous[1])
+
+
+async def test_downloads_beyond_the_cap_are_refused_before_contacting_upstream(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(get_settings(), "legacy_download_max_concurrent", 1)
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, stream=Chunks([b"archive"]))
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://upstream.test"
+    ) as upstream:
+        held = await proxy_run(upstream, _download_request(), "download", "a", "download")
+        assert legacy_api_module._active_downloads == 1
+
+        with caplog.at_level(logging.INFO), pytest.raises(HTTPException) as refused:
+            await proxy_run(upstream, _download_request(), "download", "b", "download")
+        assert refused.value.status_code == 503
+        assert refused.value.headers is not None and "Retry-After" in refused.value.headers
+        assert seen == ["/runs/a/download"], "a refused download must not reach upstream"
+        outcomes = [getattr(r, "legacy_outcome", None) for r in caplog.records]
+        assert "busy" in outcomes
+
+        # Metadata operations are not downloads and are never refused by the cap.
+        assert (await proxy_run(upstream, _download_request(), "get", "c")).status_code == 200
+
+        await _drain(held)  # finishing the held download frees its slot
+        assert legacy_api_module._active_downloads == 0
+        await _drain(await proxy_run(upstream, _download_request(), "download", "d", "download"))
+    assert seen == ["/runs/a/download", "/runs/c", "/runs/d/download"]
+
+
+@pytest.mark.parametrize("error", [httpx.ConnectError, httpx.ReadTimeout])
+async def test_a_download_slot_is_released_when_the_upstream_fails(
+    monkeypatch: pytest.MonkeyPatch, error: type[httpx.RequestError],
+) -> None:
+    monkeypatch.setattr(get_settings(), "legacy_download_max_concurrent", 1)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise error("unavailable", request=request)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://upstream.test"
+    ) as upstream:
+        for _ in range(2):  # the second attempt proves the first gave its slot back
+            with pytest.raises(HTTPException) as failed:
+                await proxy_run(upstream, _download_request(), "download", "a", "download")
+            assert failed.value.status_code in (502, 504)
+            assert legacy_api_module._active_downloads == 0

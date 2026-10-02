@@ -22,7 +22,7 @@ from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkf
 from biosim_server.common.auth import get_current_user
 from biosim_server.rbac_demo.models import PublicMessage
 from biosim_server.version import __version__
-from biosim_server.dependencies import get_http_client
+from biosim_server.dependencies import get_legacy_http_client
 from tests.fixtures.auth_fixtures import make_authenticated_user
 
 _PATH_PARAMS = ("processing_id", "workflow_id", "run_id", "project_id")
@@ -331,11 +331,11 @@ def _probe_get_legacy_runs_summary(client: TestClient) -> None:
         raise httpx.ConnectError("unavailable", request=request)
 
     upstream = httpx.AsyncClient(transport=httpx.MockTransport(unavailable), base_url="https://upstream.test")
-    app.dependency_overrides[get_http_client] = lambda: upstream
+    app.dependency_overrides[get_legacy_http_client] = lambda: upstream
     try:
         _assert_status(client.get("/runs/summary"), 502)
     finally:
-        app.dependency_overrides.pop(get_http_client, None)
+        app.dependency_overrides.pop(get_legacy_http_client, None)
         # MockTransport owns no sockets, but close the client lifecycle as well.
         import asyncio
         asyncio.run(upstream.aclose())

@@ -240,9 +240,11 @@ These point at the public biosimulations.org services. Defaults are production; 
 
 ### Legacy runs proxy
 
-Six transparent operations share the existing pooled HTTP client and
-`BIOSIMULATIONS_API_BASE_URL`: GET/PATCH/DELETE `/runs/{id}`, GET
-`/runs/{id}/download`, GET `/runs/{id}/validate`, and GET `/runs/summary`.
+Six transparent operations against `BIOSIMULATIONS_API_BASE_URL`: GET/PATCH/DELETE
+`/runs/{id}`, GET `/runs/{id}/download`, GET `/runs/{id}/validate`, and GET
+`/runs/summary`. They use their own pooled client (`dependencies.get_legacy_http_client`),
+separate from the page/summary client, so proxied traffic cannot exhaust the pool the
+public pages need.
 `GET /runs/{id}/summary` keeps the existing typed `RunSummary` projection,
 credential/query isolation, size cap and sanitized upstream errors.
 
@@ -269,7 +271,14 @@ and PATCH additionally Content-Type. Connection-nominated headers are stripped.
 Host/framing are generated afresh; arbitrary X-* and proxy headers are not sent.
 
 Downloads stream raw bytes (also for non-success bodies), remain open through
-downstream iteration, and close on completion, disconnect or failure. Upstream
+downstream iteration, and close on completion, disconnect or failure. Because each one
+holds a pooled connection for as long as its reader takes, at most
+`LEGACY_DOWNLOAD_MAX_CONCURRENT` (default **32**, per pod) run at once; beyond that a
+download is refused with **503** + `Retry-After: 5` before anything is sent upstream
+(`legacy_outcome: busy`). The proxy pool holds that many plus 32, so the other
+operations, which buffer their bodies and so are never pinned by a slow reader, keep
+headroom. A caller who holds every slot can still deny *downloads* to others (there is no
+per-IP share); the cap bounds the damage to the download path. Upstream
 Content-Encoding is preserved with raw bytes so compression cannot invalidate
 Content-Length, Content-Range or ETag. Accept-Encoding is explicitly `identity`,
 but compressed responses are still handled correctly. Metadata responses (all
@@ -317,7 +326,7 @@ bound what they will buffer from the upstream API this project does not own.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `UPSTREAM_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Hard ceiling on one upstream response body, on a different measurement basis per consumer. **Page aggregations** (this section): one upstream JSON body's **decoded** size, measured on the bytes actually read through `aiter_bytes()` (`common/upstream.py`), so neither a declared `Content-Length` nor `Content-Encoding` can slip past it. **Legacy runs proxy** (see Legacy runs proxy): buffered non-download responses are counted on **raw** bytes through `aiter_raw()` (`biosim_runs/legacy_api.py`), because the proxy relays raw bytes and never decodes them — so a compressed body is capped on the wire, not after expansion. In both consumers a declared `Content-Length` decides nothing, the stream is abandoned the moment the cap is crossed, and a breach is a sanitized **502** (`too_large` in the logs) — never a truncated payload. Provisional pending the representative-payload measurements the page audit asks for; raise it per cluster if a legitimate response exceeds it. |
+| `UPSTREAM_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Hard ceiling on one upstream response body, on a different measurement basis per consumer. **Page aggregations** (this section): one upstream JSON body's **decoded** size. Fetches ask for `Accept-Encoding: identity`; a body compressed anyway (gzip/deflate) is inflated in 64 KiB steps in `common/upstream.py`, each checked against the cap before it is kept, so peak memory is the cap plus one step whatever the compression ratio (httpx's own decoder inflated a whole network read first, ~64 MiB from one 64 KiB read). Any other or stacked `Content-Encoding` is a 502. **Legacy runs proxy** (see Legacy runs proxy): buffered non-download responses are counted on **raw** bytes through `aiter_raw()` (`biosim_runs/legacy_api.py`), because the proxy relays raw bytes and never decodes them — so a compressed body is capped on the wire, not after expansion. In both consumers a declared `Content-Length` decides nothing, the stream is abandoned the moment the cap is crossed, and a breach is a sanitized **502** (`too_large` in the logs) — never a truncated payload. Provisional pending the representative-payload measurements the page audit asks for; raise it per cluster if a legitimate response exceeds it. |
 
 `UPSTREAM_MAX_RESPONSE_BYTES` is not page-specific: it is the single shared ceiling for
 every buffered upstream body the API relays, including the legacy runs proxy's opaque
@@ -326,14 +335,15 @@ enforced without either consumer widening the other's semantics.
 
 Every platform-owned upstream fetch -- these pages and the typed `GET /runs/{id}/summary`
 and `GET /projects/{id}/summary` -- is built afresh in `common/upstream.py`, never through
-the pooled client's request builder. That client is shared with the legacy runs proxy, and
-httpx stores every upstream `Set-Cookie` in its jar, so `client.get()`/`client.stream()`
-would replay one caller's session (plus any client default headers, auth or query
-parameters) on another caller's anonymous request. A public fetch takes only the client's
-base URL (query defaults and URL credentials stripped) and timeout, sends a fixed
-`Accept`/`Accept-Encoding`/`User-Agent` set, never follows redirects, and never reads the
-jar. Clearing the jar instead would race concurrent requests. Any new consumer of
-`get_http_client()` must build its requests the same way.
+the pooled client's request builder. httpx stores every upstream `Set-Cookie` in a client's
+jar, and a pooled client serves many callers (this one was shared with the legacy runs proxy
+until the proxy got its own), so `client.get()`/`client.stream()` would replay one caller's
+session (plus any client default headers, auth or query parameters) on another caller's
+anonymous request. A public fetch takes only the client's base URL (query defaults and URL
+credentials stripped) and timeout, sends a fixed `Accept`/`Accept-Encoding: identity`/
+`User-Agent` set, never follows redirects, and never reads the jar. Clearing the jar instead
+would race concurrent requests. Any new consumer of `get_http_client()` must build its
+requests the same way.
 
 Both pages also carry a total time budget derived from the shared per-phase httpx timeout
 (`common/upstream.UPSTREAM_TIMEOUT_SECONDS`, 30 s) and the assembler's real serial depth —

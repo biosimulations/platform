@@ -433,6 +433,8 @@ class Settings(BaseSettings):
     # SHARED-MAJ-001: hard ceiling on the *decoded* body of one upstream JSON
     # fetch (bytes). The page assemblers buffer whatever biosimulations.org
     # returns for a files/specifications/logs resource, and nothing bounded it.
+    # Compressed bodies are inflated in bounded steps against it
+    # (common/upstream._read_capped_body), so it bounds memory, not just the buffer.
     # Second consumer: the legacy runs proxy's buffered responses (non-download,
     # non-204/304). The proxy measures *raw* bytes via aiter_raw(), not decoded
     # bytes, because it relays raw bytes and never decodes them -- that is what
@@ -445,6 +447,15 @@ class Settings(BaseSettings):
     # would bind an unrelated environment variable.
     upstream_max_response_bytes: int = Field(
         default=16 * 1024 * 1024, gt=0, alias="UPSTREAM_MAX_RESPONSE_BYTES"
+    )
+    # Legacy runs proxy downloads in flight at once, per pod. A download keeps its
+    # pooled upstream connection for as long as the caller takes to read it, so a
+    # request *rate* does not bound them; this count does. Beyond it, a download is
+    # refused with 503 + Retry-After before anything is sent upstream. The proxy's
+    # own connection pool (dependencies.get_legacy_http_client) is sized from it,
+    # so metadata calls keep headroom however many downloads are pinned.
+    legacy_download_max_concurrent: int = Field(
+        default=32, gt=0, alias="LEGACY_DOWNLOAD_MAX_CONCURRENT"
     )
 
     simdata_api_base_url: str = "https://simdata.api.biosimulations.org"

@@ -6,7 +6,9 @@ These pin the cap's *semantics*, which is where an implementation quietly goes
 wrong:
 
   * it is a bound on **decoded** bytes -- a small gzip body that expands past the
-    cap is rejected, so compression is not a way around it;
+    cap is rejected, so compression is not a way around it -- and on the memory
+    used to find that out: compressed input is inflated in bounded steps, so a
+    high-ratio body cannot materialize a huge chunk before the check runs;
   * ``Content-Length`` is never trusted -- a lying or absent header changes
     nothing, because the decision is made from the bytes actually read;
   * the stream is abandoned and closed the moment the cap is crossed, so the
@@ -14,14 +16,17 @@ wrong:
   * the caller-visible failure is a sanitized 502, never a truncated payload.
 
 The same helper must also build each request afresh -- no cookie jar, default
-credentials or query defaults from the pooled client it shares with the legacy
-runs proxy -- and close every response however the fetch ends.
+credentials or query defaults from the pooled client it is handed -- and close
+every response however the fetch ends.
 
 ``httpx.AsyncByteStream`` stands in for a chunked/chunk-y upstream body; no
 network, no real upstream.
 """
 
 import asyncio
+import gzip
+import tracemalloc
+import zlib
 from collections.abc import AsyncIterator, Buffer, Iterable
 from typing import Any, Self, SupportsIndex
 
@@ -251,6 +256,8 @@ async def test_a_public_fetch_sends_only_its_own_headers_to_the_configured_base(
     assert str(request.url) == "https://upstream.test/api/v1/files/x"
     assert set(request.headers) == {"host", "accept", "accept-encoding", "user-agent"}
     assert request.headers["accept"] == "application/json"
+    # Uncompressed is requested so that what is read is what is held.
+    assert request.headers["accept-encoding"] == "identity"
     assert request.extensions["timeout"] == timeout.as_dict()
 
 
@@ -353,3 +360,93 @@ async def test_cancellation_mid_body_propagates_and_closes_the_response(cap: int
         with pytest.raises(asyncio.CancelledError):
             await fetch
     assert body.closed
+
+
+# ---------------------------------------------------------------------------
+# Compressed bodies: bounded inflation, not just a bounded buffer
+# ---------------------------------------------------------------------------
+
+_MiB = 1024 * 1024
+_UNEXPECTED = "The upstream service returned an unexpected run files."
+
+
+def _deflate(data: bytes) -> bytes:
+    return zlib.compress(data, 9)
+
+
+@pytest.mark.asyncio
+async def test_inflation_memory_is_bounded_by_the_cap_not_the_compression_ratio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 32 KiB gzip body that inflates to 32 MiB must not cost 32 MiB to reject.
+
+    Inflating a whole network read before checking its length peaked at ~77 MiB
+    here with a 1 MiB cap: the buffer was bounded, the memory was not.
+    """
+    monkeypatch.setattr(get_settings(), "upstream_max_response_bytes", _MiB)
+    compressed = gzip.compress(b'{"logs": "' + b"x" * (32 * _MiB) + b'"}', compresslevel=9)
+    assert len(compressed) < 64 * 1024, "one network read's worth on the wire"
+
+    async with _client(_Body([compressed]), headers={"content-encoding": "gzip"}) as client:
+        tracemalloc.start()
+        try:
+            with pytest.raises(HTTPException) as error:
+                await fetch_upstream_json_value(client, "/logs/x", resource="run logs")
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    assert error.value.status_code == 502
+    assert error.value.detail == "The upstream service returned a run logs that is too large to load."
+    assert peak < 4 * _MiB, f"peak {peak / _MiB:.1f} MiB for a 1 MiB cap"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding,compress", [
+    ("gzip", gzip.compress), ("x-gzip", gzip.compress), ("deflate", _deflate), ("GZIP", gzip.compress),
+])
+@pytest.mark.parametrize("split", [1, 7, 4096])
+async def test_compressed_bodies_within_the_cap_decode_exactly(
+    encoding: str, compress: Any, split: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Many inflate steps and arbitrary read boundaries reassemble the exact body, at the cap."""
+    limit = 300_000  # several inflate steps
+    monkeypatch.setattr(get_settings(), "upstream_max_response_bytes", limit)
+    decoded = b'{"logs": "' + b"ab" * ((limit - 12) // 2) + b'"}'
+    assert len(decoded) == limit
+    compressed = compress(decoded)
+    chunks = [compressed[i:i + split] for i in range(0, len(compressed), split)]
+
+    async with _client(_Body(chunks), headers={"content-encoding": encoding}) as client:
+        payload = await fetch_upstream_json_value(client, "/files/x", resource=RESOURCE)
+    assert payload == {"logs": "ab" * ((limit - 12) // 2)}
+
+    one_over = b'{"logs": "' + b"a" * (limit - 11) + b'"}'
+    async with _client(_Body([compress(one_over)]), headers={"content-encoding": encoding}) as client:
+        with pytest.raises(HTTPException) as error:
+            await fetch_upstream_json_value(client, "/files/x", resource=RESOURCE)
+    assert error.value.detail == _OVERSIZE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding,body", [
+    ("br", b"[]"),                                   # not offered, not supported
+    ("gzip, gzip", gzip.compress(gzip.compress(b"[]"))),  # stacked codings
+    ("gzip", b"definitely not gzip"),                # corrupt
+    ("deflate", b"\x00\x01 not zlib"),              # corrupt
+])
+async def test_an_undecodable_body_is_a_sanitized_502(cap: int, encoding: str, body: bytes) -> None:
+    stream = _Body([body])
+    async with _client(stream, headers={"content-encoding": encoding}) as client:
+        with pytest.raises(HTTPException) as error:
+            await fetch_upstream_json_value(client, "/files/x", resource=RESOURCE)
+    assert error.value.status_code == 502
+    assert error.value.detail == _UNEXPECTED
+    assert stream.closed
+
+
+@pytest.mark.asyncio
+async def test_identity_and_absent_encodings_are_read_as_is(cap: int) -> None:
+    for headers in ({}, {"content-encoding": "identity"}, {"content-encoding": " Identity "}):
+        async with _client(_Body([b'{"a": ', b"1}"]), headers=headers) as client:
+            assert await fetch_upstream_json_value(client, "/x", resource=RESOURCE) == {"a": 1}

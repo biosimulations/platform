@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+import zlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -33,14 +34,32 @@ UPSTREAM_TIMEOUT_SECONDS = 30.0
 # it names the resource class and nothing about the limit, the body, or upstream.
 _OVERSIZE_DETAIL = "The upstream service returned a {resource} that is too large to load."
 
-# The complete header set of a platform-owned fetch. Accept-Encoding and
-# User-Agent are the values the pooled client sent before requests were built
-# afresh; the decoded-size cap below is what makes compression safe to accept.
+# The complete header set of a platform-owned fetch. An uncompressed body is
+# requested so that what is read is what is held; User-Agent is the value the
+# pooled client sent before requests were built afresh.
 _PUBLIC_FETCH_HEADERS = {
     "accept": "application/json",
-    "accept-encoding": "gzip, deflate",
+    "accept-encoding": "identity",
     "user-agent": f"python-httpx/{httpx.__version__}",
 }
+
+# A server may compress regardless, so compressed bodies are inflated here rather
+# than by httpx, which inflates each network read whole before its length can be
+# checked: at ~1000x, one 64 KiB read became ~64 MiB in memory however small the
+# cap. No inflate step may produce more than this.
+_INFLATE_STEP_BYTES = 64 * 1024
+
+# zlib window bits for each supported Content-Encoding: a gzip header or a zlib
+# wrapper. Anything else, including stacked codings, is refused (see _inflater).
+_INFLATE_WBITS = {
+    "gzip": zlib.MAX_WBITS | 16,
+    "x-gzip": zlib.MAX_WBITS | 16,
+    "deflate": zlib.MAX_WBITS,
+}
+
+
+class _UndecodableBody(Exception):
+    """An unsupported Content-Encoding, or compressed bytes that do not inflate."""
 
 
 def upstream_url(*segments: str) -> str:
@@ -115,13 +134,13 @@ async def fetch_upstream_json(
 async def _public_stream(client: httpx.AsyncClient, path: str) -> AsyncIterator[httpx.Response]:
     """Stream one GET that carries nothing from the pooled client but its pool.
 
-    The client is shared with the legacy runs proxy, and httpx's ``send`` stores
-    every upstream ``Set-Cookie`` in the client's jar -- the proxy's included.
-    ``client.stream`` would replay that jar, plus the client's default headers,
-    auth and query parameters, on this anonymous request. So the request is
-    built afresh: the client contributes only its base URL (stripped of query
-    defaults and credentials) and timeout, and the jar is never read. Clearing
-    the jar instead would race concurrent requests.
+    httpx's ``send`` stores every upstream ``Set-Cookie`` in the client's jar, and
+    a pooled client serves many callers (this one was once shared with the legacy
+    runs proxy, which now has its own). ``client.stream`` would replay that jar,
+    plus the client's default headers, auth and query parameters, on this
+    anonymous request. So the request is built afresh: the client contributes only
+    its base URL (stripped of query defaults and credentials) and timeout, and the
+    jar is never read. Clearing the jar instead would race concurrent requests.
     """
     url = client.build_request("GET", path).url.copy_with(query=None, userinfo=b"")
     request = httpx.Request(
@@ -134,20 +153,66 @@ async def _public_stream(client: httpx.AsyncClient, path: str) -> AsyncIterator[
         await response.aclose()
 
 
-async def _read_capped_body(response: httpx.Response, resource: str, limit: int) -> bytes:
-    """Read the decoded body, refusing to buffer more than ``limit`` bytes.
+def _inflater(content_encoding: str) -> "zlib._Decompress | None":
+    """A decompressor for the response's coding, or None for an uncompressed body.
 
-    ``aiter_bytes`` yields *decoded* bytes, so a gzip bomb or a mis-declared
-    Content-Length cannot get past the cap: what is measured is what would have
-    to be held in memory and parsed. The stream is abandoned as soon as the cap
-    is crossed, and the caller's ``async with`` closes it.
+    Only what httpx itself decoded unconditionally is supported (gzip, deflate),
+    plus the registered ``x-gzip`` alias. A coding nobody asked for (``br`` and the
+    like) or a stack of them is an unexpected body, never guessed at.
     """
+    codings = [coding.strip().lower() for coding in content_encoding.split(",")]
+    codings = [coding for coding in codings if coding and coding != "identity"]
+    if not codings:
+        return None
+    if len(codings) == 1 and codings[0] in _INFLATE_WBITS:
+        return zlib.decompressobj(_INFLATE_WBITS[codings[0]])
+    raise _UndecodableBody("unsupported Content-Encoding")
+
+
+async def _read_capped_body(response: httpx.Response, resource: str, limit: int) -> bytes:
+    """Read the decoded body without ever holding more than ``limit`` bytes of it.
+
+    The raw stream is read and any compression inflated at most
+    ``_INFLATE_STEP_BYTES`` at a time, each step checked against the cap before it
+    is kept. Peak memory is therefore the cap plus one step, whatever the
+    compression ratio, and Content-Length decides nothing. The stream is abandoned
+    as soon as the cap is crossed, and the caller's ``async with`` closes it.
+    """
+    if response.is_stream_consumed:
+        # MockTransport may supply an already buffered (and decoded) body. Real
+        # responses always take the stream path below; checking here keeps the
+        # cap from having a test-only hole.
+        if len(response.content) > limit:
+            raise HTTPException(502, _OVERSIZE_DETAIL.format(resource=resource))
+        return response.content
+    inflater = _inflater(response.headers.get("content-encoding", ""))
     body = bytearray()
-    async for chunk in response.aiter_bytes():
+
+    def keep(chunk: bytes) -> None:
         # Checked before appending, so the buffer itself never exceeds ``limit``.
         if len(body) + len(chunk) > limit:
             raise HTTPException(502, _OVERSIZE_DETAIL.format(resource=resource))
-        body += chunk
+        body.extend(chunk)
+
+    async for raw in response.aiter_raw():
+        if inflater is None:
+            keep(raw)
+            continue
+        pending = raw
+        while pending:
+            try:
+                chunk = inflater.decompress(pending, _INFLATE_STEP_BYTES)
+            except zlib.error as exc:
+                raise _UndecodableBody("compressed body does not inflate") from exc
+            if not chunk and inflater.unconsumed_tail == pending:
+                raise _UndecodableBody("compressed body made no progress")
+            pending = inflater.unconsumed_tail
+            keep(chunk)
+    if inflater is not None:
+        # A step can stop mid-output with every input byte consumed; drain it.
+        # A truncated stream simply ends short and fails JSON validation.
+        while not inflater.eof and (chunk := inflater.decompress(b"", _INFLATE_STEP_BYTES)):
+            keep(chunk)
     return bytes(body)
 
 
@@ -157,7 +222,8 @@ async def fetch_upstream_json_value(
     """Fetch an object or array with the same isolated request and error policy.
 
     The body is streamed and capped at ``UPSTREAM_MAX_RESPONSE_BYTES`` decoded
-    bytes rather than buffered whole and parsed: three or four such responses are
+    bytes -- inflated in bounded steps if compressed -- rather than buffered whole
+    and parsed: three or four such responses are
     assembled into one page, so an unbounded body is unbounded worker memory and
     synchronous CPU on the request path. Exceeding the cap is a sanitized 502 --
     never a truncated payload, and never a partially parsed contract.
@@ -193,6 +259,11 @@ async def fetch_upstream_json_value(
                 )
             try:
                 body = await _read_capped_body(response, resource, limit)
+            except _UndecodableBody as exc:
+                raise _failure(
+                    502, detail,
+                    resource=resource, outcome="invalid_body", page=page, started=started,
+                ) from exc
             except HTTPException:
                 _log_fetch(resource, "too_large", page=page, started=started, failure=True, bytes_read=limit)
                 raise

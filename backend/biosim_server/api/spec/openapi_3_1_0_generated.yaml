@@ -420,6 +420,14 @@ paths:
           description: Could not reach or read the legacy runs service.
         '504':
           description: Timed out while contacting the legacy runs service.
+        '503':
+          description: Too many downloads are already in progress on this server;
+            nothing was sent upstream. Retry after the indicated delay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
   /runs/{run_id}/validate:
     get:
       tags:

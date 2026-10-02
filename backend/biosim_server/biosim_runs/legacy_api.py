@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
 from typing import Literal
 
@@ -55,6 +55,26 @@ class _SuppressProxyURL(logging.Filter):
 
 logging.getLogger("httpx").addFilter(_SuppressProxyURL())
 
+# Downloads in flight in this process. Each pins one pooled upstream connection
+# for as long as its downstream reader takes, so their *number*, not a request
+# rate, is what has to be bounded (config: LEGACY_DOWNLOAD_MAX_CONCURRENT). One
+# event loop mutates it, so a plain counter needs no lock.
+_active_downloads = 0
+_DOWNLOAD_RETRY_AFTER_SECONDS = 5
+
+
+def _claim_download_slot() -> bool:
+    global _active_downloads
+    if _active_downloads >= get_settings().legacy_download_max_concurrent:
+        return False
+    _active_downloads += 1
+    return True
+
+
+def _release_download_slot() -> None:
+    global _active_downloads
+    _active_downloads -= 1
+
 
 def _headers(headers: httpx.Headers, allowed: frozenset[str]) -> dict[str, str]:
     # Connection can nominate otherwise end-to-end headers as hop-by-hop.
@@ -83,6 +103,17 @@ class _Transfer:
         self.size = 0
         self.outcome = "ok"
         self.closed = False
+        # Released exactly once, by finish(), however the transfer ends.
+        self.on_finish: Callable[[], None] | None = None
+
+    def finish(self) -> None:
+        """Log the transfer and release whatever it holds. Called exactly once."""
+        try:
+            self.log()
+        finally:
+            release, self.on_finish = self.on_finish, None
+            if release is not None:
+                release()
 
     def log(self) -> None:
         logger.info(
@@ -105,7 +136,7 @@ class _Transfer:
                 with anyio.CancelScope(shield=True):
                     await response.aclose()
             finally:
-                self.log()
+                self.finish()
 
 
 # Consumer-facing detail for a buffered response that exceeds the configured
@@ -208,6 +239,17 @@ async def proxy_run(
             allowed |= {"content-type"}
         headers = _headers(httpx.Headers(request.headers.raw), allowed)
         headers["accept-encoding"] = "identity"
+        if operation == "download":
+            # Refused before anything is sent upstream: the cap protects this
+            # pool's connections, so a refusal must not spend one.
+            if not _claim_download_slot():
+                transfer.outcome = "busy"
+                raise HTTPException(
+                    503,
+                    "Too many legacy run downloads are in progress. Retry shortly.",
+                    headers={"Retry-After": str(_DOWNLOAD_RETRY_AFTER_SECONDS)},
+                )
+            transfer.on_finish = _release_download_slot
         # Use the pooled client's base URL/timeout, but do not inherit its cookie
         # jar, default credentials, default query parameters or custom headers.
         url = client.build_request(request.method, path).url.copy_with(
@@ -272,9 +314,10 @@ async def proxy_run(
         transfer.outcome = "cancelled"
         raise
     except HTTPException:
-        # A specific outcome (the buffered-body cap's `too_large`) is recorded at
-        # its raise site; do not relabel it. A bare HTTPException here is
-        # upstream_url's 404 or the inbound PATCH 413, both client errors.
+        # A specific outcome (the buffered-body cap's `too_large`, the download
+        # cap's `busy`) is recorded at its raise site; do not relabel it. A bare
+        # HTTPException here is upstream_url's 404 or the inbound PATCH 413, both
+        # client errors.
         if transfer.outcome == "ok":
             transfer.outcome = "client_error"
         raise
@@ -284,4 +327,4 @@ async def proxy_run(
             if upstream is not None:
                 await transfer.close(upstream)
             else:
-                transfer.log()
+                transfer.finish()

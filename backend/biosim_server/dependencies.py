@@ -105,8 +105,9 @@ def get_mongo_client() -> AsyncIOMotorClient | None:
     global global_mongo_client
     return global_mongo_client
 
-#------ shared HTTP client for upstream biosimulations.org calls ------
-# One pooled AsyncClient for the whole process, injected as a FastAPI dependency
+#------ HTTP client for platform-owned biosimulations.org fetches ------
+# Pages and typed summaries (the legacy proxy has its own pool, below). One
+# pooled AsyncClient for the whole process, injected as a FastAPI dependency
 # so tests can swap in an httpx.MockTransport client via dependency_overrides.
 # Lazily constructed: the API creates it in init_standalone, but a test client
 # that skips lifespan still gets a usable one.
@@ -129,6 +130,38 @@ def get_http_client() -> httpx.AsyncClient:
             timeout=_HTTP_TIMEOUT,
         )
     return global_http_client
+
+#------ separate pooled client for the legacy runs proxy ------
+# Same upstream, its own connection pool. A proxied download holds its pooled
+# connection for as long as the caller takes to read it; on the shared pool,
+# ~100 slow anonymous downloads turned the public page/summary routes into
+# pool-timeout 504s. Here they can exhaust only the proxy's pool, which is sized
+# for the download cap (biosim_runs.legacy_api) plus headroom that the other
+# proxy operations -- buffered, so never pinned by a slow reader -- always keep.
+
+LEGACY_POOL_HEADROOM = 32
+
+global_legacy_http_client: httpx.AsyncClient | None = None
+
+def _new_legacy_http_client() -> httpx.AsyncClient:
+    settings = get_settings()
+    return httpx.AsyncClient(
+        base_url=settings.biosimulations_api_base_url.rstrip("/"),
+        timeout=_HTTP_TIMEOUT,
+        limits=httpx.Limits(
+            max_connections=settings.legacy_download_max_concurrent + LEGACY_POOL_HEADROOM
+        ),
+    )
+
+def set_legacy_http_client(http_client: httpx.AsyncClient | None) -> None:
+    global global_legacy_http_client
+    global_legacy_http_client = http_client
+
+def get_legacy_http_client() -> httpx.AsyncClient:
+    global global_legacy_http_client
+    if global_legacy_http_client is None:
+        global_legacy_http_client = _new_legacy_http_client()
+    return global_legacy_http_client
 
 #------ Temporal workflow client ------
 
@@ -164,6 +197,7 @@ async def init_standalone() -> None:
             timeout=_HTTP_TIMEOUT,
         )
     )
+    set_legacy_http_client(_new_legacy_http_client())
     set_temporal_client(await TemporalClient.connect(settings.temporal_service_url))
 
     # Local import avoids the simulations -> dependencies import cycle at module load.
@@ -208,6 +242,9 @@ async def shutdown_standalone() -> None:
     if global_http_client is not None:
         await global_http_client.aclose()
         set_http_client(None)
+    if global_legacy_http_client is not None:
+        await global_legacy_http_client.aclose()
+        set_legacy_http_client(None)
     # biosim_service = get_biosim_service()
     # if biosim_service:
     #     await biosim_service.close()

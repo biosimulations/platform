@@ -74,6 +74,7 @@ prerequisites are in `backend/CLAUDE.md` → "Password-reset enablement".
 | `RATE_LIMIT_PAGE_PER_WINDOW` | non-secret — page-aggregation budget, per pod, per client IP | `api.env` |
 | `RATE_LIMIT_PAGE_WINDOW_SECONDS` | non-secret — page-aggregation window, per pod | `api.env` |
 | `UPSTREAM_MAX_RESPONSE_BYTES` | non-secret — ceiling on one upstream response body (decoded for page aggregations; raw bytes for the legacy proxy's buffered responses), per pod | `api.env` |
+| `LEGACY_DOWNLOAD_MAX_CONCURRENT` | non-secret — legacy run downloads in flight at once, per pod (default `32`); beyond it 503 + `Retry-After` | `api.env` |
 
 None of these grant a capability by themselves -- they are policy numbers, not credentials
 -- so per this document's own rule ("a value is a secret if possessing it grants a
