@@ -192,6 +192,47 @@ async def test_token_endpoint_rate_limit_is_distinguishable(patch_client: Simple
 
 
 @pytest.mark.asyncio
+async def test_rate_limited_refresh_stays_rate_limited_inside_the_cooldown(
+    patch_client: SimpleNamespace,
+) -> None:
+    """A shared 429 must replay as a 429, not degrade to a 502 for later callers."""
+    endpoint = _Endpoint(token_response=httpx.Response(429, json={"message": "slow down"}))
+    patch_client.install(endpoint)
+
+    with pytest.raises(Auth0ManagementRateLimited):
+        await get_auth0_user("auth0|abc")
+    with pytest.raises(Auth0ManagementRateLimited) as replayed:
+        await get_auth0_user("auth0|abc")
+    assert endpoint.token_posts == 1
+    assert 1 <= replayed.value.retry_after <= int(mgmt._MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS)
+
+
+@pytest.mark.asyncio
+async def test_cooldown_failure_kind_follows_the_latest_failure(
+    patch_client: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 followed by an outage replays the outage, and success clears both."""
+    endpoint = _Endpoint(token_response=httpx.Response(429, json={"message": "slow down"}))
+    patch_client.install(endpoint)
+    with pytest.raises(Auth0ManagementRateLimited):
+        await get_auth0_user("auth0|abc")
+
+    monkeypatch.setattr(mgmt, "_token_refresh_failed_until", 0.0)
+    endpoint.token_response = _TRANSPORT_ERROR
+    with pytest.raises(Auth0ManagementUnavailable):
+        await get_auth0_user("auth0|abc")
+    with pytest.raises(Auth0ManagementUnavailable) as replayed:
+        await get_auth0_user("auth0|abc")
+    assert not isinstance(replayed.value, Auth0ManagementRateLimited)
+    assert endpoint.token_posts == 2
+
+    monkeypatch.setattr(mgmt, "_token_refresh_failed_until", 0.0)
+    endpoint.token_response = httpx.Response(200, json={"access_token": "token", "expires_in": 3600})
+    assert await get_auth0_user("auth0|abc") == {"name": "Jane"}
+    assert mgmt._token_refresh_failure_rate_limited is False
+
+
+@pytest.mark.asyncio
 async def test_operation_deadline_bounds_an_in_flight_request(
     patch_client: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -228,23 +269,48 @@ async def test_operation_deadline_covers_lock_wait(
     assert mgmt._token_refresh_lock.locked() is False
 
 
+async def _yield_until_lock_has_a_waiter(lock: asyncio.Lock) -> None:
+    """Run the loop until some task is queued on ``lock``.
+
+    ``patch_client`` replaces ``asyncio.sleep`` with an ``AsyncMock``, so
+    ``await asyncio.sleep(0)`` would return without yielding and a task created
+    just before it would never have started. A loop-scheduled future yields for
+    real. ``_waiters`` is CPython's private queue of pending ``acquire()`` calls;
+    reading it is the only way to prove the cancellation lands *during* lock
+    acquisition rather than before the task ever ran.
+    """
+    loop = asyncio.get_running_loop()
+    for _ in range(100):
+        if lock._waiters:
+            return
+        tick = loop.create_future()
+        loop.call_soon(tick.set_result, None)
+        await tick
+    raise AssertionError("the task never queued on the refresh lock")
+
+
 @pytest.mark.asyncio
 async def test_cancellation_while_waiting_leaves_the_lock_usable(
     patch_client: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_client.install(_Endpoint())
     monkeypatch.setattr(mgmt, "_MGMT_OPERATION_DEADLINE_SECONDS", 5.0)
-    await mgmt._token_refresh_lock.acquire()
+    lock = mgmt._token_refresh_lock
+    await lock.acquire()
     try:
         task = asyncio.create_task(get_auth0_user("auth0|abc"))
-        await asyncio.sleep(0)
+        await _yield_until_lock_has_a_waiter(lock)
+        assert not task.done()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        # The cancelled waiter left the queue rather than staying parked on it.
+        assert not lock._waiters
     finally:
-        mgmt._token_refresh_lock.release()
+        lock.release()
 
-    monkeypatch.setattr(mgmt, "_MGMT_OPERATION_DEADLINE_SECONDS", 5.0)
+    # Had the cancelled waiter been handed the lock, it would still be held here.
+    assert lock.locked() is False
     assert await get_auth0_user("auth0|abc") == {"name": "Jane"}
 
 

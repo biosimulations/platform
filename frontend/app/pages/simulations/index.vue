@@ -385,7 +385,10 @@ function change_pagination(new_page: number) {
 async function confirm_delete(run: SimulationRun) {
   const targetId = run.biosimulationsRunId || run.id
   try {
-    await $fetch(`${runtimeConfig.public.legacy_api_url}/runs/${targetId}`, { method: 'DELETE' })
+    // Through the Platform's legacy-runs proxy, not the legacy API directly: the auth0
+    // plugin attaches the caller's token only to Platform API requests, and the proxy
+    // forwards that Authorization header to the legacy service, which authorizes the delete.
+    await $fetch(`${runtimeConfig.public.api_url}/runs/${encodeURIComponent(targetId)}`, { method: 'DELETE' })
     toast.add({ title: 'Simulation run deleted.', color: 'success', icon: 'i-lucide-check' })
     deleting_row_id.value = null
     fetch_runs()

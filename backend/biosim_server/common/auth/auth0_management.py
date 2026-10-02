@@ -16,6 +16,7 @@ first and surface a 503 when it's false, rather than let these raise.
 
 import asyncio
 import logging
+import math
 import random
 import time
 from collections.abc import Awaitable, Callable
@@ -44,6 +45,10 @@ _MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS = 5.0
 # Module-level so `management_api_configured()`-style callers and tests can see
 # it; a float epoch (time.time()), matching _token_cache's clock.
 _token_refresh_failed_until: float = 0.0
+# Whether the failure being shared by that cooldown was Auth0 throttling the
+# token endpoint (429). Replayed callers must get the same exception class as the
+# caller who hit it: a 429 maps to a 503 with Retry-After, anything else to 502.
+_token_refresh_failure_rate_limited: bool = False
 # Per-phase timeouts for this client's own requests (see _MGMT_OPERATION_*):
 # explicit at the client and repeated per request so a future call site cannot
 # inherit an unbounded default.
@@ -97,9 +102,11 @@ def _reset_management_state() -> None:
     from one test to the next. The lock is replaced rather than cleared so it
     cannot stay bound to a closed event loop between tests.
     """
-    global _http_client, _token_refresh_failed_until, _token_refresh_lock
+    global _http_client, _token_refresh_failed_until, _token_refresh_failure_rate_limited
+    global _token_refresh_lock
     _http_client = None
     _token_refresh_failed_until = 0.0
+    _token_refresh_failure_rate_limited = False
     _token_refresh_lock = asyncio.Lock()
     _token_cache["access_token"] = None
     _token_cache["expires_at"] = 0.0
@@ -108,6 +115,19 @@ def _reset_management_state() -> None:
 def _operation_deadline() -> float:
     """Start a monotonic whole-operation budget for one Management call."""
     return time.monotonic() + _MGMT_OPERATION_DEADLINE_SECONDS
+
+
+def _cooldown_error(now: float) -> "Auth0ManagementError":
+    """The shared failure for a caller arriving during the refresh cooldown.
+
+    Same class as the failure that armed it, so a throttled token endpoint keeps
+    surfacing as a retryable 503 instead of degrading to a 502 for every caller
+    after the first. The Retry-After hint is what is left of the cooldown,
+    rounded up and never less than one second.
+    """
+    if _token_refresh_failure_rate_limited:
+        return Auth0ManagementRateLimited(max(1, math.ceil(_token_refresh_failed_until - now)))
+    return Auth0ManagementUnavailable("Auth0 token refresh is in a failure cooldown")
 
 
 def _validated_token_payload(payload: object) -> tuple[str, float]:
@@ -139,7 +159,7 @@ async def _get_management_token(*, deadline: float) -> str:
     the caller's retry loop are all bounded by what remains of it. A failed
     attempt arms a short shared cooldown rather than letting every waiter retry.
     """
-    global _token_refresh_failed_until
+    global _token_refresh_failed_until, _token_refresh_failure_rate_limited
     settings = get_settings().auth0
     now = time.time()
     cached = _token_cache["access_token"]
@@ -148,7 +168,7 @@ async def _get_management_token(*, deadline: float) -> str:
     if now < _token_refresh_failed_until:
         # A refresh failed moments ago. Share that result instead of queueing
         # another serialized token POST behind the lock.
-        raise Auth0ManagementUnavailable("Auth0 token refresh is in a failure cooldown")
+        raise _cooldown_error(now)
 
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -168,7 +188,7 @@ async def _get_management_token(*, deadline: float) -> str:
         if cached is not None and now < float(_token_cache["expires_at"]):
             return str(cached)
         if now < _token_refresh_failed_until:
-            raise Auth0ManagementUnavailable("Auth0 token refresh is in a failure cooldown")
+            raise _cooldown_error(now)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise Auth0ManagementUnavailable("Auth0 token refresh budget exhausted")
@@ -191,6 +211,7 @@ async def _get_management_token(*, deadline: float) -> str:
             access_token, expires_in = _validated_token_payload(resp.json())
         except httpx.HTTPStatusError as exc:
             _token_refresh_failed_until = time.time() + _MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS
+            _token_refresh_failure_rate_limited = exc.response.status_code == 429
             if exc.response.status_code == 429:
                 # Same distinction the resource calls make: Auth0 throttling is a
                 # 503-with-Retry-After the caller can act on, not a 502.
@@ -206,6 +227,7 @@ async def _get_management_token(*, deadline: float) -> str:
             raise Auth0ManagementUnavailable("Auth0 token acquisition failed") from exc
         except Exception as exc:
             _token_refresh_failed_until = time.time() + _MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS
+            _token_refresh_failure_rate_limited = False
             logger.warning(
                 "Auth0 Management token acquisition failed (%s); sharing the failure for %ds",
                 type(exc).__name__, int(_MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS),
@@ -215,6 +237,7 @@ async def _get_management_token(*, deadline: float) -> str:
         _token_cache["access_token"] = access_token
         _token_cache["expires_at"] = time.time() + expires_in - _EXPIRY_SAFETY_MARGIN_SECONDS
         _token_refresh_failed_until = 0.0
+        _token_refresh_failure_rate_limited = False
         return access_token
     finally:
         _token_refresh_lock.release()

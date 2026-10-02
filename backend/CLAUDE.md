@@ -313,7 +313,11 @@ the legacy audience/scopes; upstream 401/403 remain visible. No live mutation
 was performed to verify the documentation.
 
 Frontend rollout is separate: switch direct legacy calls and download links to
-the platform base URL after deployment. The current legacy summary consumer
+the platform base URL after deployment. **Run deletion has already switched**: the
+Simulations page sends `DELETE` to `${api_url}/runs/{id}`, because the auth0 plugin now
+attaches the Platform token only to Platform API requests and a direct legacy call would
+go out unauthenticated (401). That frontend build therefore needs a backend release that
+includes this proxy already deployed in the same cluster; deploy the backend first. The current legacy summary consumer
 expects an array of metadata; it must adapt to the typed platform summary before
 switching that URL. Prefer same-origin download navigation; cross-origin fetch
 clients must not assume Content-Disposition is exposed by CORS.
@@ -441,6 +445,16 @@ change:
    credentials delivered through the sealed secret (`kustomize/README-config.md` → "Adding
    a new secret"), and the SPA's client ID in `api.env`.
 
+**Known limitation: custom domains.** Issuance works only for tokens whose issuer is exactly
+`https://{AUTH0_DOMAIN}/`, and only accepts a returned ticket URL whose host is exactly
+`AUTH0_DOMAIN`. A tenant served under an Auth0 custom domain (tokens issued by the custom
+domain, `AUTH0_ISSUER` set to it, `AUTH0_DOMAIN` left as the canonical tenant domain the
+Management API needs) therefore gets **403** for every caller, or **502** if Auth0 returns the
+ticket on the custom host. This is deliberate (`reset_my_password` in `users/router.py`
+keeps the stricter domain-only rule instead of `_configured_tenant_issuers`), and harmless
+while issuance is off everywhere. Before enabling reset on a custom-domain tenant, decide
+which issuer and ticket host are acceptable and change both checks together.
+
 **Enablement gate (separate from merging, run in an approved environment before
 exposing the capability or any UI that calls it):** decode a live access token and confirm
 the claim is present and current after an interactive sign-in and unchanged after a silent
@@ -519,6 +533,17 @@ client IP alone (`page_rate_limit`), with their own ceiling/window (`RATE_LIMIT_
 Keying on IP even when a bearer token is presented is deliberate: those routes are public
 by design, so a caller must not be able to raise the ceiling or reset an exhausted bucket
 by rotating tokens. A denied request never reaches upstream.
+
+The six transparent legacy runs proxy operations (`/runs/summary`, `/runs/{id}` GET/PATCH/
+DELETE, `/runs/{id}/download`, `/runs/{id}/validate`) are **deliberately not rate-limited**
+here. Each inbound request makes exactly one upstream request (no fan-out, no retry), the
+legacy API is itself public and enforces its own authorization, and the proxy already bounds
+what one request can cost this process: `LEGACY_DOWNLOAD_MAX_CONCURRENT` caps pinned download
+connections, PATCH bodies are capped at 20 MiB, and buffered responses at
+`UPSTREAM_MAX_RESPONSE_BYTES`. The accepted trade-off: the upstream sees all proxied traffic
+from the Platform's egress address, so one abusive client could trigger upstream throttling
+that every Platform user then shares. If that is observed, add an IP-keyed `legacy:` bucket
+with `_enforce_rate_limit`, the same shape as `page_rate_limit`.
 
 **Failure mode on exhaustion:** `429 Too Many Requests` with a `Retry-After` header naming
 the number of seconds until the current window rolls over.

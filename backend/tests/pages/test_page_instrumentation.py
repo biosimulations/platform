@@ -36,7 +36,6 @@ from tests.pages.test_mapping import satellite
 from tests.pages.test_run_page import hang_until_cancelled
 from tests.summaries.test_mapping import payload
 
-pytestmark = pytest.mark.asyncio
 SECRET = "synthetic-secret-marker"
 PAGE = f"/projects/{SECRET}/page"
 RESOURCES = ["files", "specifications"]
@@ -78,6 +77,7 @@ def _project_identity() -> dict[str, Any]:
     return raw
 
 
+@pytest.mark.asyncio
 async def test_success_emits_one_page_record_with_durations_and_byte_counts() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/summary"):
@@ -115,6 +115,7 @@ async def test_success_emits_one_page_record_with_durations_and_byte_counts() ->
     assert SECRET not in stream.getvalue()
 
 
+@pytest.mark.asyncio
 async def test_missing_satellite_is_recorded_without_failing_the_page() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/summary"):
@@ -148,6 +149,7 @@ async def test_missing_satellite_is_recorded_without_failing_the_page() -> None:
         (404, 404, "not_found"),
     ],
 )
+@pytest.mark.asyncio
 async def test_failures_record_a_bounded_outcome_and_the_caller_visible_status(
     failure: int | str, page_status: int, upstream_outcome: str
 ) -> None:
@@ -187,6 +189,7 @@ async def test_failures_record_a_bounded_outcome_and_the_caller_visible_status(
     assert SECRET not in stream.getvalue()
 
 
+@pytest.mark.asyncio
 async def test_page_budget_expiry_is_recorded_as_a_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -219,6 +222,7 @@ async def test_page_budget_expiry_is_recorded_as_a_timeout(
     assert cancelled == set(RESOURCES)
 
 
+@pytest.mark.asyncio
 async def test_caller_cancellation_is_recorded_and_still_propagates() -> None:
     cancelled: set[str] = set()
     both_started = asyncio.Event()
@@ -255,6 +259,7 @@ async def test_caller_cancellation_is_recorded_and_still_propagates() -> None:
     assert SECRET not in stream.getvalue()
 
 
+@pytest.mark.asyncio
 async def test_oversize_body_is_recorded_without_the_body_or_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
