@@ -374,6 +374,12 @@ def _deflate(data: bytes) -> bytes:
     return zlib.compress(data, 9)
 
 
+def _raw_deflate(data: bytes) -> bytes:
+    """``deflate`` without the zlib wrapper: non-standard, but sent and accepted in the wild."""
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -zlib.MAX_WBITS)
+    return compressor.compress(data) + compressor.flush()
+
+
 @pytest.mark.asyncio
 async def test_inflation_memory_is_bounded_by_the_cap_not_the_compression_ratio(
     monkeypatch: pytest.MonkeyPatch,
@@ -403,7 +409,8 @@ async def test_inflation_memory_is_bounded_by_the_cap_not_the_compression_ratio(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("encoding,compress", [
-    ("gzip", gzip.compress), ("x-gzip", gzip.compress), ("deflate", _deflate), ("GZIP", gzip.compress),
+    ("gzip", gzip.compress), ("x-gzip", gzip.compress), ("deflate", _deflate),
+    ("deflate", _raw_deflate), ("GZIP", gzip.compress),
 ])
 @pytest.mark.parametrize("split", [1, 7, 4096])
 async def test_compressed_bodies_within_the_cap_decode_exactly(
@@ -434,6 +441,9 @@ async def test_compressed_bodies_within_the_cap_decode_exactly(
     ("gzip, gzip", gzip.compress(gzip.compress(b"[]"))),  # stacked codings
     ("gzip", b"definitely not gzip"),                # corrupt
     ("deflate", b"\x00\x01 not zlib"),              # corrupt
+    ("deflate", b"\x78\x9cgarbage after a zlib header"),  # wrapped header, corrupt data
+    ("deflate", b"\xff\xff\xff"),                   # raw, invalid block type
+    ("deflate", b"\x78"),                            # too short to tell
 ])
 async def test_an_undecodable_body_is_a_sanitized_502(cap: int, encoding: str, body: bytes) -> None:
     stream = _Body([body])
@@ -450,3 +460,17 @@ async def test_identity_and_absent_encodings_are_read_as_is(cap: int) -> None:
     for headers in ({}, {"content-encoding": "identity"}, {"content-encoding": " Identity "}):
         async with _client(_Body([b'{"a": ', b"1}"]), headers=headers) as client:
             assert await fetch_upstream_json_value(client, "/x", resource=RESOURCE) == {"a": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("split", [1, 2, 3, 4096])
+async def test_raw_deflate_is_accepted_however_the_bytes_arrive(cap: int, split: int) -> None:
+    """Wrapped or raw is decided from the 2-byte zlib header, not from where reads happen to split.
+
+    httpx's decoder retries raw only after its *first* read fails, so a raw body
+    arriving one byte at a time defeated it.
+    """
+    compressed = _raw_deflate(b'{"a": [1, 2, 3]}')
+    chunks = [compressed[i:i + split] for i in range(0, len(compressed), split)]
+    async with _client(_Body(chunks), headers={"content-encoding": "deflate"}) as client:
+        assert await fetch_upstream_json_value(client, "/x", resource=RESOURCE) == {"a": [1, 2, 3]}

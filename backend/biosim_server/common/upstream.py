@@ -49,13 +49,9 @@ _PUBLIC_FETCH_HEADERS = {
 # cap. No inflate step may produce more than this.
 _INFLATE_STEP_BYTES = 64 * 1024
 
-# zlib window bits for each supported Content-Encoding: a gzip header or a zlib
-# wrapper. Anything else, including stacked codings, is refused (see _inflater).
-_INFLATE_WBITS = {
-    "gzip": zlib.MAX_WBITS | 16,
-    "x-gzip": zlib.MAX_WBITS | 16,
-    "deflate": zlib.MAX_WBITS,
-}
+# Canonical name of each supported Content-Encoding. Anything else, including
+# stacked codings, is refused (see _content_coding).
+_SUPPORTED_CODINGS = {"gzip": "gzip", "x-gzip": "gzip", "deflate": "deflate"}
 
 
 class _UndecodableBody(Exception):
@@ -153,8 +149,8 @@ async def _public_stream(client: httpx.AsyncClient, path: str) -> AsyncIterator[
         await response.aclose()
 
 
-def _inflater(content_encoding: str) -> "zlib._Decompress | None":
-    """A decompressor for the response's coding, or None for an uncompressed body.
+def _content_coding(content_encoding: str) -> str | None:
+    """The response's one supported coding, or None for an uncompressed body.
 
     Only what httpx itself decoded unconditionally is supported (gzip, deflate),
     plus the registered ``x-gzip`` alias. A coding nobody asked for (``br`` and the
@@ -164,9 +160,25 @@ def _inflater(content_encoding: str) -> "zlib._Decompress | None":
     codings = [coding for coding in codings if coding and coding != "identity"]
     if not codings:
         return None
-    if len(codings) == 1 and codings[0] in _INFLATE_WBITS:
-        return zlib.decompressobj(_INFLATE_WBITS[codings[0]])
+    if len(codings) == 1 and codings[0] in _SUPPORTED_CODINGS:
+        return _SUPPORTED_CODINGS[codings[0]]
     raise _UndecodableBody("unsupported Content-Encoding")
+
+
+def _decompressor(coding: str, head: bytes) -> "zlib._Decompress":
+    """zlib for ``coding``, chosen with the body's first two bytes in hand.
+
+    HTTP ``deflate`` means the zlib-wrapped format (RFC 1950), but some servers
+    send raw deflate (RFC 1951); httpx accepted both, so this does too. The
+    wrapper is recognised by its own header check -- compression method 8, no
+    preset dictionary, the 16-bit header a multiple of 31 -- so the choice comes
+    from the bytes, not from where network reads happen to split them.
+    """
+    if coding == "gzip":
+        return zlib.decompressobj(zlib.MAX_WBITS | 16)
+    cmf, flg = head[0], head[1]
+    wrapped = cmf & 0x0F == 8 and not flg & 0x20 and (cmf << 8 | flg) % 31 == 0
+    return zlib.decompressobj(zlib.MAX_WBITS if wrapped else -zlib.MAX_WBITS)
 
 
 async def _read_capped_body(response: httpx.Response, resource: str, limit: int) -> bytes:
@@ -185,7 +197,9 @@ async def _read_capped_body(response: httpx.Response, resource: str, limit: int)
         if len(response.content) > limit:
             raise HTTPException(502, _OVERSIZE_DETAIL.format(resource=resource))
         return response.content
-    inflater = _inflater(response.headers.get("content-encoding", ""))
+    coding = _content_coding(response.headers.get("content-encoding", ""))
+    inflater: "zlib._Decompress | None" = None
+    head = b""  # the first compressed bytes, until two are in hand to pick zlib
     body = bytearray()
 
     def keep(chunk: bytes) -> None:
@@ -195,9 +209,15 @@ async def _read_capped_body(response: httpx.Response, resource: str, limit: int)
         body.extend(chunk)
 
     async for raw in response.aiter_raw():
-        if inflater is None:
+        if coding is None:
             keep(raw)
             continue
+        if inflater is None:
+            head += raw
+            if len(head) < 2:
+                continue
+            inflater = _decompressor(coding, head)
+            raw, head = head, b""
         pending = raw
         while pending:
             try:
@@ -208,7 +228,9 @@ async def _read_capped_body(response: httpx.Response, resource: str, limit: int)
                 raise _UndecodableBody("compressed body made no progress")
             pending = inflater.unconsumed_tail
             keep(chunk)
-    if inflater is not None:
+    if coding is not None:
+        if inflater is None:
+            raise _UndecodableBody("compressed body is too short to inflate")
         # A step can stop mid-output with every input byte consumed; drain it.
         # A truncated stream simply ends short and fails JSON validation.
         while not inflater.eof and (chunk := inflater.decompress(b"", _INFLATE_STEP_BYTES)):
