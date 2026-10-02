@@ -80,10 +80,12 @@ None of these grant a capability by themselves -- they are policy numbers, not c
 -- so per this document's own rule ("a value is a secret if possessing it grants a
 capability"), every value in this table is ordinary ConfigMap configuration.
 
-**PER-POD, NOT GLOBAL.** `common/ratelimit.py` keeps its counters in each pod's own memory;
-`api` runs 3 replicas (`base/api.yaml:8`). The above two `_PER_WINDOW` values are enforced
-independently by each pod. If you want a specific GLOBAL ceiling `G`, set the value to
-`G / 3`. See `backend/CLAUDE.md` → "Rate Limiting" for the full explanation.
+**PER-POD, NOT GLOBAL.** `common/ratelimit.py` keeps its counters in each pod's own memory,
+so every `_PER_WINDOW` value above is enforced independently by each pod. `base/api.yaml`
+declares 3 replicas, but every overlay overrides `api` to **1** (`overlays/<cluster>/
+kustomization.yaml` → `replicas:`), so today each value is the cluster-wide ceiling. If an
+overlay runs `N` replicas, set the value to `G / N` for a GLOBAL ceiling `G`. See
+`backend/CLAUDE.md` → "Rate Limiting" for the full explanation.
 
 ## Format requirements
 

@@ -312,14 +312,15 @@ class RateLimitSettings(BaseSettings):
     """
     Per-pod rate limiting for workflow-starting endpoints (TODO P1 #10).
 
-    PER-POD, NOT GLOBAL: `api` runs 3 replicas (kustomize/base/api.yaml:8) and
-    this limiter (common/ratelimit.py) keeps its counters in a single
-    process's memory -- there is no Redis or other shared datastore in this
-    stack today. If traffic distributes evenly across all 3 pods, a caller
-    can achieve up to 3x the configured per-pod number before every pod has
-    independently started rejecting it. To target a specific GLOBAL ceiling
-    G, configure authenticated_per_window / anonymous_per_window as
-    G / replica_count (currently G / 3). A precise, cluster-wide limit needs
+    PER-POD, NOT GLOBAL: this limiter (common/ratelimit.py) keeps its counters
+    in a single process's memory -- there is no Redis or other shared datastore
+    in this stack today. Every deployed overlay runs `api` at 1 replica
+    (kustomize/overlays/*/kustomization.yaml overrides the base's 3), so today
+    each value is the cluster-wide ceiling. At N replicas with traffic spread
+    evenly, a caller can reach up to N times the per-pod number before every pod
+    has independently started rejecting it; to target a GLOBAL ceiling G,
+    configure authenticated_per_window / anonymous_per_window as G / N.
+    A precise, cluster-wide limit needs
     a Mongo- or Redis-backed shared counter -- named as explicit P2/P3 future
     work, not built here.
     """

@@ -16,16 +16,17 @@ prefix, so the run wizard cannot starve simulation starts.
 Design, and why it is intentionally small (see the tutorial's Section 9 Step 2
 for the full rationale):
 
-  * ONE process, in-memory counters. `api` runs 3 replicas
-    (kustomize/base/api.yaml:8) and there is no Redis or other shared cache
+  * ONE process, in-memory counters. Every deployed overlay runs `api` at 1
+    replica (kustomize/overlays/*/kustomization.yaml; the base's 3 is
+    overridden), and there is no Redis or other shared cache
     anywhere in the stack (confirmed: grep -rni 'redis' across kustomize/ and
     backend/pyproject.toml returns nothing) -- MongoDB is the only shared
     datastore every pod already has, and routing every rate-limit check
     through an extra network round-trip is not justified for a P1 item with
     no observed abuse yet. The accepted, explicitly-documented consequence:
-    this limiter is PER-POD, not global. To target a global ceiling G,
-    configure the per-pod setting as G / replica_count (currently G / 3) --
-    see RateLimitSettings in config.py.
+    this limiter is PER-POD, not global. At one replica that is the global
+    ceiling; at N replicas, configure the per-pod setting as G / N to target a
+    global ceiling G -- see RateLimitSettings in config.py.
   * A fixed window, not a sliding log. O(1) memory and O(1) work per key; the
     one known imprecision (up to ~2x the configured rate across a window
     boundary) is an accepted P1-scoped trade-off, not a security hole -- the

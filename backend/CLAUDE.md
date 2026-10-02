@@ -480,11 +480,13 @@ and compares the bearer token with `secrets.compare_digest` on UTF-8 bytes.
 ### Rate Limiting
 
 All values are **non-secret** and belong in each overlay's `api.env` ConfigMap. The limiter
-(`biosim_server/common/ratelimit.py`) is **per-pod, not global** -- `api` runs 3 replicas
-(`kustomize/base/api.yaml:8`) and there is no Redis or shared cache in this stack. Each pod
-enforces the configured number independently; the effective global ceiling is up to
-`replica_count` (currently 3) times the configured per-pod value if traffic distributes
-evenly. To target a global ceiling `G`, configure the per-pod value as `G / 3`.
+(`biosim_server/common/ratelimit.py`) is **per-pod, not global** -- there is no Redis or
+shared cache in this stack, so each pod enforces the configured number independently.
+`kustomize/base/api.yaml` declares 3 replicas, but every deployed overlay (`biosim-gke`,
+`biosim-rke`, `biosim-local`) overrides `api` to **1** (`overlays/<cluster>/kustomization.yaml`
+→ `replicas:`), so today each configured value **is** the cluster-wide ceiling. If an overlay
+runs `N` replicas, the effective ceiling becomes up to `N` times the value when traffic
+distributes evenly; to target a global ceiling `G`, configure `G / N`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
