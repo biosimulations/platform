@@ -1,13 +1,15 @@
 import logging
 import uuid
 from datetime import timedelta
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from pydantic import ValidationError
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from biosim_server.biosim_runs import BiosimulatorVersion
+from biosim_server.biosim_runs.legacy_api import proxy_run
+from biosim_server.common.ratelimit import page_rate_limit
 from biosim_server.common.upstream import fetch_upstream_json, upstream_url
 from biosim_server.pages.models import RunsPagePayload
 from biosim_server.pages.service import assemble_run_page
@@ -15,6 +17,7 @@ from biosim_server.summaries.mapping import map_run_summary
 from biosim_server.summaries.models import RunSummary
 from biosim_server.dependencies import (
     get_http_client,
+    get_legacy_http_client,
     get_temporal_client,
     get_biosim_service,
     get_omex_database_service,
@@ -57,6 +60,104 @@ router = APIRouter(prefix="/simulations", tags=["Simulations"])
 # upstream biosimulations.org *run* id, not by our processing_id, so it cannot
 # live under the /simulations prefix.
 run_summary_router = APIRouter(prefix="/runs", tags=["Runs"])
+
+
+_LEGACY_RESPONSES: dict[int | str, dict[str, Any]] = {
+    "default": {"description": "Opaque legacy status, body and allowlisted headers; authorization is enforced upstream."},
+    502: {"description": "Could not reach or read the legacy runs service."},
+    504: {"description": "Timed out while contacting the legacy runs service."},
+}
+_LEGACY_DESCRIPTION = (
+    "Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded without "
+    "platform authentication; the legacy service enforces its own permissions. Cookies "
+    "are not forwarded. Query bytes and opaque response bytes are preserved. Single "
+    "attempt; redirects are returned with Location, never followed."
+)
+
+
+@run_summary_router.get(
+    "/summary", response_class=Response, operation_id="get-legacy-runs-summary",
+    description=_LEGACY_DESCRIPTION,
+    responses=_LEGACY_RESPONSES,
+)
+async def get_legacy_runs_summary(
+    request: Request,
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
+) -> Response:
+    return await proxy_run(client, request, "summary", "summary")
+
+
+@run_summary_router.get(
+    "/{run_id}", response_class=Response, operation_id="get-legacy-run",
+    description=_LEGACY_DESCRIPTION,
+    responses=_LEGACY_RESPONSES,
+)
+async def get_legacy_run(
+    request: Request, run_id: str,
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
+) -> Response:
+    return await proxy_run(client, request, "get", run_id)
+
+
+@run_summary_router.patch(
+    "/{run_id}", response_class=Response, operation_id="update-legacy-run",
+    description=_LEGACY_DESCRIPTION + " PATCH forwards raw bytes and Content-Type, bounded to 20 MiB before sending; field validation belongs to the legacy service.",
+    responses={**_LEGACY_RESPONSES, 413: {"description": "PATCH body exceeds 20 MiB; no upstream request is sent."}},
+    openapi_extra={"requestBody": {"required": False, "content": {"application/json": {"schema": {
+        "type": "object",
+        "description": "UpdateSimulationRun — upstream PATCH contract (api.biosimulations.org). All fields are optional; the proxy forwards raw bytes and Content-Type without validation.",
+        "properties": {
+            "status": {"type": "string"},
+            "fileUrl": {"type": "string"},
+            "projectSize": {"type": "number"},
+            "resultsSize": {"type": "number"},
+        },
+    }}}}},
+)
+async def update_legacy_run(
+    request: Request, run_id: str,
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
+) -> Response:
+    return await proxy_run(client, request, "update", run_id)
+
+
+@run_summary_router.delete(
+    "/{run_id}", response_class=Response, operation_id="delete-legacy-run",
+    description=_LEGACY_DESCRIPTION,
+    responses=_LEGACY_RESPONSES,
+)
+async def delete_legacy_run(
+    request: Request, run_id: str,
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
+) -> Response:
+    return await proxy_run(client, request, "delete", run_id)
+
+
+@run_summary_router.get(
+    "/{run_id}/download", response_class=Response, operation_id="download-legacy-run",
+    description=_LEGACY_DESCRIPTION + " Streams raw binary bytes, including error bodies. Range and conditional headers are forwarded; upstream support determines the result.",
+    responses={**_LEGACY_RESPONSES, 503: {
+        "description": "Too many downloads are already in progress on this server; nothing was sent upstream. Retry after the indicated delay.",
+        "headers": {"Retry-After": {"description": "Seconds to wait before retrying.", "schema": {"type": "integer"}}},
+    }},
+)
+async def download_legacy_run(
+    request: Request, run_id: str,
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
+) -> Response:
+    return await proxy_run(client, request, "download", run_id, "download")
+
+
+@run_summary_router.get(
+    "/{run_id}/validate", response_class=Response, operation_id="validate-legacy-run",
+    description=_LEGACY_DESCRIPTION,
+    responses=_LEGACY_RESPONSES,
+)
+async def validate_legacy_run(
+    request: Request, run_id: str,
+    client: httpx.AsyncClient = Depends(get_legacy_http_client),
+) -> Response:
+    return await proxy_run(client, request, "validate", run_id, "validate")
 
 
 @run_summary_router.get(
@@ -599,8 +700,18 @@ def _conglomerate_status_from_records(
     response_model=RunsPagePayload,
     operation_id="get-run-page",
     summary="Platform-owned run page aggregation",
+    dependencies=[Depends(page_rate_limit)],
     responses={
-        502: {"description": "The upstream service failed or returned an invalid page resource."},
+        429: {
+            "description": "The caller exhausted the page-aggregation budget. Retry after the indicated delay.",
+            "headers": {
+                "Retry-After": {
+                    "description": "Seconds until the current fixed window rolls over.",
+                    "schema": {"type": "integer"},
+                }
+            },
+        },
+        502: {"description": "The upstream service failed, returned an oversized body, or returned an invalid page resource."},
         504: {"description": "Timed out while contacting the upstream service."},
     },
 )

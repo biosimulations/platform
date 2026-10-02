@@ -8,7 +8,7 @@ product, data-protection, infrastructure, or project-owner call are left
 
 No credential value appears in this document.
 
-Last updated: 2026-08-24.
+Last updated: 2026-09-18.
 
 | ID | Question | Status | Decision | Affected P2 item |
 |----|----------|--------|----------|------------------|
@@ -19,10 +19,11 @@ Last updated: 2026-08-24.
 | D-5 | Should `/ready` gate on auth or inform only? | **DECIDED — inform** (2026-08-24) | `/ready` reports JWKS-cache health as a non-gating `info.auth` field; `ok` stays computed from MongoDB + Temporal. No outbound Auth0 call. | #19c (implemented) |
 | D-6 | Gate the demo router or delete it? | **DECIDED — gate** (2026-08-24) | `ENABLE_RBAC_DEMO` (default false) gates `include_router`. `/api/v1/demo/*` 404s and is absent from OpenAPI in production; the test env enables it so the Keycloak suite still runs. | #20 (implemented) |
 | D-7 | Which Auth0 tenant is production? | **OPEN — project owner (inherited from P0 #6)** | Not decided. All overlays point at a `dev-*` tenant; `backend/CLAUDE.md`'s decision block has unfilled placeholders. | #23 Outcome 1; #26 production values |
-| D-8 | Management API retry policy (max attempts, base delay, multiplier, jitter, deadline; honour `Retry-After`?; exhausted-429 status). | **DECIDED — engineering** (2026-08-25) | 3 attempts (1+2), base 0.5 s × 2.0 full-jitter, 15 s total deadline; retry 429/5xx/transport only; honour a 429 `Retry-After` clamped to 30 s; exhausted 429 → HTTP 503 + `Retry-After` (`Auth0ManagementRateLimited`), exhausted 5xx/transport → HTTP 502 (`Auth0ManagementUnavailable`). Token cache/lock left byte-for-byte unchanged (EH-11). See `common/auth/auth0_management.py`. | #23 retry (implemented) |
+| D-8 | Management API retry policy (max attempts, base delay, multiplier, jitter, deadline; honour `Retry-After`?; exhausted-429 status). | **DECIDED — engineering** (2026-08-25) | 3 attempts (1+2), base 0.5 s × 2.0 full-jitter, 15 s total deadline; retry 429/5xx/transport only; honour a 429 `Retry-After` clamped to 30 s; exhausted 429 → HTTP 503 + `Retry-After` (`Auth0ManagementRateLimited`), exhausted 5xx/transport → HTTP 502 (`Auth0ManagementUnavailable`). Token cache/lock left byte-for-byte unchanged (EH-11). Password-change ticket issuance (`create_password_change_ticket`) is exempt: it is non-idempotent, so it makes a single 10 s attempt and never retries; upstream 429 → 503 with Auth0's own `Retry-After` (10 s when absent), other upstream/malformed/unsafe responses → 502. See `common/auth/auth0_management.py`. | #23 retry (implemented); password-reset tickets (implemented) |
 | D-9 | Discovery base URL when `AUTH0_ISSUER` unset; discovery cache TTL & negative-cache window. | **DECIDED — engineering** (2026-08-24) | Base = `settings.issuer` if set, else `https://{AUTH0_DOMAIN}/`. TTL 3600 s, failure backoff 10 s (mirrors the JWKS constants). See `common/auth/discovery.py`. | #16 (implemented) |
 | D-10 | DI-seam shape: A (overridable settings dependency), B (encapsulated cache), or both? | **DECIDED — both, A first** (2026-08-24) | Overridable `get_auth0_settings`/`get_jwks_cache` FastAPI dependencies (A) plus a process-scoped `JwksCache` instance (B). Tests inject a settings copy and a fresh cache; production still has one settings object and one cache per process. | #24 (implemented) |
 | D-11 | Hash or truncate `sub`? Latency histogram measurement point? Is a global JSON log-format change acceptable? | **PARTIALLY DECIDED** (2026-08-24) | `sub` is SHA-256-hashed and truncated to 12 hex chars in `_log_auth_event`. The global JSON formatter is in place (`log_config.py`); **compatibility with deployed-cluster log consumers is unverified from the repo** and remains an infra check. Histogram placement is moot until D-4. | #19a (implemented); #19 metrics (blocked) |
+| D-12 | Step-up (recent-authentication) policy for direct hosted password change: enforce an IdP-asserted freshness claim, or keep ordinary token possession sufficient? | **DECIDED — enforce, opt-in, gated before the reset UI ships** (2026-09-18) | `POST /api/v1/me/password-reset` accepts an `auth_time` claim (OIDC standard; claim name configurable via `AUTH0_AUTH_TIME_CLAIM`) as the only accepted evidence of a recent interactive sign-in. A refreshed access token and `iat` are explicitly **not** evidence. Absent, malformed, future-dated (beyond 60 s skew), or older than `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` (default 300 s) → **403**, no ticket. Enforcement is behind `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` (default **false**) because it requires the tenant's Post-Login Action to stamp the claim; `_validate_auth0_configuration()` logs a WARNING at startup whenever `AUTH0_PASSWORD_RESET_CLIENT_ID` is set without the gate, so enabling the route without the assurance is never silent. **Ratification still required for the tenant-side half** (stamp `auth_time` in the Action, then set the flag in each overlay) before the reset UI is released. | AUTH-MAJ-004 (mechanism implemented; tenant config + UI are the rollout gate) |
 
 ## #24 — DI / cache testability seam: implemented (D-10 ratified 2026-08-24)
 
@@ -82,3 +83,45 @@ R6/R7 publish, project-create, and `site-admin` blockers are recorded in
 **Tests:** `tests/common/test_auth0_management_retry.py` (8 cases via
 `httpx.MockTransport`, no network, `asyncio.sleep` stubbed) + the existing
 `tests/users/test_router.py` mapping tests.
+
+## D-12 — password-reset step-up policy: implemented (2026-09-18)
+
+Engineering decided the *mechanism*; the tenant-side configuration and the UI
+release remain the gate. What is in place:
+
+- `AuthenticatedUser.auth_time` (optional) is read from the configured claim with
+  strict NumericDate semantics; anything else -- including a present but
+  malformed value -- is `None`, i.e. "no evidence".
+- `_require_recent_authentication` in `users/router.py` refuses issuance (403, no
+  ticket, `no-store`) on missing, future-dated, or stale evidence, and logs a
+  bounded reason (`missing_auth_time` / `future_auth_time` / `stale_auth_time`)
+  with no claim value, threshold, or account identifier.
+- The gate is off unless `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` is true, and
+  the startup gate warns when the reset route is configured without it.
+
+**Still required before enabling the reset UI:** the Auth0 Post-Login Action must
+stamp `auth_time` (see `auth0/actions/post-login.js`, which does not yet), the flag
+must be set in each overlay, and the authorized development-tenant checks in the
+audit's section 12 must pass. None of that is inferred here.
+
+**Deployment decision (2026-10-02, PR #119): keep the `false` default, but only while
+issuance is disabled.** Verified on that date: no overlay sets
+`AUTH0_PASSWORD_RESET_CLIENT_ID` or the Management API credentials, so the route is a
+503 in every cluster and the default has no effect. The binding rule is: **an overlay
+that enables issuance must set `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true` in the
+same change**; enabling issuance without it is a deployment blocker, not a warning to
+acknowledge. Flipping the default to fail closed was considered and not taken in this PR:
+it changes the configuration contract, so it needs explicit approval and a coordinated
+update of `config.py`, the startup warning, the tests that pin the default, and these
+docs. Merge readiness is automated gate coverage plus this record; deployment
+enablement is the tenant work above plus the live checks in `backend/CLAUDE.md` →
+"Password-reset enablement".
+
+**Tests:** `tests/users/test_password_reset.py` (gate on/off; missing, fresh, stale and
+future evidence against a frozen clock, including the inclusive window and skew edges;
+configurable window), `tests/users/test_password_reset_composition.py` (gate on with
+real signed tokens: a fresh `iat` with missing, stale, future, negative or malformed
+`auth_time` issues nothing; recent evidence issues exactly one ticket),
+`tests/common/test_auth0_token_contract.py` (malformed claim parsed as absent), and
+`tests/api/test_startup_auth_config.py` (policy defaults, non-positive window
+rejected, startup warning).

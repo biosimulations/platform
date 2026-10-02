@@ -26,7 +26,7 @@ Biosim-Server is a distributed microservices platform designed for biosimulation
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    REST API (FastAPI + Uvicorn)                      │
-│                         Port 8000, 3 Replicas                        │
+│                   Port 8000, 1 replica per overlay                   │
 │  Endpoints: /verify/omex, /verify/{id}, /verify/runs, /version      │
 └─────────────────────────────────────────────────────────────────────┘
                                     │
@@ -40,7 +40,7 @@ Biosim-Server is a distributed microservices platform designed for biosimulation
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│               Temporal Workers (3 Replicas)                          │
+│               Temporal Workers (1 replica per overlay)               │
 │                  verification_tasks queue                            │
 │  Activities: submit_simulation, poll_status, generate_statistics    │
 └─────────────────────────────────────────────────────────────────────┘
@@ -299,8 +299,8 @@ is_close = score < 1.0
 ```
 kustomize/
 ├── base/
-│   ├── api.yaml              # API Deployment (3 replicas)
-│   ├── worker.yaml           # Worker Deployment (3 replicas)
+│   ├── api.yaml              # API Deployment (base 3; every overlay runs 1)
+│   ├── worker.yaml           # Worker Deployment (base 3; every overlay runs 1)
 │   ├── mongodb.yaml          # MongoDB StatefulSet
 │   ├── configmap.yaml        # Environment configuration
 │   └── secrets.yaml          # Sensitive configuration

@@ -145,6 +145,19 @@ def _validate_auth0_configuration() -> None:
         auth0.audience if not auth0.has_explicit_trusted_issuers() else "(per-issuer)",
         len(auth0.trusted_issuer_map()),
     )
+    # AUTH-MAJ-004: the hosted password-change route converts ordinary token
+    # possession into an account-changing capability, so a cluster that enables
+    # it should also say, loudly, whether the recent-authentication gate is on.
+    # Non-fatal by design -- the gate needs tenant work (a Post-Login Action that
+    # stamps `auth_time`) that may not have landed -- but it must not be enabled
+    # silently, which is exactly what an unremarked default would do.
+    if auth0.password_reset_client_id and not auth0.password_reset_require_recent_auth:
+        logger.warning(
+            "Password reset is configured (AUTH0_PASSWORD_RESET_CLIENT_ID set) without recent-"
+            "authentication enforcement (AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH is false): any "
+            "valid eligible access token can mint a hosted password-change ticket. Enable the "
+            "gate before exposing the reset UI; see docs/auth0-p2-decisions.md (D-12)."
+        )
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:

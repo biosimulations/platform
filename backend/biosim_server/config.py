@@ -163,6 +163,7 @@ class Auth0Settings(BaseSettings):
     # PATCH/DELETE /api/v1/me). Optional -- those endpoints 503 when unset.
     management_client_id: str = Field(default="", alias="AUTH0_MANAGEMENT_CLIENT_ID")
     management_client_secret: str = Field(default="", alias="AUTH0_MANAGEMENT_CLIENT_SECRET")
+    password_reset_client_id: str = Field(default="", alias="AUTH0_PASSWORD_RESET_CLIENT_ID")
     # Auth0 access tokens don't include role assignments by default -- roles
     # have to be copied onto the token as a custom claim by an Auth0 Action
     # (Auth0 Dashboard -> Actions -> Flows -> Login -> add a post-login
@@ -199,6 +200,33 @@ class Auth0Settings(BaseSettings):
     # single AUTH0_DOMAIN/AUTH0_AUDIENCE (or AUTH0_ISSUER/AUTH0_JWKS_URI) shape
     # is used unchanged. See parse_trusted_issuers_json and docs/auth0-tokens-claims-endpoints.md.
     trusted_issuers_json: str = Field(default="", alias="AUTH0_TRUSTED_ISSUERS")
+    # Claim carrying the end-user's last interactive authentication time. The
+    # OIDC standard claim is `auth_time`; Auth0 only puts it on an access token
+    # if the Post-Login Action stamps it (see auth0/actions/post-login.js and
+    # docs/auth0-tokens-claims-endpoints.md). Override only if the Action uses a
+    # different namespace.
+    auth_time_claim: str = Field(default="auth_time", alias="AUTH0_AUTH_TIME_CLAIM")
+    # Password-reset step-up policy (AUTH-MAJ-004). `POST /api/v1/me/password-reset`
+    # turns ordinary access-token possession into a hosted password-change
+    # capability, which is strictly stronger than a plain read. When this is
+    # true, the route additionally requires the token to carry a *recent*
+    # `auth_time` (the IdP's interactive-authentication timestamp), rejecting a
+    # missing, malformed, future, or stale value with 403.
+    #
+    # Deliberately OFF by default: it can only be enabled in a tenant whose
+    # Post-Login Action stamps `auth_time`, so turning it on before that tenant
+    # work lands would break every reset. It is the recorded rollout gate for the
+    # reset UI - see docs/auth0-p2-decisions.md (D-12). A freshly refreshed access
+    # token is NOT evidence of recent interactive authentication: only this
+    # IdP-asserted claim is consulted, never `iat`.
+    password_reset_require_recent_auth: bool = Field(
+        default=False, alias="AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH"
+    )
+    # Maximum age (seconds) of that interactive authentication. 300 s matches the
+    # 600 s ticket TTL's intent: a short, single-use capability.
+    password_reset_max_auth_age_seconds: int = Field(
+        default=300, gt=0, alias="AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS"
+    )
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore", populate_by_name=True)
 
@@ -284,14 +312,15 @@ class RateLimitSettings(BaseSettings):
     """
     Per-pod rate limiting for workflow-starting endpoints (TODO P1 #10).
 
-    PER-POD, NOT GLOBAL: `api` runs 3 replicas (kustomize/base/api.yaml:8) and
-    this limiter (common/ratelimit.py) keeps its counters in a single
-    process's memory -- there is no Redis or other shared datastore in this
-    stack today. If traffic distributes evenly across all 3 pods, a caller
-    can achieve up to 3x the configured per-pod number before every pod has
-    independently started rejecting it. To target a specific GLOBAL ceiling
-    G, configure authenticated_per_window / anonymous_per_window as
-    G / replica_count (currently G / 3). A precise, cluster-wide limit needs
+    PER-POD, NOT GLOBAL: this limiter (common/ratelimit.py) keeps its counters
+    in a single process's memory -- there is no Redis or other shared datastore
+    in this stack today. Every deployed overlay runs `api` at 1 replica
+    (kustomize/overlays/*/kustomization.yaml overrides the base's 3), so today
+    each value is the cluster-wide ceiling. At N replicas with traffic spread
+    evenly, a caller can reach up to N times the per-pod number before every pod
+    has independently started rejecting it; to target a GLOBAL ceiling G,
+    configure authenticated_per_window / anonymous_per_window as G / N.
+    A precise, cluster-wide limit needs
     a Mongo- or Redis-backed shared counter -- named as explicit P2/P3 future
     work, not built here.
     """
@@ -309,6 +338,26 @@ class RateLimitSettings(BaseSettings):
     # docstring for the replica-count arithmetic.
     authenticated_per_window: int = Field(default=30, alias="RATE_LIMIT_AUTHENTICATED_PER_WINDOW")
     anonymous_per_window: int = Field(default=5, alias="RATE_LIMIT_ANONYMOUS_PER_WINDOW")
+    # Password reset is a sensitive account action, metered on its own ceiling
+    # and window so operators can tune it without changing workflow-start
+    # policy (and vice versa). Also PER-POD; see the class docstring.
+    # Smaller ceiling and a longer window than the workflow bucket: minting a
+    # hosted password-change capability is not a throughput-shaped operation,
+    # and a legitimate user rarely needs more than one per session. Keep these
+    # in step with `AUTH0_PASSWORD_RESET_*` in each overlay's api.env.
+    password_reset_per_window: int = Field(
+        default=5, gt=0, alias="RATE_LIMIT_PASSWORD_RESET_PER_WINDOW"
+    )
+    password_reset_window_seconds: int = Field(
+        default=300, gt=0, alias="RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS"
+    )
+    # The platform page aggregations are the public browsing path: each request
+    # fans out to 3-4 calls against the upstream API this project does not own,
+    # so the bucket must bound that amplifier while staying well clear of normal
+    # browsing and of shared-egress-IP (campus/NAT) traffic. Keyed by client IP
+    # only, so presenting a token neither raises the ceiling nor resets it.
+    page_per_window: int = Field(default=60, gt=0, alias="RATE_LIMIT_PAGE_PER_WINDOW")
+    page_window_seconds: int = Field(default=60, gt=0, alias="RATE_LIMIT_PAGE_WINDOW_SECONDS")
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore", populate_by_name=True)
 
@@ -381,6 +430,34 @@ class Settings(BaseSettings):
     mongodb_collection_project_summary: str = "projectSummary"
     # TTL (seconds) for the platform-owned facet-stats cache.
     project_stats_cache_ttl_seconds: int = 300
+
+    # SHARED-MAJ-001: hard ceiling on the *decoded* body of one upstream JSON
+    # fetch (bytes). The page assemblers buffer whatever biosimulations.org
+    # returns for a files/specifications/logs resource, and nothing bounded it.
+    # Compressed bodies are inflated in bounded steps against it
+    # (common/upstream._read_capped_body), so it bounds memory, not just the buffer.
+    # Second consumer: the legacy runs proxy's buffered responses (non-download,
+    # non-204/304). The proxy measures *raw* bytes via aiter_raw(), not decoded
+    # bytes, because it relays raw bytes and never decodes them -- that is what
+    # keeps Content-Encoding, Content-Length, Content-Range and ETag valid. A
+    # compressed buffered response is therefore capped on the wire.
+    # Provisional default pending the representative-payload measurements the
+    # audit asks for -- raise it per cluster if a legitimate resource exceeds it.
+    # An oversized response is a sanitized 502, never a truncated payload.
+    # Explicit alias on the P1 #14 precedent: a bare, generically named field
+    # would bind an unrelated environment variable.
+    upstream_max_response_bytes: int = Field(
+        default=16 * 1024 * 1024, gt=0, alias="UPSTREAM_MAX_RESPONSE_BYTES"
+    )
+    # Legacy runs proxy downloads in flight at once, per pod. A download keeps its
+    # pooled upstream connection for as long as the caller takes to read it, so a
+    # request *rate* does not bound them; this count does. Beyond it, a download is
+    # refused with 503 + Retry-After before anything is sent upstream. The proxy's
+    # own connection pool (dependencies.get_legacy_http_client) is sized from it,
+    # so metadata calls keep headroom however many downloads are pinned.
+    legacy_download_max_concurrent: int = Field(
+        default=32, gt=0, alias="LEGACY_DOWNLOAD_MAX_CONCURRENT"
+    )
 
     simdata_api_base_url: str = "https://simdata.api.biosimulations.org"
     biosimulators_api_base_url: str = "https://api.biosimulators.org"

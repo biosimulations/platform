@@ -16,16 +16,17 @@ prefix, so the run wizard cannot starve simulation starts.
 Design, and why it is intentionally small (see the tutorial's Section 9 Step 2
 for the full rationale):
 
-  * ONE process, in-memory counters. `api` runs 3 replicas
-    (kustomize/base/api.yaml:8) and there is no Redis or other shared cache
+  * ONE process, in-memory counters. Every deployed overlay runs `api` at 1
+    replica (kustomize/overlays/*/kustomization.yaml; the base's 3 is
+    overridden), and there is no Redis or other shared cache
     anywhere in the stack (confirmed: grep -rni 'redis' across kustomize/ and
     backend/pyproject.toml returns nothing) -- MongoDB is the only shared
     datastore every pod already has, and routing every rate-limit check
     through an extra network round-trip is not justified for a P1 item with
     no observed abuse yet. The accepted, explicitly-documented consequence:
-    this limiter is PER-POD, not global. To target a global ceiling G,
-    configure the per-pod setting as G / replica_count (currently G / 3) --
-    see RateLimitSettings in config.py.
+    this limiter is PER-POD, not global. At one replica that is the global
+    ceiling; at N replicas, configure the per-pod setting as G / N to target a
+    global ceiling G -- see RateLimitSettings in config.py.
   * A fixed window, not a sliding log. O(1) memory and O(1) work per key; the
     one known imprecision (up to ~2x the configured rate across a window
     boundary) is an accepted P1-scoped trade-off, not a security hole -- the
@@ -57,8 +58,9 @@ logger = logging.getLogger(__name__)
 
 # Module-level rate-limit state: one entry per caller-identity key. Each value
 # is a fixed window -- {"window_start": <epoch seconds, floored to the window
-# boundary>, "count": <requests seen so far in this window>}. Mirrors the
-# shape and naming convention of auth0.py's `_jwks_cache`.
+# boundary>, "expires_at": <window_start + that bucket's own window length>,
+# "count": <requests seen so far in this window>}. Mirrors the shape and naming
+# convention of auth0.py's `_jwks_cache`.
 
 _rate_limit_buckets: dict[str, dict[str, float | int]] = {}
 # Serialises increment + eviction. workflow_rate_limit is a sync FastAPI
@@ -137,7 +139,9 @@ def _client_ip(request: Request) -> str:
             return first_hop
     return peer
 
-def client_identity(user: AuthenticatedUser | None, request: Request) -> tuple[str, bool]:
+def client_identity(
+    user: AuthenticatedUser | None, request: Request, *, scope_issuer: bool = False
+) -> tuple[str, bool]:
     """
     Resolve the rate-limit key and whether it is an authenticated identity.
 
@@ -145,17 +149,35 @@ def client_identity(user: AuthenticatedUser | None, request: Request) -> tuple[s
     "ip:...") so an authenticated `sub` string can never collide with an
     IP-shaped anonymous key.
 
+    ``scope_issuer`` additionally qualifies the key with the verified issuer.
+    A subject is only unique *within* one issuer: when more than one issuer is
+    trusted, `auth0|abc` from issuer A and `auth0|abc` from issuer B are
+    different principals, and keying on the subject alone let the second consume
+    (or exhaust) the first's quota. Callers that charge a sensitive per-account
+    budget pass ``scope_issuer=True``; the shared workflow budget keeps the
+    subject-only key so a single real user is one bucket regardless of which
+    audience/issuer they presented.
+
     Deliberately independent of whether the calling endpoint itself requires
     authentication -- see the tutorial's Section 9 Step 2, Decision 5. Works
     identically whether or not TODO #9 (mandatory auth on /verify/omex and
     /verify/runs) has landed yet.
     """
     if user is not None:
+        if scope_issuer and user.issuer:
+            return f"sub:{user.issuer}:{user.sub}", True
         return f"sub:{user.sub}", True
     return f"ip:{_client_ip(request)}", False
 
-def _evict_stale_buckets(window_start: float) -> None:
-    stale = [k for k, bucket in _rate_limit_buckets.items() if bucket["window_start"] < window_start]
+def _evict_stale_buckets(now: float) -> None:
+    """Drop buckets whose own window has ended.
+
+    Judged per bucket, not by the triggering request's window: buckets with
+    different window lengths (60 s pages/workflow, 300 s password reset) share
+    this dict, so a short-window sweep must not delete a long window that is
+    still active -- that would refill an exhausted quota early.
+    """
+    stale = [k for k, bucket in _rate_limit_buckets.items() if bucket["expires_at"] <= now]
     for k in stale:
         del _rate_limit_buckets[k]
 
@@ -172,16 +194,23 @@ def _check_and_increment(
     """
     global _rate_limit_check_count
     window_start = (now // window_seconds) * window_seconds
+    expires_at = window_start + window_seconds
     with _rate_limit_lock:
         _rate_limit_check_count += 1
         if _rate_limit_check_count % _EVICT_EVERY_N_CHECKS == 0:
-            _evict_stale_buckets(window_start)
+            _evict_stale_buckets(now)
         bucket = _rate_limit_buckets.get(key)
-        if bucket is None or bucket["window_start"] != window_start:
-            bucket = {"window_start": window_start, "count": 0}
+        # Comparing expires_at too catches a window length changed at runtime
+        # that happens to share an aligned window_start.
+        if (
+            bucket is None
+            or bucket["window_start"] != window_start
+            or bucket["expires_at"] != expires_at
+        ):
+            bucket = {"window_start": window_start, "expires_at": expires_at, "count": 0}
             _rate_limit_buckets[key] = bucket
         bucket["count"] = int(bucket["count"]) + 1
-        retry_after = max(1, int(window_start + window_seconds - now) + 1)
+        retry_after = max(1, int(expires_at - now) + 1)
         return int(bucket["count"]) <= limit, retry_after
 
 def _enforce_rate_limit(
@@ -189,14 +218,28 @@ def _enforce_rate_limit(
         user: AuthenticatedUser | None,
         *,
         key_prefix: str | None = None,
+        per_window: int | None = None,
+        window_seconds: int | None = None,
+        scope_issuer: bool = False,
 ) -> None:
+    """Charge one unit of the caller's budget.
+
+    ``per_window``/``window_seconds`` let a caller use a dedicated ceiling and
+    window instead of the shared workflow policy (password reset does), without
+    duplicating the key/identity/429 logic or reaching around the kill switch.
+    """
     settings = get_settings().ratelimit
     if not settings.enabled:
         return
-    ident, authenticated = client_identity(user, request)
+    ident, authenticated = client_identity(user, request, scope_issuer=scope_issuer)
     key = f"{key_prefix}:{ident}" if key_prefix else ident
-    limit = settings.authenticated_per_window if authenticated else settings.anonymous_per_window
-    allowed, retry_after = _check_and_increment(key, limit, settings.window_seconds, time.time())
+    if per_window is not None:
+        limit = per_window
+    else:
+        limit = settings.authenticated_per_window if authenticated else settings.anonymous_per_window
+    allowed, retry_after = _check_and_increment(
+        key, limit, window_seconds if window_seconds is not None else settings.window_seconds, time.time()
+    )
     if not allowed:
         # The key itself (a `sub` or an IP) is never logged -- consistent
         # with auth0.py's discipline of never logging raw claims or token
@@ -246,3 +289,64 @@ def compatibility_rate_limit(
     authenticated/anonymous ceilings, keyed as ``compat:<identity>``.
     """
     _enforce_rate_limit(request, user, key_prefix="compat")
+
+
+def page_rate_limit(request: Request) -> None:
+    """
+    FastAPI dependency: enforce the platform page-aggregation budget.
+
+    ``GET /projects/{id}/page`` and ``GET /runs/{id}/page`` are public and, until
+    this bucket existed, unmetered -- yet each request fans out to 3-4 GETs
+    against a third-party API this project does not own, so a caller could
+    amplify load onto biosimulations.org at no cost to themselves.
+
+    Three deliberate differences from the workflow/compat buckets:
+
+      * Its own prefix (``pages:<identity>``) so browsing pages can neither
+        consume nor be consumed by simulation-start quota -- same reasoning as
+        ``compatibility_rate_limit``.
+      * Its own, more generous ceiling and window
+        (RATE_LIMIT_PAGE_PER_WINDOW / RATE_LIMIT_PAGE_WINDOW_SECONDS). Page views
+        are the ordinary reading path and are far more frequent than a workflow
+        start or a one-off compatibility check, so the workflow numbers would
+        throttle normal browsing; the ceiling still bounds the upstream
+        amplifier, and the fixed window/ceilings stay operator-tunable.
+      * It intentionally does **not** depend on ``get_optional_user``:
+        ``client_identity(None, ...)`` keys by client IP, so the page endpoints
+        stay unauthenticated exactly as documented (a caller presenting a stale
+        or malformed bearer token still gets the page rather than a 401), and a
+        caller cannot dodge the bound by rotating tokens.
+    """
+    settings = get_settings().ratelimit
+    _enforce_rate_limit(
+        request,
+        None,
+        key_prefix="pages",
+        per_window=settings.page_per_window,
+        window_seconds=settings.page_window_seconds,
+    )
+
+
+def password_reset_rate_limit(request: Request, user: AuthenticatedUser) -> None:
+    """Separate self-service budget; caller supplies the required principal.
+
+    Three things distinguish this from the workflow budget, and all three matter
+    for a sensitive account action:
+
+      * its own key prefix, so reset traffic can never starve (or be starved by)
+        simulation starts;
+      * its own ceiling and window (RATE_LIMIT_PASSWORD_RESET_*), so operators
+        can tune reset abuse resistance without changing workflow policy; and
+      * an issuer-scoped key, so a subject string that exists in two trusted
+        issuers cannot consume the other principal's reset quota before the
+        route's issuer eligibility check rejects it.
+    """
+    settings = get_settings().ratelimit
+    _enforce_rate_limit(
+        request,
+        user,
+        key_prefix="password-reset",
+        per_window=settings.password_reset_per_window,
+        window_seconds=settings.password_reset_window_seconds,
+        scope_issuer=True,
+    )
