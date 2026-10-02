@@ -29,21 +29,6 @@ export interface ProjectQueryStatFilter {
   _index: number
 }
 
-export interface Projects {
-  projectSummaries: ProjectSummary[]
-  totalMatchingProjectSummaries: number
-  queryStats: ProjectQueryStat[]
-}
-
-// <editor-fold desc="For when viewing projects">
-export interface ProjectSummary {
-  id: number
-  simulationRun: any
-  created: string
-  updated: string
-  owner: any
-}
-
 export interface ProjectStub {
   id: string
   simulationRun: string
