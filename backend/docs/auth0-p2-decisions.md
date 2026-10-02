@@ -100,10 +100,28 @@ release remain the gate. What is in place:
   the startup gate warns when the reset route is configured without it.
 
 **Still required before enabling the reset UI:** the Auth0 Post-Login Action must
-stamp `auth_time` (see `auth0/actions/post-login.js`), the flag must be set in
-each overlay, and the authorized development-tenant checks in the audit's
-section 12 must pass. None of that is inferred here.
+stamp `auth_time` (see `auth0/actions/post-login.js`, which does not yet), the flag
+must be set in each overlay, and the authorized development-tenant checks in the
+audit's section 12 must pass. None of that is inferred here.
 
-**Tests:** `tests/users/test_password_reset.py` (gate on/off, fresh/stale/future/
-missing, configurable window) + `tests/api/test_startup_auth_config.py`
-(policy defaults, non-positive window rejected, startup warning).
+**Deployment decision (2026-10-02, PR #119): keep the `false` default, but only while
+issuance is disabled.** Verified on that date: no overlay sets
+`AUTH0_PASSWORD_RESET_CLIENT_ID` or the Management API credentials, so the route is a
+503 in every cluster and the default has no effect. The binding rule is: **an overlay
+that enables issuance must set `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true` in the
+same change**; enabling issuance without it is a deployment blocker, not a warning to
+acknowledge. Flipping the default to fail closed was considered and not taken in this PR:
+it changes the configuration contract, so it needs explicit approval and a coordinated
+update of `config.py`, the startup warning, the tests that pin the default, and these
+docs. Merge readiness is automated gate coverage plus this record; deployment
+enablement is the tenant work above plus the live checks in `backend/CLAUDE.md` →
+"Password-reset enablement".
+
+**Tests:** `tests/users/test_password_reset.py` (gate on/off; missing, fresh, stale and
+future evidence against a frozen clock, including the inclusive window and skew edges;
+configurable window), `tests/users/test_password_reset_composition.py` (gate on with
+real signed tokens: a fresh `iat` with missing, stale, future, negative or malformed
+`auth_time` issues nothing; recent evidence issues exactly one ticket),
+`tests/common/test_auth0_token_contract.py` (malformed claim parsed as absent), and
+`tests/api/test_startup_auth_config.py` (policy defaults, non-positive window
+rejected, startup warning).

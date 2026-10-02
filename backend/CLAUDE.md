@@ -373,7 +373,7 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | `AUTH0_MANAGEMENT_CLIENT_SECRET` | _empty_ | See above. |
 | `AUTH0_PASSWORD_RESET_CLIENT_ID` | _empty_ | **Non-secret** SPA application client ID used as the `client_id` for the hosted password-change ticket (`POST /api/v1/me/password-reset`). Blank disables the endpoint (503). Not the M2M client ID. Configure New Universal Login and the SPA's Application Login URI in Auth0 before enabling. |
 | `AUTH0_AUTH_TIME_CLAIM` | `auth_time` | Namespaced/standard claim carrying the end-user's last **interactive** authentication time. Read into `AuthenticatedUser.auth_time`; used only by the password-reset step-up gate. Missing/malformed → no evidence (fail closed). |
-| `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` | `false` | Step-up gate on `POST /api/v1/me/password-reset` (decision D-12). When true, the token must carry an `auth_time` no older than the max age below, else **403** and no ticket. Needs the Post-Login Action to stamp the claim, so it ships off; the startup gate WARNs while the reset endpoint is configured without it. A refreshed token or `iat` is deliberately not accepted as evidence. |
+| `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` | `false` | Step-up gate on `POST /api/v1/me/password-reset` (decision D-12). When true, the token must carry an `auth_time` no older than the max age below, else **403** and no ticket. Needs the Post-Login Action to stamp the claim, so it ships off; the startup gate WARNs while the reset endpoint is configured without it. **Must be `true` in any overlay that sets `AUTH0_PASSWORD_RESET_CLIENT_ID`** (see Password-reset enablement below). A refreshed token or `iat` is deliberately not accepted as evidence. |
 | `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` | `300` | How fresh that interactive authentication must be. Must be positive (validated at startup). |
 
 **Per-cluster configuration:**
@@ -405,6 +405,39 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | Password-reset ticket 429 (Auth0 rate limit) | **503** with `Retry-After: 10`; issuance is deliberately not retried (non-idempotent). |
 | Password-reset ticket/token 4xx/5xx/transport/malformed or unsafe URL | **502** generic; upstream body is never logged or returned. |
 | Valid token, non-`auth0\|` sub, or issuer ≠ `https://AUTH0_DOMAIN/` | **403** `Password reset is unavailable for this account`. |
+
+**Password-reset enablement — merge-ready is not deploy-enabled.** Ticket issuance needs
+`AUTH0_DOMAIN`, `AUTH0_PASSWORD_RESET_CLIENT_ID` and both Management API credentials;
+any one blank is a 503. As of 2026-10-02 no overlay sets the reset client ID or the
+Management credentials (no `api.env` entry, no `SealedSecret` key, no `secretKeyRef`), so
+issuance is off in every cluster. That is the **only** condition under which the `false`
+default of `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` is acceptable (D-12 in
+`docs/auth0-p2-decisions.md`). Enabling issuance in any overlay requires, in the same
+change:
+
+1. `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true` in that overlay's `api.env`. Setting the
+   client ID without it is a **deployment blocker**: the startup WARN is a backstop, not
+   an approval, and `kustomize/README-config.md` checklist step 6 fails on it.
+2. A Post-Login Action that stamps the user's last interactive authentication time onto
+   the **access token** under the claim `AUTH0_AUTH_TIME_CLAIM` names.
+   `auth0/actions/post-login.js` does not do this today. If the tenant will not set a
+   reserved OIDC claim name on access tokens, stamp a namespaced claim and point
+   `AUTH0_AUTH_TIME_CLAIM` at it.
+3. A tested interactive re-authentication step in whatever client calls the endpoint
+   (force a fresh sign-in, e.g. `max_age`/`prompt=login`, immediately before requesting a
+   ticket). A silently refreshed access token has a new `iat` but no new sign-in: `iat`
+   is never accepted as evidence, so without this step every reset is a 403.
+4. The Management M2M application authorized for `create:user_tickets`, with its
+   credentials delivered through the sealed secret (`kustomize/README-config.md` → "Adding
+   a new secret"), and the SPA's client ID in `api.env`.
+
+**Enablement gate (separate from merging, run in an approved environment before
+exposing the capability or any UI that calls it):** decode a live access token and confirm
+the claim is present and current after an interactive sign-in and unchanged after a silent
+refresh; confirm the endpoint returns 403 without fresh evidence; redeem one ticket end to
+end on a test account. No live account mutation is authorized by merging. The profile
+page's existing "Send Password Reset Link" calls Auth0's public
+`/dbconnections/change_password` email flow, not this endpoint, and is unaffected.
 
 **Anonymous `POST /simulations/run` (P1 #9 Option B).** This endpoint stays
 reachable without a bearer token, paired with the workflow rate limiter

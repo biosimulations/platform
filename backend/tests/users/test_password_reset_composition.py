@@ -14,7 +14,8 @@ Auth0, no email.
 """
 
 import json
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
@@ -207,3 +208,60 @@ def test_an_uncertain_ticket_failure_is_never_retried(auth0: _Auth0) -> None:
     assert auth0.ticket_posts == 1
     # Generic by design: no upstream body, URL or ticket material.
     assert response.json() == {"detail": "Unable to start password reset"}
+
+
+# ---------------------------------------------------------------------------
+# Step-up gate (D-12) composed: signed claim -> real parsing -> route -> ticket
+# ---------------------------------------------------------------------------
+# Every token below is freshly minted, so its `iat` is "now". That freshness is
+# exactly what must NOT count: only the IdP-asserted `auth_time` claim does.
+
+_NO_EVIDENCE: dict[str, Callable[[int], dict[str, Any]]] = {
+    "missing": lambda now: {},
+    "stale": lambda now: {"auth_time": now - 3600},
+    "future": lambda now: {"auth_time": now + 3600},
+    "negative": lambda now: {"auth_time": -1},
+    "numeric-string": lambda now: {"auth_time": str(now)},
+    "boolean": lambda now: {"auth_time": True},
+    "null": lambda now: {"auth_time": None},
+    "list": lambda now: {"auth_time": [now]},
+}
+
+
+@pytest.fixture
+def step_up(auth0: _Auth0, monkeypatch: pytest.MonkeyPatch) -> _Auth0:
+    """The composed tenant with AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true."""
+    monkeypatch.setattr(get_settings().auth0, "password_reset_require_recent_auth", True)
+    return auth0
+
+
+@pytest.mark.parametrize("claims", _NO_EVIDENCE.values(), ids=_NO_EVIDENCE)
+def test_a_fresh_token_without_recent_sign_in_evidence_issues_nothing(
+    step_up: _Auth0, claims: Callable[[int], dict[str, Any]]
+) -> None:
+    token = TENANT_KEY.token(
+        sub="auth0|composition", issuer=TENANT_ISSUER, audience=AUDIENCE,
+        extra_claims=claims(int(time.time())),
+    )
+    response = _post(token)
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Password reset requires a recent sign-in"}
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert step_up.token_posts == 0
+    assert step_up.ticket_posts == 0
+
+
+def test_a_recent_interactive_sign_in_reaches_exactly_one_ticket(step_up: _Auth0) -> None:
+    token = TENANT_KEY.token(
+        sub="auth0|composition", issuer=TENANT_ISSUER, audience=AUDIENCE,
+        extra_claims={"auth_time": int(time.time()) - 10},
+    )
+    response = _post(token)
+
+    assert response.status_code == 200
+    assert response.json() == {"url": TICKET}
+    assert response.headers["cache-control"] == "no-store"
+    assert step_up.ticket_posts == 1
+    assert step_up.ticket_requests[0]["user_id"] == "auth0|composition"

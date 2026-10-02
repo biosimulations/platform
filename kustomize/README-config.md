@@ -44,11 +44,22 @@ in `shared.env`.**
 | `AUTH0_AUTH_TIME_CLAIM` | non-secret — claim name, default `auth_time` | `api.env` |
 | `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` | non-secret policy flag (default `false`) | `api.env` |
 | `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` | non-secret policy number (default `300`) | `api.env` |
+| `AUTH0_PASSWORD_RESET_CLIENT_ID` | non-secret — the SPA's public client ID; blank disables ticket issuance (503) | `api.env` |
 | `AUTH0_MANAGEMENT_CLIENT_ID` | treat as secret (pairs with the secret) | **sealed secret** |
-| `AUTH0_MANAGEMENT_CLIENT_SECRET` | **SECRET** — grants `update:users`/`delete:users` on the whole tenant | **sealed secret** |
+| `AUTH0_MANAGEMENT_CLIENT_SECRET` | **SECRET** — grants `update:users`/`delete:users` (and `create:user_tickets` once authorized for password reset) on the whole tenant | **sealed secret** |
 
 Auth0 **Action** secrets (`M2M_CLIENT_SECRET`, `DEFAULT_ROLE_ID`, …) are not Platform
 configuration and never enter Kubernetes. See `auth0/README.md`.
+
+### Password-reset ticket issuance is off in every overlay
+
+As of 2026-10-02 no overlay sets `AUTH0_PASSWORD_RESET_CLIENT_ID` or the Management API
+credentials, so `POST /api/v1/me/password-reset` returns 503 everywhere. That is the only
+condition under which leaving `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` at its `false`
+default is acceptable. **An overlay that sets `AUTH0_PASSWORD_RESET_CLIENT_ID` must set
+`AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true` in the same change**; anything else is a
+deployment blocker, and checklist step 6 below fails on it. The tenant and client
+prerequisites are in `backend/CLAUDE.md` → "Password-reset enablement".
 
 ## Rate-limit variables
 
@@ -121,10 +132,15 @@ if [ "$CLUSTER" != "biosim-local" ]; then
     echo "FAIL: AUTH_REQUIRED=false in $CLUSTER" && exit 1
 fi
 
+# 6. Password-reset tickets are never enabled without the recent-authentication gate.
+grep -qE '^ *AUTH0_PASSWORD_RESET_CLIENT_ID: *"?[^" ]' /tmp/rendered.yaml && \
+  ! grep -qiE '^ *AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH: *"?true"?$' /tmp/rendered.yaml && \
+  echo "FAIL: password reset enabled without AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true in $CLUSTER" && exit 1
+
 echo "OK: $CLUSTER configuration looks sane"
 ```
 
-Steps 3–5 exit non-zero on failure, so this is directly usable as a CI or pre-commit step
+Steps 3–6 exit non-zero on failure, so this is directly usable as a CI or pre-commit step
 if the team wants one.
 
 ## Adding a new secret

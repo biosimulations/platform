@@ -15,9 +15,11 @@ from biosim_server.common.auth import auth0_management as management
 from biosim_server.common.ratelimit import _reset_rate_limit_state
 from biosim_server.config import get_settings
 from biosim_server.users import router
+from tests.fixtures.jwks_fixtures import FakeClock
 
 URL = "https://tenant.auth0.com/lo/reset?ticket=sensitive"
 PATH = "/api/v1/me/password-reset"
+NOW = 1_800_000_000
 
 
 @pytest.fixture(autouse=True)
@@ -82,21 +84,29 @@ def test_dependency_failure_keeps_its_own_headers(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.parametrize(
-    "auth_time,expected_status",
+    "auth_age,expected_status",
     [
-        (None, 403),                     # no evidence at all
-        (int(time.time()) - 10, 200),    # inside the window
-        (int(time.time()) - 301, 403),   # older than password_reset_max_auth_age_seconds
-        (int(time.time()) + 3600, 403),  # future-dated, past the skew allowance
+        (None, 403),   # no evidence at all
+        (10, 200),     # inside the window
+        (300, 200),    # exactly password_reset_max_auth_age_seconds old: still inside
+        (301, 403),    # older than the window
+        (-60, 200),    # future-dated within the 60 s skew allowance
+        (-61, 403),    # future-dated just past the skew allowance
+        (-3600, 403),  # far future
     ],
-    ids=["missing", "fresh", "stale", "future"],
+    ids=["missing", "fresh", "window-edge", "stale", "skew-edge", "past-skew", "future"],
 )
 def test_step_up_gate_when_enabled(
-    auth_time: int | None, expected_status: int, monkeypatch: pytest.MonkeyPatch
+    auth_age: int | None, expected_status: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AUTH-MAJ-004: with the gate on, only a fresh IdP-asserted sign-in mints a ticket."""
+    """AUTH-MAJ-004: with the gate on, only a fresh IdP-asserted sign-in mints a ticket.
+
+    The router's clock is frozen so the boundaries are exact and a slow run cannot
+    age a "fresh" value past the window.
+    """
+    monkeypatch.setattr(router, "time", FakeClock(start=NOW))
     monkeypatch.setattr(get_settings().auth0, "password_reset_require_recent_auth", True)
-    authorize(auth_time=auth_time)
+    authorize(auth_time=None if auth_age is None else NOW - auth_age)
     mock = AsyncMock(return_value=URL)
     monkeypatch.setattr(router, "create_password_change_ticket", mock)
     response = TestClient(app).post(PATH)
