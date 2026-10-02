@@ -114,7 +114,7 @@ function handleReset() {
         />
       </div>
 
-      <!-- File Mode using canonical UFileUpload -->
+      <!-- File Mode -->
       <div v-if="mode === 'file'" class="pt-1">
         <UFileUpload
           v-model="selectedFile"

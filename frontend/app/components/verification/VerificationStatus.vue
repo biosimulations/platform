@@ -261,7 +261,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Error notice using canonical UAlert -->
+    <!-- Error notice -->
     <UAlert
       v-if="errorMsg || workflowData?.workflow_error"
       color="error"

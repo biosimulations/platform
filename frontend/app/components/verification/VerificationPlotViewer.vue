@@ -377,14 +377,14 @@ const residualLayout = computed(() => {
           size="xs"
           variant="outline"
           color="neutral"
-          :icon="enableSlider ? 'i-lucide-sliders' : 'i-lucide-slider'"
-          :label="enableSlider ? 'Slider ON' : 'Slider OFF'"
+          :icon="enableSlider ? 'i-lucide-chart-line' : 'i-lucide-chevrons-left-right-ellipsis'"
+          :label="enableSlider ? 'Hide Slider' : 'Show Slider'"
           @click="enableSlider = !enableSlider"
         />
       </div>
     </div>
 
-    <!-- Empty State if no sim_run_data using canonical UEmpty -->
+    <!-- Empty State if no sim_run_data -->
     <UEmpty
       v-if="!simRunData || simRunData.length === 0"
       icon="i-lucide-bar-chart-2"

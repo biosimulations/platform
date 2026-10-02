@@ -12,8 +12,6 @@ interface FooterColumnCategory {
   links: FooterLink[]
 }
 
-const currentYear = new Date().getFullYear()
-
 // Arbitrated categories combining the Angular platform specifications,
 // core application routes, and developer API resources.
 const categories: FooterColumnCategory[] = [

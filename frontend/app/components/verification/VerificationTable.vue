@@ -42,10 +42,6 @@ const filteredRows = computed(() => {
   })
 })
 
-const totalPages = computed(() => {
-  return Math.ceil(filteredRows.value.length / perPage.value) || 1
-})
-
 const paginatedRows = computed(() => {
   const start = (currentPage.value - 1) * perPage.value
   return filteredRows.value.slice(start, start + perPage.value)
@@ -224,7 +220,7 @@ function exportCsv() {
                 v-if="row.is_close === true"
                 color="success"
                 variant="subtle"
-                size="sm"
+                size="md"
                 class="font-semibold px-2.5 py-0.5"
               >
                 PASS
@@ -233,7 +229,7 @@ function exportCsv() {
                 v-else-if="row.is_close === false"
                 color="error"
                 variant="subtle"
-                size="sm"
+                size="md"
                 class="font-semibold px-2.5 py-0.5"
               >
                 FAIL

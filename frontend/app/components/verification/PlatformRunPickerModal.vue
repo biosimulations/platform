@@ -70,10 +70,10 @@ const filteredRuns = computed(() => {
   if (!searchQuery.value.trim()) return runsList.value
   const q = searchQuery.value.toLowerCase().trim()
   return runsList.value.filter(r =>
-    (r.name && r.name.toLowerCase().includes(q)) ||
-    (r.simulator && r.simulator.toLowerCase().includes(q)) ||
-    (r.id && r.id.toLowerCase().includes(q)) ||
-    (r.biosimulationsRunId && r.biosimulationsRunId.toLowerCase().includes(q))
+    (r.name && r.name.toLowerCase().includes(q))
+    || (r.simulator && r.simulator.toLowerCase().includes(q))
+    || (r.id && r.id.toLowerCase().includes(q))
+    || (r.biosimulationsRunId && r.biosimulationsRunId.toLowerCase().includes(q))
   )
 })
 
@@ -171,7 +171,7 @@ function onSelectRun(run: any) {
                   <UBadge
                     :color="run.status === 'SUCCEEDED' ? 'success' : run.status === 'FAILED' ? 'error' : 'neutral'"
                     variant="subtle"
-                    size="xs"
+                    size="md"
                   >
                     {{ run.status }}
                   </UBadge>

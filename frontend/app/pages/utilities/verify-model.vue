@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {computed, nextTick, onMounted, reactive, ref, watch} from 'vue'
 import {useRoute, useRouter} from 'vue-router'
+import type {BreadcrumbItem} from '@nuxt/ui'
 import type {ComparisonStatistics, CompatibilityResponse, RunPrecheckResult, SimulationRunInfo, VerifyWorkflowOutput} from '~/models/verification'
 import {useVerificationAnalytics} from '~/composables/useVerificationAnalytics'
 import type {ExcludedSimulatorInfo, SimulatorInfo} from '~/components/verification/VerificationHeatmap.vue'
@@ -16,6 +17,12 @@ useSeoMeta({
   description: 'Cross-verify biomodel simulation results across multiple solvers (AMICI, COPASI, PySCeS, Tellurium, VCell).'
 })
 
+const breadcrumbs: BreadcrumbItem[] = [
+  { label: 'Home', icon: 'i-lucide-home', to: '/' },
+  { label: 'Utilities' },
+  { label: 'Verify a Model' }
+]
+
 // ----------------------------------------------------
 // 2-Tab Navigation
 // ----------------------------------------------------
@@ -24,12 +31,12 @@ const activeMode = ref<Mode>('verify')
 
 const tabItems = [
   {
-    label: '1. Verify Biomodel Archive',
+    label: 'Verify Biomodel Archive',
     value: 'verify' as const,
     icon: 'i-lucide-file-check'
   },
   {
-    label: '2. Lookup Past Verifications',
+    label: 'Lookup Past Verifications',
     value: 'lookup' as const,
     icon: 'i-lucide-search'
   }
@@ -56,6 +63,15 @@ const submissionError = ref<string | null>(null)
 // ----------------------------------------------------
 // Ubiquitous OMEX Input Modalities
 // ----------------------------------------------------
+type InputSourceMode = 'file' | 'url' | 'run'
+const inputSourceMode = ref<InputSourceMode>('file')
+
+const inputSourceModes = [
+  { label: 'Upload Archive', value: 'file' as const, icon: 'i-lucide-upload-cloud' },
+  { label: 'Provide URL', value: 'url' as const, icon: 'i-lucide-link' },
+  { label: 'Platform Run', value: 'run' as const, icon: 'i-lucide-layers' }
+]
+
 const omexFile = ref<File | null>(null)
 const omexUrl = ref<string>('')
 const selectedPlatformRun = ref<{
@@ -139,13 +155,16 @@ const precheckResult = ref<RunPrecheckResult | null>(null)
 // ----------------------------------------------------
 // Input Handlers
 // ----------------------------------------------------
-function onFileSelect(e: Event) {
-  const target = e.target as HTMLInputElement
-  if (target.files && target.files.length > 0) {
-    omexFile.value = target.files[0]!
+function onFileUpload(file: File | File[] | null | undefined) {
+  const selected = Array.isArray(file) ? file[0] : file
+  if (selected) {
+    inputSourceMode.value = 'file'
+    omexFile.value = selected
     omexUrl.value = ''
     selectedPlatformRun.value = null
     checkOmexCompatibility()
+  } else {
+    clearFile()
   }
 }
 
@@ -161,6 +180,7 @@ function clearFile() {
 
 function onUrlSubmit() {
   if (!omexUrl.value.trim()) return
+  inputSourceMode.value = 'url'
   omexFile.value = null
   selectedPlatformRun.value = null
   checkOmexCompatibility()
@@ -183,6 +203,7 @@ function onPlatformRunSelected(run: {
   simulatorVersion: string
   downloadUrl: string
 }) {
+  inputSourceMode.value = 'run'
   selectedPlatformRun.value = run
   omexFile.value = null
   omexUrl.value = ''
@@ -198,6 +219,40 @@ function clearPlatformRun() {
   historicalRunsError.value = null
   step2Mode.value = 'solvers'
 }
+
+watch(inputSourceMode, (newMode) => {
+  if (newMode === 'file') {
+    if (omexUrl.value || selectedPlatformRun.value) {
+      omexUrl.value = ''
+      selectedPlatformRun.value = null
+      if (omexFile.value) {
+        checkOmexCompatibility()
+      } else {
+        clearFile()
+      }
+    }
+  } else if (newMode === 'url') {
+    if (omexFile.value || selectedPlatformRun.value) {
+      omexFile.value = null
+      selectedPlatformRun.value = null
+      if (omexUrl.value.trim()) {
+        checkOmexCompatibility()
+      } else {
+        clearUrl()
+      }
+    }
+  } else if (newMode === 'run') {
+    if (omexFile.value || omexUrl.value) {
+      omexFile.value = null
+      omexUrl.value = ''
+      if (selectedPlatformRun.value) {
+        checkOmexCompatibility()
+      } else {
+        clearPlatformRun()
+      }
+    }
+  }
+})
 
 // ----------------------------------------------------
 // Compatibility Check API Roundtrip
@@ -817,16 +872,11 @@ onMounted(() => {
     <div class="max-w-7xl mx-auto space-y-8">
       <!-- Breadcrumbs & Header -->
       <div>
-        <nav class="flex items-center text-xs text-neutral-500 mb-3 gap-1.5">
-          <NuxtLink to="/" class="hover:underline flex items-center gap-1">
-            <UIcon name="i-lucide-home" class="size-3.5" />
-            Home
-          </NuxtLink>
-          <span>/</span>
-          <span>Utilities</span>
-          <span>/</span>
-          <span class="font-medium text-neutral-900 dark:text-neutral-100">Verify a Model</span>
-        </nav>
+        <UBreadcrumb :items="breadcrumbs" class="mb-3">
+          <template #separator>
+            <span class="mx-1 text-neutral-400 dark:text-neutral-600">/</span>
+          </template>
+        </UBreadcrumb>
 
         <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
@@ -842,7 +892,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- 2-Tab Navigation using canonical UTabs -->
+      <!-- 2-Tab Navigation -->
       <UTabs
         v-model="activeMode"
         :items="tabItems"
@@ -870,183 +920,136 @@ onMounted(() => {
 
           <div class="space-y-6">
 
-          <!-- 3 Ingestion Tiles with matching styling -->
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-5 items-stretch">
-            <!-- Tile 1: Local File Upload -->
-            <div
-              :class="[
-                'border-2 border-dashed rounded-xl p-6 transition-all duration-200 flex flex-col items-center justify-center text-center min-h-[220px]',
-                omexFile
-                  ? 'border-primary/60 bg-primary-50/20 dark:bg-primary-950/20'
-                  : 'border-neutral-300 dark:border-neutral-700 hover:border-primary dark:hover:border-primary bg-neutral-50/40 dark:bg-neutral-800/20'
-              ]"
+          <!-- Input Mode Switcher -->
+          <div class="space-y-3">
+            <label class="block text-xs font-semibold text-neutral-600 dark:text-neutral-300 uppercase tracking-wider">
+              Input Method
+            </label>
+            <UTabs
+              v-model="inputSourceMode"
+              :items="inputSourceModes"
+              class="w-full"
+            />
+          </div>
+
+          <!-- Mode 1: File Upload -->
+          <div v-if="inputSourceMode === 'file'" class="pt-1">
+            <UFileUpload
+              v-model="omexFile"
+              accept=".omex,.zip"
+              layout="list"
+              icon="i-lucide-upload-cloud"
+              label="Drop COMBINE/OMEX archive here"
+              class="w-full min-h-40"
+              :disabled="checkingCompatibility || isSubmitting"
+              @update:model-value="onFileUpload"
             >
-              <div class="size-12 rounded-full bg-primary/10 flex items-center justify-center mb-3 text-primary">
-                <UIcon name="i-lucide-upload-cloud" class="size-6" />
-              </div>
-
-              <h3 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
-                Upload Archive File
-              </h3>
-              <p class="text-xs text-neutral-500 mb-4 max-w-xs">
-                Drag &amp; drop or browse for an OMEX/COMBINE archive.
-              </p>
-
-              <div v-if="!omexFile" class="flex flex-col items-center">
-                <label class="cursor-pointer">
-                  <span class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-white text-xs font-semibold shadow-xs transition-colors">
-                    <UIcon name="i-lucide-folder-open" class="size-4" />
-                    Browse Files
-                  </span>
-                  <input
-                    type="file"
-                    accept=".omex,.zip"
-                    class="sr-only"
-                    @change="onFileSelect"
-                  >
-                </label>
-                <span class="text-[11px] text-neutral-400 mt-2">
-                  Supported formats: <code class="font-mono">.omex</code>, <code class="font-mono">.zip</code>
-                </span>
-              </div>
-
-              <!-- Selected File State -->
-              <div v-else class="flex flex-col items-center gap-2">
-                <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-medium text-primary">
-                  <UIcon name="i-lucide-file-check" class="size-4 shrink-0 text-primary" />
-                  <span class="truncate max-w-[180px] font-mono">{{ omexFile.name }}</span>
-                  <span class="text-neutral-400 text-[10px]">({{ (omexFile.size / 1024).toFixed(0) }} KB)</span>
-                  <button
-                    type="button"
-                    class="ml-1 text-neutral-400 hover:text-red-500 transition-colors cursor-pointer"
-                    title="Remove file"
-                    @click="clearFile"
-                  >
-                    <UIcon name="i-lucide-x" class="size-3.5" />
-                  </button>
+              <template #description>
+                <div class="flex flex-col items-center gap-1 mt-1">
+                  <span class="text-xs text-neutral-500 dark:text-neutral-400">or click to browse from your device</span>
+                  <div class="flex flex-wrap items-center justify-center gap-1.5 mt-1.5">
+                    <span class="text-xs text-neutral-400">Accepted formats:</span>
+                    <UBadge
+                      v-for="ext in ['.omex', '.zip']"
+                      :key="ext"
+                      size="md"
+                      variant="subtle"
+                      color="neutral"
+                    >
+                      {{ ext }}
+                    </UBadge>
+                  </div>
                 </div>
-                <label class="cursor-pointer text-[11px] text-primary hover:underline mt-1">
-                  Choose a different file
-                  <input
-                    type="file"
-                    accept=".omex,.zip"
-                    class="sr-only"
-                    @change="onFileSelect"
-                  >
-                </label>
-              </div>
-            </div>
+              </template>
+            </UFileUpload>
+          </div>
 
-            <!-- Tile 2: Public URL -->
-            <div
-              :class="[
-                'border-2 border-dashed rounded-xl p-6 transition-all duration-200 flex flex-col items-center justify-center text-center min-h-[220px]',
-                omexUrl && !omexFile && !selectedPlatformRun
-                  ? 'border-primary/60 bg-primary-50/20 dark:bg-primary-950/20'
-                  : 'border-neutral-300 dark:border-neutral-700 hover:border-primary dark:hover:border-primary bg-neutral-50/40 dark:bg-neutral-800/20'
-              ]"
-            >
-              <div class="size-12 rounded-full bg-primary/10 flex items-center justify-center mb-3 text-primary">
-                <UIcon name="i-lucide-link" class="size-6" />
-              </div>
-
-              <h3 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
-                Fetch from Public URL
-              </h3>
-              <p class="text-xs text-neutral-500 mb-4 max-w-xs">
-                Direct link to any publicly accessible OMEX or SED-ML archive.
-              </p>
-
-              <div class="w-full max-w-xs flex flex-col items-center gap-2">
+          <!-- Mode 2: Public URL -->
+          <div v-else-if="inputSourceMode === 'url'" class="space-y-3 pt-1">
+            <div class="space-y-1.5">
+              <label class="block text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                Public Archive URL
+              </label>
+              <div class="flex gap-2">
                 <UInput
                   v-model="omexUrl"
                   placeholder="https://example.org/biomodel.omex"
-                  size="xs"
+                  class="flex-1 font-mono text-xs"
                   icon="i-lucide-globe"
-                  class="w-full font-mono text-xs"
+                  :disabled="checkingCompatibility || isSubmitting"
                   @keydown.enter.prevent="onUrlSubmit"
                 />
-                <div class="flex items-center gap-2">
+                <UButton
+                  variant="soft"
+                  color="primary"
+                  icon="i-lucide-check-circle"
+                  :disabled="!omexUrl.trim() || checkingCompatibility || isSubmitting"
+                  label="Evaluate URL"
+                  @click="onUrlSubmit"
+                />
+                <UButton
+                  v-if="omexUrl"
+                  variant="ghost"
+                  color="neutral"
+                  icon="i-lucide-x"
+                  title="Clear URL"
+                  :disabled="checkingCompatibility || isSubmitting"
+                  @click="clearUrl"
+                />
+              </div>
+              <p class="text-xs text-neutral-500 dark:text-neutral-400">
+                Ensure the URL points directly to the raw COMBINE/OMEX or SED-ML archive (CORS or direct public download).
+              </p>
+            </div>
+          </div>
+
+          <!-- Mode 3: Platform Run -->
+          <div v-else-if="inputSourceMode === 'run'" class="space-y-3 pt-1">
+            <div class="space-y-1.5">
+              <label class="block text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                Platform Run Archive
+              </label>
+              <div v-if="!selectedPlatformRun" class="flex flex-col items-start gap-2">
+                <p class="text-xs text-neutral-500 dark:text-neutral-400">
+                  Pick a completed run from the platform database to extract and evaluate its archive.
+                </p>
+                <UButton
+                  color="primary"
+                  variant="soft"
+                  icon="i-lucide-search"
+                  label="Browse Platform Runs"
+                  :disabled="checkingCompatibility || isSubmitting"
+                  @click="isRunPickerModalOpen = true"
+                />
+              </div>
+              <div v-else class="flex items-center gap-3">
+                <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-medium text-primary">
+                  <UIcon name="i-lucide-check-circle-2" class="size-4 shrink-0 text-primary" />
+                  <span class="truncate max-w-[240px] font-mono">{{ selectedPlatformRun.name }}</span>
+                  <span class="text-neutral-400 text-[10px]">({{ selectedPlatformRun.simulator }})</span>
                   <UButton
-                    variant="soft"
-                    color="primary"
-                    size="xs"
-                    icon="i-lucide-check-circle"
-                    :disabled="!omexUrl.trim()"
-                    label="Evaluate URL"
-                    @click="onUrlSubmit"
-                  />
-                  <UButton
-                    v-if="omexUrl"
                     variant="ghost"
                     color="neutral"
                     size="xs"
                     icon="i-lucide-x"
-                    title="Clear URL"
-                    @click="clearUrl"
+                    title="Remove selected run"
+                    class="p-0.5 ml-1"
+                    @click="clearPlatformRun"
                   />
                 </div>
-              </div>
-            </div>
-
-            <!-- Tile 3: Select from Platform Runs -->
-            <div
-              :class="[
-                'border-2 border-dashed rounded-xl p-6 transition-all duration-200 flex flex-col items-center justify-center text-center min-h-[220px]',
-                selectedPlatformRun
-                  ? 'border-primary/60 bg-primary-50/20 dark:bg-primary-950/20'
-                  : 'border-neutral-300 dark:border-neutral-700 hover:border-primary dark:hover:border-primary bg-neutral-50/40 dark:bg-neutral-800/20'
-              ]"
-            >
-              <div class="size-12 rounded-full bg-primary/10 flex items-center justify-center mb-3 text-primary">
-                <UIcon name="i-lucide-layers" class="size-6" />
-              </div>
-
-              <h3 class="text-sm font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
-                Select Platform Run
-              </h3>
-              <p class="text-xs text-neutral-500 mb-4 max-w-xs">
-                Pick a completed run from the platform database to extract its archive.
-              </p>
-
-              <div v-if="!selectedPlatformRun" class="flex flex-col items-center">
                 <UButton
+                  variant="link"
                   color="primary"
-                  variant="soft"
                   size="xs"
-                  icon="i-lucide-search"
-                  label="Browse Platform Runs"
+                  label="Choose a different run"
+                  class="p-0 text-xs"
                   @click="isRunPickerModalOpen = true"
                 />
-              </div>
-
-              <!-- Selected Platform Run State -->
-              <div v-else class="flex flex-col items-center gap-2">
-                <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-medium text-primary">
-                  <UIcon name="i-lucide-check-circle-2" class="size-4 shrink-0 text-primary" />
-                  <span class="truncate max-w-[160px] font-mono">{{ selectedPlatformRun.name }}</span>
-                  <span class="text-neutral-400 text-[10px]">({{ selectedPlatformRun.simulator }})</span>
-                  <button
-                    type="button"
-                    class="ml-1 text-neutral-400 hover:text-red-500 transition-colors cursor-pointer"
-                    title="Remove selected run"
-                    @click="clearPlatformRun"
-                  >
-                    <UIcon name="i-lucide-x" class="size-3.5" />
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  class="cursor-pointer text-[11px] text-primary hover:underline mt-1"
-                  @click="isRunPickerModalOpen = true"
-                >
-                  Choose a different run
-                </button>
               </div>
             </div>
           </div>
 
-          <!-- Compatibility Loading Indicator using canonical UAlert -->
+          <!-- Compatibility Loading Indicator -->
           <UAlert
             v-if="checkingCompatibility"
             color="primary"
@@ -1056,7 +1059,7 @@ onMounted(() => {
             description="Extracting algorithm KiSAO IDs and matching compatible solvers..."
           />
 
-          <!-- Compatibility Error Notice using canonical UAlert -->
+          <!-- Compatibility Error Notice -->
           <UAlert
             v-if="compatibilityError"
             color="warning"
@@ -1098,12 +1101,12 @@ onMounted(() => {
                 </span>
               </div>
 
-              <UBadge color="success" variant="subtle" size="xs">
+              <UBadge color="success" variant="subtle" size="md">
                 {{ compatibleSimulators.length }} Compatible Solvers Matched
               </UBadge>
             </div>
 
-            <!-- Previous Verification Alert Banner using canonical UAlert -->
+            <!-- Previous Verification Alert Banner -->
             <UAlert
               v-if="pastVerificationsForHash.length > 0"
               color="primary"
@@ -1206,7 +1209,7 @@ onMounted(() => {
                   </p>
                 </div>
                 <div v-if="totalHistoricalRunsCount > 0" class="flex items-center gap-2">
-                  <UBadge color="primary" variant="subtle" size="xs">
+                  <UBadge color="primary" variant="subtle" size="md">
                     {{ selectedHistoricalRunIds.length }} selected
                   </UBadge>
                   <UButton
@@ -1234,15 +1237,17 @@ onMounted(() => {
 
               <!-- Simulators Grid -->
               <div v-else class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-                <div
+                <UCard
                   v-for="sim in compatibleSimulators"
                   :key="sim.id"
                   :class="[
-                    'border rounded-xl p-3.5 transition-all text-xs flex flex-col justify-between',
+                    'transition-all text-xs flex flex-col justify-between',
                     sim.selected
-                      ? 'border-primary bg-primary-50/30 dark:bg-primary-950/20 shadow-xs'
-                      : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 opacity-70'
+                      ? 'ring-2 ring-primary bg-primary-50/20 dark:bg-primary-950/20 shadow-xs'
+                      : 'opacity-70 hover:opacity-100'
                   ]"
+                  variant="subtle"
+                  :ui="{ body: 'p-3.5 flex flex-col justify-between h-full' }"
                 >
                   <div>
                     <div class="flex items-start justify-between gap-2">
@@ -1254,7 +1259,7 @@ onMounted(() => {
                       />
 
                       <UBadge
-                        size="xs"
+                        size="md"
                         :color="sim.exact ? 'success' : 'primary'"
                         variant="subtle"
                       >
@@ -1263,7 +1268,7 @@ onMounted(() => {
                     </div>
                   </div>
 
-                  <!-- Version Selector Dropdown using canonical USelect -->
+                  <!-- Version Selector Dropdown -->
                   <div class="mt-3 pt-2.5 border-t border-neutral-100 dark:border-neutral-800">
                     <label class="block text-[10px] uppercase font-semibold text-neutral-500 mb-1">
                       Solver Version:
@@ -1275,7 +1280,7 @@ onMounted(() => {
                       class="w-full font-mono text-xs"
                     />
                   </div>
-                </div>
+                </UCard>
               </div>
 
               <!-- Tolerances & Submit Section (Solvers) -->
@@ -1327,7 +1332,7 @@ onMounted(() => {
 
             <!-- 3B: Historical Runs Selection & Tolerances -->
             <div v-else-if="step2Mode === 'historical'" class="space-y-6">
-              <!-- Searching Loading State using canonical UEmpty -->
+              <!-- Searching Loading State -->
               <UEmpty
                 v-if="isSearchingHistoricalRuns"
                 loading
@@ -1356,7 +1361,7 @@ onMounted(() => {
                 ]"
               />
 
-              <!-- Empty State: No Runs Found using canonical UEmpty -->
+              <!-- Empty State: No Runs Found -->
               <UEmpty
                 v-else-if="totalHistoricalRunsCount === 0"
                 icon="i-lucide-history"
@@ -1377,7 +1382,7 @@ onMounted(() => {
               <!-- Historical Runs Available -->
               <div v-else class="space-y-6">
                 <!-- Hierarchical Tree Table: Simulator -> Version -> Runs -->
-                <div class="p-4 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-3">
+                <UCard variant="subtle" :ui="{ body: 'p-4 space-y-3' }">
                   <div
                     v-for="simGroup in historicalGroups"
                     :key="simGroup.simulatorId"
@@ -1436,7 +1441,7 @@ onMounted(() => {
                               <UBadge
                                 :color="run.status === 'SUCCEEDED' ? 'success' : run.status === 'FAILED' ? 'error' : 'neutral'"
                                 variant="subtle"
-                                size="xs"
+                                size="md"
                               >
                                 {{ run.status }}
                               </UBadge>
@@ -1449,7 +1454,7 @@ onMounted(() => {
                       </div>
                     </div>
                   </div>
-                </div>
+                </UCard>
 
                 <!-- Tolerances & Submit Section (Historical Runs) -->
                 <div class="pt-4 border-t border-neutral-100 dark:border-neutral-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -1515,7 +1520,7 @@ onMounted(() => {
                 <h2 class="text-base sm:text-lg font-semibold text-neutral-900 dark:text-white">
                   Lookup Past Verification Report
                 </h2>
-                <UBadge color="neutral" variant="subtle" size="xs">Index In Development</UBadge>
+                <UBadge color="neutral" variant="subtle" size="md">Index In Development</UBadge>
               </div>
               <p class="text-xs text-neutral-500 mt-1 max-w-2xl leading-relaxed">
                 We are actively developing a server-side catalog to browse completed verification workflows by OMEX hash, model category, and solver combination. In the meantime, you can directly inspect any completed or in-progress verification workflow using its Workflow ID below.
@@ -1551,7 +1556,7 @@ onMounted(() => {
         </div>
       </UCard>
 
-      <!-- Global Submission Error Banner using canonical UAlert -->
+      <!-- Global Submission Error Banner -->
       <UAlert
         v-if="submissionError"
         color="error"
@@ -1594,7 +1599,7 @@ onMounted(() => {
 
             <!-- KPI Cards -->
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-              <div class="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-3 text-center shadow-xs">
+              <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
                 <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Overall Concordance</span>
                 <span
                   class="text-lg font-bold font-mono"
@@ -1602,9 +1607,9 @@ onMounted(() => {
                 >
                   {{ overallConcordance }}%
                 </span>
-              </div>
+              </UCard>
 
-              <div class="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-3 text-center shadow-xs">
+              <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
                 <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Solvers Compared</span>
                 <span class="text-lg font-bold font-mono text-neutral-800 dark:text-neutral-200">
                   {{ simulatorsList.length }}
@@ -1612,16 +1617,16 @@ onMounted(() => {
                     ({{ excludedSimulatorsList.length }} failed)
                   </span>
                 </span>
-              </div>
+              </UCard>
 
-              <div class="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-3 text-center shadow-xs">
+              <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
                 <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Variables</span>
                 <span class="text-lg font-bold font-mono text-neutral-800 dark:text-neutral-200">
                   {{ variableComparisonRows.length }}
                 </span>
-              </div>
+              </UCard>
 
-              <div class="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-3 text-center shadow-xs">
+              <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
                 <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Outliers Flagged</span>
                 <span
                   class="text-lg font-bold font-mono"
@@ -1629,7 +1634,7 @@ onMounted(() => {
                 >
                   {{ totalOutlierCount }}
                 </span>
-              </div>
+              </UCard>
             </div>
           </div>
 
