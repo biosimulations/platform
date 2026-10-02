@@ -138,8 +138,57 @@ export function useCombineApi() {
     }
   }
 
+  /**
+   * Validate a SED-ML simulation experiment file or public URL against the COMBINE API.
+   *
+   * @param fileOrUrl - Either a File object or a string URL to the SED-ML file.
+   */
+  async function validateSedml(
+    fileOrUrl: File | string
+  ): Promise<ValidationReport> {
+    const formData = new FormData();
+
+    if (typeof fileOrUrl === 'string') {
+      formData.append('url', fileOrUrl.trim());
+    } else {
+      formData.append('file', fileOrUrl, fileOrUrl.name);
+    }
+
+    try {
+      const response = await $fetch<any>(`${baseUrl}/sed-ml/validate`, {
+        method: 'POST',
+        body: formData
+      });
+
+      return normalizeValidationReport(response);
+    } catch (err: any) {
+      // Check for structured HTTPError payload from COMBINE API (e.g. 400 Bad Request)
+      const errorData = err?.data;
+      if (errorData && (errorData.title || errorData.detail)) {
+        return {
+          _type: 'ValidationReport',
+          status: 'invalid',
+          errors: [
+            {
+              _type: 'ValidationMessage',
+              summary: errorData.title || 'Simulation validation error',
+              details: errorData.detail
+                ? [{ _type: 'ValidationMessage', summary: errorData.detail }]
+                : undefined
+            }
+          ],
+          warnings: []
+        };
+      }
+
+      // Re-throw unexpected connection or server errors
+      throw err;
+    }
+  }
+
   return {
     baseUrl,
-    validateModel
+    validateModel,
+    validateSedml
   };
 }
