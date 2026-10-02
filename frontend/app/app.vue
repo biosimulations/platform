@@ -194,6 +194,12 @@ const navigation_items = ref<NavigationMenuItem[][]>([
           class: 'cursor-pointer',
         },
         {
+          label: 'Verify a model',
+          icon: 'i-lucide-shield-check',
+          to: '/utilities/verify-model',
+          class: 'cursor-pointer',
+        },
+        {
           label: 'Validate a model',
           icon: 'i-lucide-file-check',
           to: '/utilities/validate-model',

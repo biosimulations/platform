@@ -14,11 +14,14 @@ export default defineNuxtPlugin((nuxtApp) => {
   })
   nuxtApp.vueApp.use(auth0)
 
-  // Intercept outgoing HTTP requests: enable credentials and attach Bearer token for platform endpoints
+
   globalThis.$fetch = $fetch.create({
     async onRequest({ request, options }) {
       const urlStr = typeof request === 'string' ? request : (request as Request)?.url || ''
-      const isExternalPublicApi = urlStr.includes('api.biosimulators.org')
+      const isExternalPublicApi
+        = urlStr.includes('api.biosimulators.org')
+          || urlStr.includes('api.biosimulations.org')
+          || urlStr.includes('simdata.api.biosimulations.org')
 
       if (options.credentials === undefined) {
         options.credentials = isExternalPublicApi ? 'omit' : 'include'

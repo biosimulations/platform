@@ -12,8 +12,6 @@ interface FooterColumnCategory {
   links: FooterLink[]
 }
 
-const currentYear = new Date().getFullYear()
-
 // Arbitrated categories combining the Angular platform specifications,
 // core application routes, and developer API resources.
 const categories: FooterColumnCategory[] = [
@@ -50,6 +48,12 @@ const categories: FooterColumnCategory[] = [
         label: 'Validate a Simulator',
         to: '/simulators/validate',
         icon: 'i-lucide-check-circle'
+      },
+      {
+        label: 'Verify a Model',
+        to: '/utilities/verify-model',
+        icon: 'i-lucide-shield-check',
+        badge: 'New'
       }
     ]
   },
