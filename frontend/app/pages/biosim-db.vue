@@ -119,7 +119,7 @@ async function fetch_projects() {
 
   try {
     // Results: the platform backend already returns ProjectStub-shaped rows with
-    // image_url + model_format populated — no per-project /files call needed.
+    // image_url + model_format populated - no per-project /files call needed.
     // Pagination is 1-indexed here; the table is 0-indexed, so add one.
     $fetch<ProjectStubPage>(`${runtimeConfig.public.api_url}/projects`, {
       method: 'GET',
