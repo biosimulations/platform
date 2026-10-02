@@ -181,6 +181,7 @@ async def test_exact_query_body_and_allowlisted_caller_headers(
         "Accept": "application/x-legacy",
         "Content-Type": "application/custom; charset=latin-1",
         "Range": "bytes=1-3",
+        "If-Range": '"v1"',
         "If-None-Match": '"old"',
         "If-Modified-Since": "Mon, 28 Sep 2026 00:00:00 GMT",
         "X-Untrusted": "bad",
@@ -217,6 +218,10 @@ async def test_exact_query_body_and_allowlisted_caller_headers(
     ):
         assert name not in outbound.headers
     assert ("range" in outbound.headers) == path.endswith("/download")
+    # If-Range is only meaningful with Range, so it travels exactly where Range does.
+    assert ("if-range" in outbound.headers) == path.endswith("/download")
+    if path.endswith("/download"):
+        assert outbound.headers["if-range"] == caller_headers["If-Range"]
     assert ("if-none-match" in outbound.headers) == (method == "GET")
     assert ("content-type" in outbound.headers) == (method == "PATCH")
     if method == "PATCH":
@@ -361,6 +366,88 @@ async def test_download_range_binary_and_compression() -> None:
     assert response.headers["accept-ranges"] == "bytes"
     assert response.headers["etag"] == '"strong"'
     assert stream.reads == 2 and stream.closed
+
+
+_CURRENT_BODY = bytes(range(100))
+_CURRENT_ETAG = '"v2"'
+_CURRENT_LAST_MODIFIED = "Fri, 02 Oct 2026 12:00:00 GMT"
+
+
+def _rfc9110_range_origin(seen: list[httpx.Request]) -> Callable[[httpx.Request], httpx.Response]:
+    """An upstream that evaluates If-Range the way RFC 9110 13.1.5 requires.
+
+    A matching strong ETag, or an HTTP-date equal to Last-Modified, lets the Range
+    apply (206). Anything else means the client's partial copy is of an older
+    representation, so the Range is ignored and the full current body is sent (200).
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        validators = {"ETag": _CURRENT_ETAG, "Last-Modified": _CURRENT_LAST_MODIFIED}
+        if_range = request.headers.get("if-range")
+        range_applies = "range" in request.headers and if_range in (
+            None, _CURRENT_ETAG, _CURRENT_LAST_MODIFIED,
+        )
+        if range_applies:
+            start, end = (int(n) for n in request.headers["range"].removeprefix("bytes=").split("-"))
+            part = _CURRENT_BODY[start:end + 1]
+            return httpx.Response(
+                206,
+                stream=Chunks([part]),
+                headers={
+                    **validators,
+                    "Content-Length": str(len(part)),
+                    "Content-Range": f"bytes {start}-{end}/{len(_CURRENT_BODY)}",
+                    "Accept-Ranges": "bytes",
+                },
+            )
+        return httpx.Response(
+            200,
+            stream=Chunks([_CURRENT_BODY]),
+            headers={**validators, "Content-Length": str(len(_CURRENT_BODY)), "Accept-Ranges": "bytes"},
+        )
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    "if_range,expected_status",
+    [
+        (_CURRENT_ETAG, 206),
+        ('"v1"', 200),
+        (_CURRENT_LAST_MODIFIED, 206),
+        ("Thu, 01 Oct 2026 12:00:00 GMT", 200),
+    ],
+    ids=["etag-matches", "etag-stale", "date-matches", "date-stale"],
+)
+async def test_resumed_download_honours_if_range(if_range: str, expected_status: int) -> None:
+    """A stale validator must yield the full current body, never a 206 slice.
+
+    Regression: If-Range was not forwarded, so the upstream saw a bare Range and
+    answered 206 for the requested bytes of the *new* representation -- which a
+    client resuming an old partial file would splice onto its stale prefix.
+    """
+    seen: list[httpx.Request] = []
+    caller, upstream = clients(_rfc9110_range_origin(seen))
+    async with caller, upstream:
+        async with caller.stream(
+            "GET",
+            "/runs/example/download",
+            headers={"Range": "bytes=40-49", "If-Range": if_range},
+        ) as response:
+            body = b"".join([chunk async for chunk in response.aiter_raw()])
+
+    assert len(seen) == 1
+    assert seen[0].headers["if-range"] == if_range
+    assert seen[0].headers["range"] == "bytes=40-49"
+    assert response.status_code == expected_status
+    if expected_status == 206:
+        assert body == _CURRENT_BODY[40:50]
+        assert response.headers["content-range"] == "bytes 40-49/100"
+    else:
+        assert body == _CURRENT_BODY
+        assert "content-range" not in response.headers
+    assert response.headers["etag"] == _CURRENT_ETAG
 
 
 async def test_stream_is_lazy_and_closes_on_cancellation() -> None:

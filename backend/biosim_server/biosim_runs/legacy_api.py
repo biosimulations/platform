@@ -234,7 +234,10 @@ async def proxy_run(
         if request.method == "GET":
             allowed |= _READ_HEADERS
         if operation == "download":
-            allowed |= {"range"}
+            # If-Range travels with Range: without it a resumed download with a
+            # stale validator gets a 206 slice of the *new* representation spliced
+            # onto old bytes, where RFC 9110 13.1.5 requires the full 200.
+            allowed |= {"range", "if-range"}
         if operation == "update":
             allowed |= {"content-type"}
         headers = _headers(httpx.Headers(request.headers.raw), allowed)

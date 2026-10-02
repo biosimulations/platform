@@ -122,8 +122,9 @@ def _cooldown_error(now: float) -> "Auth0ManagementError":
 
     Same class as the failure that armed it, so a throttled token endpoint keeps
     surfacing as a retryable 503 instead of degrading to a 502 for every caller
-    after the first. The Retry-After hint is what is left of the cooldown,
-    rounded up and never less than one second.
+    after the first. A rate-limited cooldown lasts exactly as long as the delay
+    the first caller was given, so the hint here is what is left of it, rounded
+    up and never less than one second: every caller is sent back at the same time.
     """
     if _token_refresh_failure_rate_limited:
         return Auth0ManagementRateLimited(max(1, math.ceil(_token_refresh_failed_until - now)))
@@ -210,16 +211,26 @@ async def _get_management_token(*, deadline: float) -> str:
             resp.raise_for_status()
             access_token, expires_in = _validated_token_payload(resp.json())
         except httpx.HTTPStatusError as exc:
-            _token_refresh_failed_until = time.time() + _MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS
             _token_refresh_failure_rate_limited = exc.response.status_code == 429
             if exc.response.status_code == 429:
                 # Same distinction the resource calls make: Auth0 throttling is a
-                # 503-with-Retry-After the caller can act on, not a 502.
+                # 503-with-Retry-After the caller can act on, not a 502. The
+                # cooldown lasts as long as the delay advertised, so every caller
+                # it turns away is told the same moment to come back, and none of
+                # them retries the token endpoint before Auth0 asked.
+                # Never advertise less than the cooldown itself: a caller told to
+                # come back sooner would only be turned away again.
+                retry_after = max(
+                    math.ceil(_MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS),
+                    _rate_limit_hint(exc.response),
+                )
+                _token_refresh_failed_until = time.time() + retry_after
                 logger.warning(
                     "Auth0 token endpoint rate-limited; sharing the failure for %ds",
-                    int(_MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS),
+                    retry_after,
                 )
-                raise Auth0ManagementRateLimited(_MGMT_EXHAUSTED_RETRY_AFTER_SECONDS) from exc
+                raise Auth0ManagementRateLimited(retry_after) from exc
+            _token_refresh_failed_until = time.time() + _MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS
             logger.warning(
                 "Auth0 Management token acquisition failed (%s); sharing the failure for %ds",
                 type(exc).__name__, int(_MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS),
@@ -290,6 +301,15 @@ def _retry_after_seconds(resp: httpx.Response) -> float | None:
     if seconds < 0:
         return None
     return min(seconds, float(_MGMT_RETRY_AFTER_CEILING_SECONDS))
+
+
+def _rate_limit_hint(resp: httpx.Response) -> int:
+    """Whole seconds a caller should wait after an Auth0 429: its own Retry-After
+    (clamped, rounded up) when it sent a usable one, else the fixed fallback."""
+    retry_after = _retry_after_seconds(resp)
+    if retry_after is None:
+        return _MGMT_EXHAUSTED_RETRY_AFTER_SECONDS
+    return max(1, math.ceil(retry_after))
 
 
 async def _send_with_retry(
@@ -456,7 +476,7 @@ async def create_password_change_ticket(user_id: str) -> str:
         # ticket, so a second attempt would be a second capability.
         raise Auth0ManagementUnavailable("Auth0 password reset request timed out") from exc
     if resp.status_code == 429:
-        raise Auth0ManagementRateLimited(10)
+        raise Auth0ManagementRateLimited(_rate_limit_hint(resp))
     resp.raise_for_status()
     payload = resp.json()
     ticket = payload.get("ticket") if isinstance(payload, dict) else None

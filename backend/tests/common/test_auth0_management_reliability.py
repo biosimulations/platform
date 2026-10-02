@@ -192,19 +192,57 @@ async def test_token_endpoint_rate_limit_is_distinguishable(patch_client: Simple
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers,advertised",
+    [({}, mgmt._MGMT_EXHAUSTED_RETRY_AFTER_SECONDS), ({"Retry-After": "7.5"}, 8),
+     ({"Retry-After": "20"}, 20), ({"Retry-After": "900"}, mgmt._MGMT_RETRY_AFTER_CEILING_SECONDS),
+     ({"Retry-After": "soon"}, mgmt._MGMT_EXHAUSTED_RETRY_AFTER_SECONDS),
+     # Shorter than the shared cooldown: everyone is told the cooldown, the
+     # moment the token endpoint will actually be tried again.
+     ({"Retry-After": "1"}, int(mgmt._MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS))],
+    ids=["no-header", "fractional", "auth0-delay", "clamped", "malformed", "below-cooldown"],
+)
 async def test_rate_limited_refresh_stays_rate_limited_inside_the_cooldown(
-    patch_client: SimpleNamespace,
+    patch_client: SimpleNamespace, headers: dict[str, str], advertised: int,
 ) -> None:
-    """A shared 429 must replay as a 429, not degrade to a 502 for later callers."""
-    endpoint = _Endpoint(token_response=httpx.Response(429, json={"message": "slow down"}))
+    """A shared 429 replays as a 429 with the same return time, not a 502.
+
+    The first caller is told Auth0's own delay (or the fallback); callers turned
+    away by the cooldown are told what is left of that same delay, and nobody
+    re-posts to the token endpoint before it has passed.
+    """
+    endpoint = _Endpoint(
+        token_response=httpx.Response(429, json={"message": "slow down"}, headers=headers)
+    )
     patch_client.install(endpoint)
 
-    with pytest.raises(Auth0ManagementRateLimited):
+    with pytest.raises(Auth0ManagementRateLimited) as first:
         await get_auth0_user("auth0|abc")
     with pytest.raises(Auth0ManagementRateLimited) as replayed:
         await get_auth0_user("auth0|abc")
     assert endpoint.token_posts == 1
-    assert 1 <= replayed.value.retry_after <= int(mgmt._MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS)
+    assert first.value.retry_after == advertised
+    assert advertised - 1 <= replayed.value.retry_after <= advertised
+    # The cooldown is never shorter than the delay callers were given.
+    assert mgmt._token_refresh_failed_until - time.time() > advertised - 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers,advertised",
+    [({}, mgmt._MGMT_EXHAUSTED_RETRY_AFTER_SECONDS), ({"Retry-After": "7"}, 7)],
+    ids=["no-header", "auth0-delay"],
+)
+async def test_ticket_endpoint_rate_limit_carries_auth0s_delay(
+    patch_client: SimpleNamespace, headers: dict[str, str], advertised: int,
+) -> None:
+    endpoint = _Endpoint(resource=httpx.Response(429, json={}, headers=headers))
+    patch_client.install(endpoint)
+
+    with pytest.raises(Auth0ManagementRateLimited) as raised:
+        await create_password_change_ticket("auth0|abc")
+    assert raised.value.retry_after == advertised
+    assert endpoint.ticket_posts == 1
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,5 @@
 """Hosted reset contract; no live Auth0 requests."""
+import asyncio
 import json
 import time
 from collections.abc import Iterator
@@ -203,7 +204,8 @@ def test_errors_are_generic(error: Exception, status: int, monkeypatch: pytest.M
     assert "sensitive" not in response.text + caplog.text
     assert_no_store(response)
     if status == 503:
-        assert response.headers["retry-after"] == "10"
+        # The failure's own delay is passed through, never a fixed constant.
+        assert response.headers["retry-after"] == "20"
 
 
 def test_local_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -329,3 +331,57 @@ async def test_malformed_payload(content: bytes, monkeypatch: pytest.MonkeyPatch
     install_transport(monkeypatch, httpx.MockTransport(lambda request: httpx.Response(201, content=content)))
     with pytest.raises((ValueError, management.Auth0ManagementError)):
         await management.create_password_change_ticket("auth0|mine")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "token_headers,advertised",
+    [({}, management._MGMT_EXHAUSTED_RETRY_AFTER_SECONDS), ({"Retry-After": "7"}, 7)],
+    ids=["no-header", "auth0-delay"],
+)
+async def test_concurrent_resets_after_auth0_throttling_all_get_the_same_retryable_503(
+    token_headers: dict[str, str], advertised: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One Auth0 token-endpoint 429, three concurrent reset requests.
+
+    Regression: the first caller became a 503 with Retry-After while the two
+    callers queued behind the token-refresh lock became generic 502s, losing both
+    the rate-limit classification and the delay. Every caller must now get the
+    same retryable 503, with one token request upstream and no ticket request.
+    """
+    authorize()
+    token_posts = 0
+    ticket_posts = 0
+
+    async def auth0(request: httpx.Request) -> httpx.Response:
+        nonlocal token_posts, ticket_posts
+        if request.url.path == "/oauth/token":
+            token_posts += 1
+            # Hold the token request until both other callers are queued on the
+            # refresh lock, so this exercises the concurrent path, not a serial one.
+            for _ in range(200):
+                if len(management._token_refresh_lock._waiters or ()) == 2:
+                    break
+                await asyncio.sleep(0)
+            else:
+                raise AssertionError("the other reset requests never queued on the refresh lock")
+            return httpx.Response(429, json={"message": "Too Many Requests"}, headers=token_headers)
+        ticket_posts += 1
+        return httpx.Response(201, json={"ticket": URL})
+
+    monkeypatch.setattr(
+        management, "_http_client", httpx.AsyncClient(transport=httpx.MockTransport(auth0))
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://platform.test"
+    ) as caller:
+        responses = await asyncio.gather(*(caller.post(PATH) for _ in range(3)))
+
+    assert [response.status_code for response in responses] == [503, 503, 503]
+    for response in responses:
+        assert advertised - 1 <= int(response.headers["retry-after"]) <= advertised
+        assert response.json() == {"detail": "Password reset is temporarily unavailable"}
+        assert_no_store(response)
+    assert token_posts == 1
+    assert ticket_posts == 0
+    await management.close_auth0_http_client()

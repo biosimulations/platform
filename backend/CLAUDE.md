@@ -266,8 +266,10 @@ return 413 before any mutation is sent. GET and DELETE send no body.
 Query bytes retain repeated keys and original escaping. IDs use `upstream_url`:
 dot-only IDs are rejected, special characters quoted, and decoded slashes do
 not match the single-segment route. Accept and Authorization are allowlisted;
-GET also forwards If-None-Match/If-Modified-Since, download additionally Range,
-and PATCH additionally Content-Type. Connection-nominated headers are stripped.
+GET also forwards If-None-Match/If-Modified-Since, download additionally Range
+and If-Range, and PATCH additionally Content-Type. If-Range travels with Range so a
+resumed download with a stale validator gets the full current 200 from upstream,
+not a 206 slice of a newer file (RFC 9110 §13.1.5). Connection-nominated headers are stripped.
 Host/framing are generated afresh; arbitrary X-* and proxy headers are not sent.
 
 Downloads stream raw bytes (also for non-success bodies), remain open through
@@ -416,8 +418,9 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | Management API (`PATCH`/`DELETE /api/v1/me`) rate-limited (429) through all retries | **503** with `Retry-After`. |
 | Management API 5xx or transport failure through all retries | **502**. |
 | Password reset unconfigured (`AUTH0_DOMAIN`, `AUTH0_PASSWORD_RESET_CLIENT_ID`, or Management credentials blank) | **503** `Password reset is unavailable`. |
-| Password-reset ticket 429 (Auth0 rate limit) | **503** with `Retry-After: 10`; issuance is deliberately not retried (non-idempotent). |
-| Password-reset ticket/token 4xx/5xx/transport/malformed or unsafe URL | **502** generic; upstream body is never logged or returned. |
+| Password-reset ticket 429 (Auth0 rate limit) | **503** with `Retry-After` set to Auth0's own `Retry-After` (rounded up, clamped to 30 s), or 10 s when it sends none; issuance is deliberately not retried (non-idempotent). |
+| Auth0 token endpoint 429 (any Management-backed route) | **503** with `Retry-After`, for the caller that hit it **and** every caller during the shared refresh cooldown. The cooldown lasts as long as the delay advertised (Auth0's `Retry-After` as above, never under the 5 s cooldown), so concurrent callers are all sent back at the same moment and none re-posts to the token endpoint before then. One token request per throttling event per pod. |
+| Password-reset ticket/token non-429 4xx, 5xx, transport, malformed or unsafe URL | **502** generic; upstream body is never logged or returned. |
 | Valid token, non-`auth0\|` sub, or issuer ≠ `https://AUTH0_DOMAIN/` | **403** `Password reset is unavailable for this account`. |
 
 **Password-reset enablement — merge-ready is not deploy-enabled.** Ticket issuance needs

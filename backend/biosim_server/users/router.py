@@ -301,10 +301,13 @@ async def reset_my_password(
         _require_recent_authentication(user, settings)
     try:
         url = await create_password_change_ticket(user.sub)
-    except Auth0ManagementRateLimited:
+    except Auth0ManagementRateLimited as exc:
+        # The delay comes from the failure itself (Auth0's Retry-After, or what is
+        # left of a shared token-refresh cooldown), so concurrent callers turned
+        # away by one throttling event are all told the same moment to come back.
         raise HTTPException(
             status_code=503, detail="Password reset is temporarily unavailable",
-            headers={**_NO_STORE, "Retry-After": "10"},
+            headers={**_NO_STORE, "Retry-After": str(exc.retry_after)},
         ) from None
     except Exception:
         # Do not log exceptions: URLs/bodies may contain ticket or credential material.
