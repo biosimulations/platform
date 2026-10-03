@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     # simulations/__init__.py -> router -> dependencies.
     from biosim_server.simulations.database import SimulationRunDatabaseService
     from biosim_server.projects.database import ProjectDatabaseService
+    from biosim_server.biosim_verify.database import VerificationDatabaseService
 
 #------ file service (standalone or pytest) ------
 
@@ -75,6 +76,18 @@ def set_project_database_service(service: "ProjectDatabaseService | None") -> No
 def get_project_database_service() -> "ProjectDatabaseService | None":
     global global_project_database_service
     return global_project_database_service
+
+#------- verification database service (standalone or pytest) ------
+
+global_verification_database_service: "VerificationDatabaseService | None" = None
+
+def set_verification_database_service(service: "VerificationDatabaseService | None") -> None:
+    global global_verification_database_service
+    global_verification_database_service = service
+
+def get_verification_database_service() -> "VerificationDatabaseService | None":
+    global global_verification_database_service
+    return global_verification_database_service
 
 #------- biosim service (standalone or pytest) ------
 
@@ -165,6 +178,7 @@ async def init_standalone() -> None:
     # Local import avoids the simulations -> dependencies import cycle at module load.
     from biosim_server.simulations.database import SimulationRunDatabaseServiceMongo
     from biosim_server.projects.search import ProjectSearchServiceMongo
+    from biosim_server.biosim_verify.database import VerificationDatabaseServiceMongo
 
     motor_client = AsyncIOMotorClient(get_settings().mongodb_uri)
     set_mongo_client(motor_client)
@@ -174,6 +188,7 @@ async def init_standalone() -> None:
     # Phase 1 search: queries a platform-owned project_search collection with our
     # own $text index (see projects/search.py).
     projects_db_service = ProjectSearchServiceMongo(db_client=motor_client)
+    verification_db_service = VerificationDatabaseServiceMongo(db_client=motor_client)
 
     # create_index is idempotent; calling on every start keeps schema in sync as
     # we add lookups. Each service knows which fields its queries hit.
@@ -181,6 +196,7 @@ async def init_standalone() -> None:
     await omex_db_service.ensure_indexes()
     await runs_db_service.ensure_indexes()
     await projects_db_service.ensure_indexes()
+    await verification_db_service.ensure_indexes()
     # Populate the search index on first run (no-op once built); refresh on demand
     # via POST /projects/reindex.
     await projects_db_service.rebuild_index_if_empty()
@@ -189,6 +205,7 @@ async def init_standalone() -> None:
     set_omex_database_service(omex_db_service)
     set_simulation_run_database_service(runs_db_service)
     set_project_database_service(projects_db_service)
+    set_verification_database_service(verification_db_service)
 
 async def shutdown_standalone() -> None:
     db_service = get_database_service()
@@ -211,6 +228,8 @@ async def shutdown_standalone() -> None:
     set_temporal_client(None)
     set_database_service(None)
     # Shares the motor client closed via db_service above; just clear the handles.
+    set_omex_database_service(None)
     set_simulation_run_database_service(None)
     set_project_database_service(None)
+    set_verification_database_service(None)
     set_mongo_client(None)

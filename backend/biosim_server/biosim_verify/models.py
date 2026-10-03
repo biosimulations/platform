@@ -1,9 +1,18 @@
+from datetime import datetime
 from enum import StrEnum
-from typing import Optional
+from typing import Final, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from biosim_server.biosim_runs import BiosimSimulationRun, HDF5File, Hdf5DataValues
+
+# Per-request selection bounds (PR #120, B2). One request is one workflow-start
+# quota unit, so these bound the work a single unit can buy: N run ids -> N result
+# downloads and an N x N comparison per dataset; N simulators -> N child
+# workflows, each a biosimulations.org simulation job. Same for every caller.
+# Module constants, not settings: they are published as OpenAPI `maxItems`.
+MAX_VERIFY_RUN_IDS: Final = 10
+MAX_VERIFY_SIMULATORS: Final = 10
 
 
 class ComparisonStatistics(BaseModel):
@@ -80,3 +89,54 @@ class VerifyWorkflowOutput(BaseModel):
     # Auth0 `sub` of the caller who started the workflow. Optional so in-flight
     # Temporal histories that predate this field still deserialize.
     owner_sub: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Verification ledger (BiosimCompare collection)
+# ---------------------------------------------------------------------------
+
+class VerificationType(StrEnum):
+    OMEX = "omex"
+    RUNS = "runs"
+
+
+class VerificationRecord(BaseModel):
+    workflow_id: str
+    verify_type: VerificationType
+    # Caller's verified sub, or None for an anonymous (legacy API) submission,
+    # which makes the verification publicly readable.
+    owner_sub: Optional[str] = None
+    created: datetime
+
+
+# GET /verification_ids page sizes (PR #120, B3). IDs are ~40-70 bytes, so a full
+# page is ~70 KB and one bounded index range read, however long the ledger grows.
+VERIFICATION_IDS_DEFAULT_PAGE_SIZE: Final = 100
+VERIFICATION_IDS_MAX_PAGE_SIZE: Final = 1000
+
+# Temporal's default `limit.maxIDLength`, in UTF-8 bytes. No longer workflow ID
+# can be started, so this bounds every ID the ledger keeps -- including rows
+# written before WORKFLOW_ID_PREFIX_MAX_LENGTH existed -- and therefore the
+# GET /verification_ids cursor (database.VERIFICATION_CURSOR_MAX_LENGTH).
+MAX_WORKFLOW_ID_BYTES: Final = 1000
+# Caller-chosen `workflow_id_prefix`, in characters. At 4 UTF-8 bytes per
+# character plus the 36-character uuid4 suffix, a new ID stays within
+# MAX_WORKFLOW_ID_BYTES.
+WORKFLOW_ID_PREFIX_MAX_LENGTH: Final = 200
+
+
+class VerificationIdsResponse(BaseModel):
+    verification_ids: list[str] = Field(
+        description=(
+            "One page of workflow IDs that can be passed to GET /verify/{workflow_id}, "
+            "newest first (created descending, then workflow_id ascending). Covers every "
+            "verification; no token is required. Follow `next_cursor` for older IDs."
+        )
+    )
+    next_cursor: Optional[str] = Field(
+        default=None,
+        description=(
+            "Opaque continuation token: pass it as `cursor` to get the next (older) page. "
+            "null when this is the last page."
+        ),
+    )

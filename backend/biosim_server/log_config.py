@@ -38,4 +38,3 @@ def setup_logging(logger: logging.Logger) -> None:
 
     # Add the console handler to the root logger and uvicorn logger
     root_logger.addHandler(console_handler)
-    logger.addHandler(console_handler)

@@ -16,8 +16,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from biosim_server.api.main import app
-from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
-from biosim_server.common.auth import get_current_user
+from biosim_server.biosim_verify.database import VerificationIdPage
+from biosim_server.biosim_verify.models import (
+    MAX_VERIFY_RUN_IDS,
+    MAX_VERIFY_SIMULATORS,
+    VerifyWorkflowOutput,
+    VerifyWorkflowStatus,
+)
+from biosim_server.common.auth import get_current_user, get_optional_user
 from biosim_server.rbac_demo.models import PublicMessage
 from biosim_server.version import __version__
 from tests.fixtures.auth_fixtures import make_authenticated_user
@@ -49,8 +55,15 @@ _CORE_PATHS = frozenset({
     "/verify/omex",
     "/verify/{workflow_id}",
     "/verify/runs",
+    "/verification_ids",
 })
-_OPTIONAL_AUTH_OPERATION_IDS = frozenset({"run-simulations", "list-simulation-runs"})
+_OPTIONAL_AUTH_OPERATION_IDS = frozenset({
+    "run-simulations",
+    "list-simulation-runs",
+    "verify-omex",
+    "get-verify-output",
+    "verify-runs",
+})
 _REQUIRED_AUTH_OPERATION_IDS = frozenset({
     "delete-simulation-run",
     "cancel-simulation-run",
@@ -60,9 +73,6 @@ _REQUIRED_AUTH_OPERATION_IDS = frozenset({
     "demo-private-whoami",
     "demo-private-animal",
     "demo-private-permission",
-    "verify-omex",
-    "get-verify-output",
-    "verify-runs",
 })
 
 
@@ -137,9 +147,10 @@ AUTH_MODE: dict[str, AuthMode] = {
     "demo-private-permission": AuthMode.REQUIRED_ROLES,  # require_permissions("demo:read")
     "root__get": AuthMode.NONE,
     "get_version_version_get": AuthMode.NONE,
-    "verify-omex": AuthMode.REQUIRED,
-    "get-verify-output": AuthMode.REQUIRED,
-    "verify-runs": AuthMode.REQUIRED,
+    "verify-omex": AuthMode.OPTIONAL,
+    "get-verify-output": AuthMode.OPTIONAL,
+    "verify-runs": AuthMode.OPTIONAL,
+    "list-verification-ids": AuthMode.NONE,
 }
 
 VALIDATION_SKIP: dict[str, str] = {
@@ -162,8 +173,9 @@ VALIDATION_SKIP: dict[str, str] = {
     "demo-private-permission": "no request body",
     "root__get": "no request body",
     "get_version_version_get": "no request body",
-    "get-verify-output": "path-only; unauthenticated probe is 401",
-    "verify-runs": "all query params optional; unauthenticated probe is 401",
+    "get-verify-output": "path-only",
+    "verify-runs": "all query params optional",
+    "list-verification-ids": "no parameters",
 }
 
 
@@ -242,6 +254,26 @@ def _probe_list_projects(client: TestClient) -> None:
         _assert_status(client.get("/projects"), 503)
 
 
+def _probe_list_verification_ids(client: TestClient) -> None:
+    with patch("biosim_server.api.main.get_verification_database_service", return_value=None):
+        _assert_status(client.get("/verification_ids"), 503)
+
+
+def _probe_verify_omex(client: TestClient) -> None:
+    # Anonymous callers reach request validation instead of a 401.
+    _assert_status(client.post("/verify/omex"), 422)
+
+
+def _probe_verify_runs(client: TestClient) -> None:
+    with patch("biosim_server.api.main.get_temporal_client", return_value=None):
+        _assert_status(client.post("/verify/runs"), 503)
+
+
+def _probe_get_verify_output(client: TestClient) -> None:
+    with patch("biosim_server.api.main.get_temporal_client", return_value=None):
+        _assert_status(client.get("/verify/probe-id"), 503)
+
+
 def _probe_reindex_projects(client: TestClient) -> None:
     with patch("biosim_server.projects.router.get_settings") as mock_settings:
         mock_settings.return_value = MagicMock(project_reindex_token="")
@@ -291,6 +323,10 @@ UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "get-run-summary": _probe_get_run_summary,
     "get-run-page": _probe_get_run_page,
     "list-projects": _probe_list_projects,
+    "list-verification-ids": _probe_list_verification_ids,
+    "verify-omex": _probe_verify_omex,
+    "verify-runs": _probe_verify_runs,
+    "get-verify-output": _probe_get_verify_output,
     "reindex-projects": _probe_reindex_projects,
     "list-project-stats": _probe_list_project_stats,
     "get-project-summary": _probe_get_project_summary,
@@ -332,12 +368,7 @@ def _validate_update_current_user(client: TestClient) -> None:
 
 
 def _validate_verify_omex(client: TestClient) -> None:
-    user = make_authenticated_user()
-    app.dependency_overrides[get_current_user] = lambda: user
-    try:
-        _assert_status(client.post("/verify/omex"), 422)
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    _assert_status(client.post("/verify/omex"), 422)
 
 
 VALIDATION_RUNNERS: dict[str, Callable[[TestClient], None]] = {
@@ -352,7 +383,7 @@ VALIDATION_RUNNERS: dict[str, Callable[[TestClient], None]] = {
 
 
 def test_verify_runs_authenticated_caller_starts_pending_workflow(client: TestClient) -> None:
-    """verify-runs requires auth; an authenticated caller gets a PENDING workflow it owns."""
+    """verify-runs is optional-auth; an authenticated caller gets a PENDING workflow it owns."""
     async def start_workflow(*_args: object, **kwargs: object) -> MagicMock:
         handle = MagicMock()
         handle.id = str(kwargs["id"])
@@ -361,13 +392,18 @@ def test_verify_runs_authenticated_caller_starts_pending_workflow(client: TestCl
 
     temporal = MagicMock()
     temporal.start_workflow = start_workflow
+    ledger = MagicMock()
+    ledger.insert_verification = AsyncMock(return_value=None)
+    ledger.list_verification_ids = AsyncMock(return_value=VerificationIdPage(verification_ids=[], next_cursor=None))
     user = make_authenticated_user()
-    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_optional_user] = lambda: user
     try:
-        with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+        with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+             patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
+             patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=AsyncMock(return_value={})):
             response = client.post("/verify/runs")
     finally:
-        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_optional_user, None)
     _assert_status(response, 200)
     body = VerifyWorkflowOutput.model_validate(response.json())
     assert body.workflow_status == VerifyWorkflowStatus.PENDING
@@ -386,6 +422,19 @@ def test_every_operation_id_is_accounted_for() -> None:
 
 def test_openapi_lists_expected_core_paths() -> None:
     assert _CORE_PATHS <= set(app.openapi()["paths"])
+
+
+def _query_param_schema(path: str, method: str, name: str) -> dict[str, object]:
+    operation = app.openapi()["paths"][path][method]
+    (param,) = [p for p in operation["parameters"] if p["name"] == name]
+    schema: dict[str, object] = param["schema"]
+    return schema
+
+
+def test_verification_selection_bounds_are_published() -> None:
+    """PR #120 B2: generated clients see the per-request selection bounds."""
+    assert _query_param_schema("/verify/runs", "post", "biosimulations_run_ids")["maxItems"] == MAX_VERIFY_RUN_IDS
+    assert _query_param_schema("/verify/omex", "post", "simulators")["maxItems"] == MAX_VERIFY_SIMULATORS
 
 
 def test_hidden_routes_are_not_in_openapi_paths() -> None:
