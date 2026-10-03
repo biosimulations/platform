@@ -330,6 +330,14 @@ ascending as the tie-breaker): `{"verification_ids": [...], "next_cursor": ...}`
 `limit` defaults to **100** and may not exceed **1000** (otherwise **422**).
 Pass a page's `next_cursor` back as `cursor` for the next, older page;
 `next_cursor` is `null` on the last page, and a malformed `cursor` is **400**.
+A cursor is unpadded base64url of `"<created ISO 8601>\n<workflow_id>"` --
+not JSON, whose escaping would make its length depend on the ID's content.
+The route accepts up to `VERIFICATION_CURSOR_MAX_LENGTH` (**1370**) characters:
+the token for a workflow ID at Temporal's 1000-byte ID limit
+(`MAX_WORKFLOW_ID_BYTES`), so every stored ID -- including any written before
+the prefix bound -- yields a cursor the route accepts. New IDs stay within that
+limit because `workflow_id_prefix` is capped at **200** characters
+(`WORKFLOW_ID_PREFIX_MAX_LENGTH`; more → **422**).
 Callers that want the full history must follow `next_cursor`. Each request is a
 single `limit + 1` read over the `(created, workflow_id)` index, however large
 the ledger grows. A token, if sent, is ignored.

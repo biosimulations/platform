@@ -114,6 +114,16 @@ class VerificationRecord(BaseModel):
 VERIFICATION_IDS_DEFAULT_PAGE_SIZE: Final = 100
 VERIFICATION_IDS_MAX_PAGE_SIZE: Final = 1000
 
+# Temporal's default `limit.maxIDLength`, in UTF-8 bytes. No longer workflow ID
+# can be started, so this bounds every ID the ledger keeps -- including rows
+# written before WORKFLOW_ID_PREFIX_MAX_LENGTH existed -- and therefore the
+# GET /verification_ids cursor (database.VERIFICATION_CURSOR_MAX_LENGTH).
+MAX_WORKFLOW_ID_BYTES: Final = 1000
+# Caller-chosen `workflow_id_prefix`, in characters. At 4 UTF-8 bytes per
+# character plus the 36-character uuid4 suffix, a new ID stays within
+# MAX_WORKFLOW_ID_BYTES.
+WORKFLOW_ID_PREFIX_MAX_LENGTH: Final = 200
+
 
 class VerificationIdsResponse(BaseModel):
     verification_ids: list[str] = Field(

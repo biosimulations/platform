@@ -1,5 +1,6 @@
 from temporalio.service import RPCError, RPCStatusCode
 import asyncio
+import base64
 import hashlib
 import logging
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ from biosim_server.biosim_runs import BiosimServiceRest, BiosimulatorVersion, Da
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
 from biosim_server.biosim_verify.database import (
+    VERIFICATION_CURSOR_MAX_LENGTH,
     VerificationCursor,
     VerificationDatabaseServiceMongo,
     VerificationIdPage,
@@ -1131,12 +1133,21 @@ async def test_list_verification_ids_limit_bounds(limit: int, status: int) -> No
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cursor", ["!!!", "bm90IGpzb24", "W10", "x" * 600])
-async def test_list_verification_ids_malformed_cursor_is_rejected_without_db_call(cursor: str) -> None:
+@pytest.mark.parametrize(
+    "cursor,status",
+    [
+        ("!!!", 400),
+        ("bm90IGpzb24", 400),  # "not json": no separator
+        # 0001-01-01T00:00:00+01:00\nwf -- overflows on UTC normalisation (PR #120 review: was a 500)
+        (base64.urlsafe_b64encode(b"0001-01-01T00:00:00+01:00\nwf").decode().rstrip("="), 400),
+        ("x" * (VERIFICATION_CURSOR_MAX_LENGTH + 1), 422),
+    ],
+)
+async def test_list_verification_ids_malformed_cursor_is_rejected_without_db_call(cursor: str, status: int) -> None:
     ledger = _ledger_returning([])
     resp = await _get_verification_ids(ledger, {"cursor": cursor})
-    assert resp.status_code in (400, 422), resp.text
-    if resp.status_code == 400:
+    assert resp.status_code == status, resp.text
+    if status == 400:
         assert resp.json() == {"detail": "Invalid cursor"}
     ledger.list_verification_ids.assert_not_awaited()
 

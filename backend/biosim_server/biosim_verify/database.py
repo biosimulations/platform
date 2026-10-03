@@ -8,16 +8,20 @@ an informative 404 detail for callers who query an expired Temporal history.
 
 import base64
 import binascii
-import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Final
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ASCENDING, DESCENDING
 
-from biosim_server.biosim_verify.models import VERIFICATION_IDS_MAX_PAGE_SIZE, VerificationRecord
+from biosim_server.biosim_verify.models import (
+    MAX_WORKFLOW_ID_BYTES,
+    VERIFICATION_IDS_MAX_PAGE_SIZE,
+    VerificationRecord,
+)
 from biosim_server.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -54,31 +58,46 @@ def _naive_utc(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo is not None else value
 
 
+# The timestamp never contains it, so the first one ends the timestamp and the
+# workflow ID (which may contain anything but "/") is everything after it.
+_CURSOR_SEPARATOR = "\n"
+
+
 def encode_verification_cursor(cursor: VerificationCursor) -> str:
-    """Opaque, URL-safe continuation token (base64url of compact JSON, unpadded)."""
-    payload = json.dumps(
-        {"c": _naive_utc(cursor.created).isoformat(), "w": cursor.workflow_id}, separators=(",", ":")
-    )
+    """Opaque, URL-safe continuation token: unpadded base64url of
+    ``"<created ISO 8601>\\n<workflow_id>"`` in UTF-8.
+
+    Deliberately not JSON: escaping grows a control character six-fold, so the
+    token length would depend on the ID's content. Here it is a fixed function
+    of the ID's UTF-8 size, which VERIFICATION_CURSOR_MAX_LENGTH bounds.
+    """
+    payload = f"{_naive_utc(cursor.created).isoformat()}{_CURSOR_SEPARATOR}{cursor.workflow_id}"
     return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+# The longest token the service can issue: the longest naive ISO timestamp and a
+# workflow ID at Temporal's limit. GET /verification_ids accepts exactly this.
+VERIFICATION_CURSOR_MAX_LENGTH: Final = len(
+    encode_verification_cursor(VerificationCursor(created=datetime.max, workflow_id="x" * MAX_WORKFLOW_ID_BYTES))
+)
 
 
 def decode_verification_cursor(token: str) -> VerificationCursor:
     """Inverse of :func:`encode_verification_cursor`; any other input is refused."""
     try:
         raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-        payload = json.loads(raw)
+        created, separator, workflow_id = raw.decode().partition(_CURSOR_SEPARATOR)
     except (binascii.Error, ValueError) as exc:  # UnicodeDecodeError is a ValueError
         raise InvalidVerificationCursor("cursor is not a valid token") from exc
-    if not token or not isinstance(payload, dict) or set(payload) != {"c", "w"}:
+    if not separator or not workflow_id:
         raise InvalidVerificationCursor("cursor has an unexpected shape")
-    created, workflow_id = payload["c"], payload["w"]
-    if not isinstance(created, str) or not isinstance(workflow_id, str) or not workflow_id:
-        raise InvalidVerificationCursor("cursor fields have unexpected types")
     try:
-        parsed = datetime.fromisoformat(created)
-    except ValueError as exc:
-        raise InvalidVerificationCursor("cursor timestamp is not ISO 8601") from exc
-    return VerificationCursor(created=_naive_utc(parsed), workflow_id=workflow_id)
+        # Normalising an offset timestamp at either end of the calendar
+        # (e.g. 0001-01-01T00:00:00+01:00) overflows.
+        parsed = _naive_utc(datetime.fromisoformat(created))
+    except (ValueError, OverflowError) as exc:
+        raise InvalidVerificationCursor("cursor timestamp is not a valid ISO 8601 instant") from exc
+    return VerificationCursor(created=parsed, workflow_id=workflow_id)
 
 
 class VerificationDatabaseService(ABC):

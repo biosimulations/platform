@@ -14,8 +14,18 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from biosim_server.biosim_runs.models import BiosimulatorVersion
 from biosim_server.api.main import app, _load_hdf5_metadata_for_preflight
-from biosim_server.biosim_verify.database import VerificationDatabaseServiceMongo
-from biosim_server.biosim_verify.models import VerificationRecord, VerificationType, VerifyWorkflowStatus
+from biosim_server.biosim_verify.database import (
+    VerificationCursor,
+    VerificationDatabaseServiceMongo,
+    VerificationIdPage,
+)
+from biosim_server.biosim_verify.models import (
+    MAX_WORKFLOW_ID_BYTES,
+    WORKFLOW_ID_PREFIX_MAX_LENGTH,
+    VerificationRecord,
+    VerificationType,
+    VerifyWorkflowStatus,
+)
 from biosim_server.common.auth import AuthenticatedUser, get_current_user, get_optional_user
 from tests.api.test_main import _make_temporal_for_runs, _make_verify_output, _temporal_with_describe, _verify_omex_mocks
 from tests.biosim_verify.test_compatibility import _file
@@ -472,3 +482,98 @@ async def test_recovered_start_must_match_submission(client: AsyncClient) -> Non
         response = await client.post("/verify/runs", params={"biosimulations_run_ids": "run1"})
     assert response.status_code == 503
     ledger.delete_verification.assert_not_awaited()
+
+
+class _OnePageLedger:
+    """In-memory ledger: every stored ID on page one, cursor at the last, then empty.
+
+    Keeps the production cursor codec and routes in the loop without Mongo.
+    """
+
+    def __init__(self) -> None:
+        self.records: list[VerificationRecord] = []
+        self.afters: list[VerificationCursor | None] = []
+
+    async def insert_verification(self, record: VerificationRecord) -> VerificationRecord:
+        self.records.append(record)
+        return record
+
+    async def list_verification_ids(
+        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None
+    ) -> VerificationIdPage:
+        self.afters.append(after)
+        if after is not None:
+            return VerificationIdPage(verification_ids=[], next_cursor=None)
+        last = self.records[-1]
+        return VerificationIdPage(
+            verification_ids=[r.workflow_id for r in self.records],
+            next_cursor=VerificationCursor(created=last.created.replace(tzinfo=None), workflow_id=last.workflow_id),
+        )
+
+
+async def _follow_listing(client: AsyncClient, ledger: _OnePageLedger) -> None:
+    """Page one returns a cursor at the last ID; following it must be a 200, not a 422."""
+    with patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        first = await client.get("/verification_ids")
+        assert first.status_code == 200, first.text
+        token = first.json()["next_cursor"]
+        assert token is not None
+        second = await client.get("/verification_ids", params={"cursor": token})
+    assert second.status_code == 200, second.text
+    assert second.json() == {"verification_ids": [], "next_cursor": None}
+    last = ledger.records[-1]
+    assert ledger.afters == [None, VerificationCursor(created=last.created.replace(tzinfo=None),
+                                                      workflow_id=last.workflow_id)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("char", ["x", "\x00", "\U0001f600"])
+async def test_longest_accepted_prefix_yields_a_followable_cursor(client: AsyncClient, char: str) -> None:
+    """PR #120 review P2: a maximal accepted prefix (anonymous, as reported) must not
+    produce a next_cursor that GET /verification_ids then refuses."""
+    app.dependency_overrides.pop(get_current_user, None)
+    app.dependency_overrides.pop(get_optional_user, None)
+    prefix = char * WORKFLOW_ID_PREFIX_MAX_LENGTH
+    ledger = _OnePageLedger()
+    with patch("biosim_server.api.main.get_temporal_client", return_value=_make_temporal_for_runs()), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        response = await client.post("/verify/runs", params={"biosimulations_run_ids": "r1",
+                                                             "workflow_id_prefix": prefix})
+    assert response.status_code == 200, response.text
+    workflow_id = response.json()["workflow_id"]
+    assert workflow_id.startswith(prefix)
+    assert len(workflow_id.encode()) <= MAX_WORKFLOW_ID_BYTES
+    await _follow_listing(client, ledger)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workflow_id", ["\x00" * MAX_WORKFLOW_ID_BYTES, "\U0001f600" * (MAX_WORKFLOW_ID_BYTES // 4),
+                                         '"' * MAX_WORKFLOW_ID_BYTES])
+async def test_stored_id_at_temporal_limit_yields_a_followable_cursor(client: AsyncClient, workflow_id: str) -> None:
+    """Rows written before the prefix bound can carry any ID Temporal accepted."""
+    ledger = _OnePageLedger()
+    ledger.records.append(VerificationRecord(workflow_id=workflow_id, verify_type=VerificationType.RUNS,
+                                             owner_sub=None, created=datetime(9999, 12, 31, 23, 59, 59, 999000)))
+    await _follow_listing(client, ledger)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["runs", "omex"])
+async def test_overlong_prefix_is_rejected_before_any_work(client: AsyncClient, kind: str) -> None:
+    files, omex, biosim, temporal = _verify_omex_mocks()
+    ledger = AsyncMock()
+    params = {"workflow_id_prefix": "x" * (WORKFLOW_ID_PREFIX_MAX_LENGTH + 1)}
+    with ExitStack() as stack:
+        for name, service in [("get_file_service", files), ("get_omex_database_service", omex),
+                              ("get_biosim_service", biosim), ("get_temporal_client", temporal),
+                              ("get_verification_database_service", ledger)]:
+            stack.enter_context(patch(f"biosim_server.api.main.{name}", return_value=service))
+        if kind == "runs":
+            response = await client.post("/verify/runs", params={**params, "biosimulations_run_ids": "r1"})
+        else:
+            response = await client.post("/verify/omex", params={**params, "simulators": "copasi"},
+                                         files={"uploaded_file": ("m.omex", b"fake", "application/zip")})
+    assert response.status_code == 422
+    ledger.insert_verification.assert_not_awaited()
+    temporal.start_workflow.assert_not_awaited()
+    files.upload_bytes.assert_not_awaited()

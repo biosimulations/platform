@@ -679,11 +679,13 @@ paths:
         required: false
         schema:
           type: string
+          maxLength: 200
           pattern: ^[^/]*$
-          description: Prefix for the workflow id; must not contain /.
+          description: Prefix for the workflow id; must not contain / (at most 200
+            characters).
           default: omex-verification-
           title: Workflow Id Prefix
-        description: Prefix for the workflow id; must not contain /.
+        description: Prefix for the workflow id; must not contain / (at most 200 characters).
       - name: simulators
         in: query
         required: false
@@ -850,11 +852,13 @@ paths:
         required: false
         schema:
           type: string
+          maxLength: 200
           pattern: ^[^/]*$
-          description: Prefix for the workflow id; must not contain /.
+          description: Prefix for the workflow id; must not contain / (at most 200
+            characters).
           default: runs-verification-
           title: Workflow Id Prefix
-        description: Prefix for the workflow id; must not contain /.
+        description: Prefix for the workflow id; must not contain / (at most 200 characters).
       - name: biosimulations_run_ids
         in: query
         required: false
@@ -979,7 +983,7 @@ paths:
         schema:
           anyOf:
           - type: string
-            maxLength: 512
+            maxLength: 1370
           - type: 'null'
           description: Opaque `next_cursor` from a previous page.
           title: Cursor

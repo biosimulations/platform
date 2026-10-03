@@ -12,6 +12,7 @@ import pytest_asyncio
 from pymongo.errors import DuplicateKeyError
 
 from biosim_server.biosim_verify.database import (
+    VERIFICATION_CURSOR_MAX_LENGTH,
     InvalidVerificationCursor,
     VerificationCursor,
     VerificationDatabaseServiceMongo,
@@ -19,7 +20,9 @@ from biosim_server.biosim_verify.database import (
     encode_verification_cursor,
 )
 from biosim_server.biosim_verify.models import (
+    MAX_WORKFLOW_ID_BYTES,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
+    WORKFLOW_ID_PREFIX_MAX_LENGTH,
     VerificationRecord,
     VerificationType,
 )
@@ -245,8 +248,9 @@ async def test_page_read_is_bounded() -> None:
 # cursor codec
 # ---------------------------------------------------------------------------
 
-def test_cursor_round_trips() -> None:
-    cursor = VerificationCursor(created=datetime(2025, 1, 2, 3, 4, 5, 678000), workflow_id="omex-verification-x/y")
+@pytest.mark.parametrize("workflow_id", ["omex-verification-x/y", "wf\nwith\nnewlines", "wf-\u00e9\U0001f600", 'wf-"\\'])
+def test_cursor_round_trips(workflow_id: str) -> None:
+    cursor = VerificationCursor(created=datetime(2025, 1, 2, 3, 4, 5, 678000), workflow_id=workflow_id)
     token = encode_verification_cursor(cursor)
     assert "=" not in token
     assert decode_verification_cursor(token) == cursor
@@ -260,6 +264,24 @@ def test_tz_aware_cursor_is_normalised_to_naive_utc() -> None:
     )
 
 
+def test_new_workflow_ids_fit_temporal_id_limit() -> None:
+    """A maximal prefix of 4-byte characters plus the uuid4 suffix stays within the ID limit."""
+    assert len(("\U0001f600" * WORKFLOW_ID_PREFIX_MAX_LENGTH + "x" * 36).encode()) <= MAX_WORKFLOW_ID_BYTES
+
+
+# One character of each UTF-8 width, plus the characters JSON would escape
+# (quote, backslash, control): a token's length must not depend on content.
+@pytest.mark.parametrize("char", ["x", '"', "\\", "\x00", "\n", "\u00e9", "\u20ac", "\U0001f600"])
+def test_cursor_for_any_storable_workflow_id_is_accepted(char: str) -> None:
+    """Every ID Temporal can hold (<= MAX_WORKFLOW_ID_BYTES UTF-8 bytes) round-trips
+    within VERIFICATION_CURSOR_MAX_LENGTH, at the longest timestamp the codec emits."""
+    workflow_id = char * (MAX_WORKFLOW_ID_BYTES // len(char.encode()))
+    cursor = VerificationCursor(created=datetime.max, workflow_id=workflow_id)
+    token = encode_verification_cursor(cursor)
+    assert len(token) <= VERIFICATION_CURSOR_MAX_LENGTH
+    assert decode_verification_cursor(token) == cursor
+
+
 def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
@@ -269,14 +291,15 @@ def _b64(raw: bytes) -> str:
     [
         "!!!",
         "",
-        _b64(b"not json"),
-        _b64(b"[1, 2]"),
-        _b64(b'{"c": "2025-01-01T00:00:00"}'),
-        _b64(b'{"c": "2025-01-01T00:00:00", "w": "wf", "x": 1}'),
-        _b64(b'{"c": 1, "w": "wf"}'),
-        _b64(b'{"c": "2025-01-01T00:00:00", "w": ""}'),
-        _b64(b'{"c": "yesterday", "w": "wf"}'),
-        _b64(b"\xff\xfe"),
+        _b64(b"no separator"),
+        _b64(b'{"c": "2025-01-01T00:00:00", "w": "wf"}'),  # the retired JSON form
+        _b64(b"2025-01-01T00:00:00\n"),
+        _b64(b"\nwf"),
+        _b64(b"yesterday\nwf"),
+        _b64(b"\xff\xfe\nwf"),
+        # Parse, but overflow when normalised to UTC (PR #120 review: was a 500).
+        _b64(b"0001-01-01T00:00:00+01:00\nwf"),
+        _b64(b"9999-12-31T23:59:59-01:00\nwf"),
     ],
 )
 def test_malformed_cursor_is_rejected(token: str) -> None:

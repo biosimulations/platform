@@ -29,6 +29,7 @@ from biosim_server.biosim_verify.database import (
     InvalidVerificationCursor,
     VerificationCursor,
     VerificationDatabaseService,
+    VERIFICATION_CURSOR_MAX_LENGTH,
     decode_verification_cursor,
     encode_verification_cursor,
 )
@@ -48,6 +49,7 @@ from biosim_server.biosim_verify.models import (
     MAX_VERIFY_SIMULATORS,
     VERIFICATION_IDS_DEFAULT_PAGE_SIZE,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
+    WORKFLOW_ID_PREFIX_MAX_LENGTH,
     VerificationIdsResponse,
     VerificationRecord,
     VerificationType,
@@ -310,7 +312,10 @@ async def custom_swagger_ui_html() -> HTMLResponse:
 async def verify_omex(
         uploaded_file: UploadFile = File(..., description="OMEX/COMBINE archive containing a deterministic SBML model"),
         user: AuthenticatedUser | None = Depends(get_optional_user),
-        workflow_id_prefix: str = Query(default="omex-verification-", pattern=r"^[^/]*$", description="Prefix for the workflow id; must not contain /."),
+        workflow_id_prefix: str = Query(default="omex-verification-", pattern=r"^[^/]*$",
+                                         max_length=WORKFLOW_ID_PREFIX_MAX_LENGTH,
+                                         description=f"Prefix for the workflow id; must not contain / "
+                                                     f"(at most {WORKFLOW_ID_PREFIX_MAX_LENGTH} characters)."),
         simulators: list[str] = Query(default=["amici", "copasi", "pysces", "tellurium", "vcell"],
                                       max_length=MAX_VERIFY_SIMULATORS,
                                       description=f"List of simulators 'name' or 'name:version' to compare "
@@ -761,7 +766,10 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None)
 )
 async def verify_runs(
         user: AuthenticatedUser | None = Depends(get_optional_user),
-        workflow_id_prefix: str = Query(default="runs-verification-", pattern=r"^[^/]*$", description="Prefix for the workflow id; must not contain /."),
+        workflow_id_prefix: str = Query(default="runs-verification-", pattern=r"^[^/]*$",
+                                         max_length=WORKFLOW_ID_PREFIX_MAX_LENGTH,
+                                         description=f"Prefix for the workflow id; must not contain / "
+                                                     f"(at most {WORKFLOW_ID_PREFIX_MAX_LENGTH} characters)."),
         biosimulations_run_ids: list[str] = Query(default=["67817a2e1f52f47f628af971","67817a2eba5a3f02b9f2938d"],
                                                   max_length=MAX_VERIFY_RUN_IDS,
                                                   description=f"List of biosimulations run IDs to compare "
@@ -905,7 +913,7 @@ async def _load_hdf5_metadata_for_preflight(
 async def list_verification_ids(
         limit: int = Query(default=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, ge=1, le=VERIFICATION_IDS_MAX_PAGE_SIZE,
                            description=f"Page size (1-{VERIFICATION_IDS_MAX_PAGE_SIZE})."),
-        cursor: Optional[str] = Query(default=None, max_length=512,
+        cursor: Optional[str] = Query(default=None, max_length=VERIFICATION_CURSOR_MAX_LENGTH,
                                       description="Opaque `next_cursor` from a previous page."),
 ) -> VerificationIdsResponse:
     # Public, like the legacy API: no token, every ID. The IDs alone expose no
