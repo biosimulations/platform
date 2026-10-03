@@ -117,3 +117,19 @@ export const MODEL_LANGUAGE_OPTIONS: ModelLanguageOption[] = [
     docsUrl: 'https://www.math.pitt.edu/~bard/xpp/xpp.html'
   }
 ];
+
+export interface FormatOption {
+  name: string;
+  description: string;
+  extensions: string[];
+  accept: string;
+  docsUrl?: string;
+}
+
+export const SEDML_FORMAT_OPTION: FormatOption = {
+  name: 'SED-ML (Simulation Experiment Description Markup Language)',
+  description: 'Simulation Experiment Description Markup Language (SED-ML) defines models, simulation algorithms, tasks, outputs, and data generators.',
+  extensions: ['.sedml', '.xml'],
+  accept: '.sedml,.xml,text/xml,application/xml',
+  docsUrl: 'https://sed-ml.org/'
+};

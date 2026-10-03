@@ -12,8 +12,6 @@ interface FooterColumnCategory {
   links: FooterLink[]
 }
 
-const currentYear = new Date().getFullYear()
-
 // Arbitrated categories combining the Angular platform specifications,
 // core application routes, and developer API resources.
 const categories: FooterColumnCategory[] = [
@@ -47,9 +45,9 @@ const categories: FooterColumnCategory[] = [
         icon: 'i-lucide-lightbulb'
       },
       {
-        label: 'Validate a Simulator',
-        to: '/simulators/validate',
-        icon: 'i-lucide-check-circle'
+        label: 'Platform Utilities',
+        to: '/utilities',
+        icon: 'i-lucide-wrench'
       }
     ]
   },
@@ -82,22 +80,12 @@ const categories: FooterColumnCategory[] = [
         external: true,
         badge: 'New'
       },
-      /*{
-        label: 'Validate a Model',
-        to: '/utilities/validate-model',
-        icon: 'i-lucide-file-check'
-      },
-      {
-        label: 'Describe Visualizations',
-        to: '/utilities/describe-visualizations',
-        icon: 'i-lucide-pie-chart'
-      },
       {
         label: 'GitHub Code Repository',
         to: 'https://github.com/biosimulations/biosimulations',
         icon: 'i-simple-icons-github',
         external: true
-      }*/
+      }
     ]
   },
   {
