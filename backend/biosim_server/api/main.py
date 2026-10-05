@@ -44,6 +44,7 @@ from biosim_server.common.ratelimit import workflow_rate_limit
 from biosim_server.common.upload_limit import MultipartBodyLimitMiddleware
 from biosim_server.rbac_demo.router import router as rbac_demo_router
 from biosim_server.users.router import router as users_router
+from biosim_server.validation import validation_router
 from biosim_server.biosim_verify.models import (
     MAX_VERIFY_RUN_IDS,
     MAX_VERIFY_SIMULATORS,
@@ -184,6 +185,19 @@ def _validate_auth0_configuration() -> None:
         auth0.audience if not auth0.has_explicit_trusted_issuers() else "(per-issuer)",
         len(auth0.trusted_issuer_map()),
     )
+    # AUTH-MAJ-004: the hosted password-change route converts ordinary token
+    # possession into an account-changing capability, so a cluster that enables
+    # it should also say, loudly, whether the recent-authentication gate is on.
+    # Non-fatal by design -- the gate needs tenant work (a Post-Login Action that
+    # stamps `auth_time`) that may not have landed -- but it must not be enabled
+    # silently, which is exactly what an unremarked default would do.
+    if auth0.password_reset_client_id and not auth0.password_reset_require_recent_auth:
+        logger.warning(
+            "Password reset is configured (AUTH0_PASSWORD_RESET_CLIENT_ID set) without recent-"
+            "authentication enforcement (AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH is false): any "
+            "valid eligible access token can mint a hosted password-change ticket. Enable the "
+            "gate before exposing the reset UI; see docs/auth0-p2-decisions.md (D-12)."
+        )
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
@@ -215,6 +229,7 @@ app.add_middleware(
 
 # include routers
 app.include_router(compatibility_router)
+app.include_router(validation_router)
 app.include_router(simulations_router)
 app.include_router(run_summary_router)
 app.include_router(projects_router)

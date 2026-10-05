@@ -5,7 +5,34 @@ from typing import Any
 
 
 class JsonFormatter(logging.Formatter):
+    """Structured JSON logs with an explicit, bounded field allowlist.
+
+    Only names on these tuples are copied out of the LogRecord, so a log call
+    cannot smuggle arbitrary data (a payload, a URL, an id) into the emitted
+    JSON simply by passing `extra=`.
+    """
+
+    # Authentication outcomes. `auth_subject_hash` is a truncated hash, never a subject.
     _AUTH_FIELDS = ("auth_outcome", "auth_reason", "auth_subject_hash")
+    # Page-assembly phases and upstream fetches (SHARED-MIN-001). All values are
+    # low-cardinality: a page name, an outcome from a fixed vocabulary, an HTTP
+    # status, millisecond durations, and a decoded byte count. Deliberately no
+    # resource id, URL, claim, or payload content.
+    _PAGE_FIELDS = (
+        "page",
+        "page_outcome",
+        "page_status",
+        "page_duration_ms",
+        "page_identity_duration_ms",
+        "page_satellites_duration_ms",
+        "upstream_resource",
+        "upstream_outcome",
+        "upstream_duration_ms",
+        "upstream_bytes",
+    )
+
+    _LEGACY_FIELDS = ("legacy_operation", "legacy_outcome", "legacy_status",
+                      "legacy_duration_ms", "legacy_bytes")
 
     def format(self, record: logging.LogRecord) -> str:
         event: dict[str, Any] = {
@@ -14,7 +41,7 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        for field in self._AUTH_FIELDS:
+        for field in (*self._AUTH_FIELDS, *self._PAGE_FIELDS, *self._LEGACY_FIELDS):
             value = getattr(record, field, None)
             if value is not None:
                 event[field] = value

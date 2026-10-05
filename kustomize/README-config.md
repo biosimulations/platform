@@ -41,11 +41,25 @@ in `shared.env`.**
 | `AUTH0_EMAIL_VERIFIED_CLAIM` | non-secret — a namespace URI in every token | `api.env` |
 | `AUTH0_PERMISSIONS_CLAIM` | non-secret — Auth0 RBAC claim name (default `permissions`) | `api.env` |
 | `AUTH0_TRUSTED_ISSUERS` | non-secret — JSON issuer→audience map | `api.env` |
+| `AUTH0_AUTH_TIME_CLAIM` | non-secret — claim name, default `auth_time` | `api.env` |
+| `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` | non-secret policy flag (default `false`) | `api.env` |
+| `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` | non-secret policy number (default `300`) | `api.env` |
+| `AUTH0_PASSWORD_RESET_CLIENT_ID` | non-secret — the SPA's public client ID; blank disables ticket issuance (503) | `api.env` |
 | `AUTH0_MANAGEMENT_CLIENT_ID` | treat as secret (pairs with the secret) | **sealed secret** |
-| `AUTH0_MANAGEMENT_CLIENT_SECRET` | **SECRET** — grants `update:users`/`delete:users` on the whole tenant | **sealed secret** |
+| `AUTH0_MANAGEMENT_CLIENT_SECRET` | **SECRET** — grants `update:users`/`delete:users` (and `create:user_tickets` once authorized for password reset) on the whole tenant | **sealed secret** |
 
 Auth0 **Action** secrets (`M2M_CLIENT_SECRET`, `DEFAULT_ROLE_ID`, …) are not Platform
 configuration and never enter Kubernetes. See `auth0/README.md`.
+
+### Password-reset ticket issuance is off in every overlay
+
+As of 2026-10-02 no overlay sets `AUTH0_PASSWORD_RESET_CLIENT_ID` or the Management API
+credentials, so `POST /api/v1/me/password-reset` returns 503 everywhere. That is the only
+condition under which leaving `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` at its `false`
+default is acceptable. **An overlay that sets `AUTH0_PASSWORD_RESET_CLIENT_ID` must set
+`AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true` in the same change**; anything else is a
+deployment blocker, and checklist step 6 below fails on it. The tenant and client
+prerequisites are in `backend/CLAUDE.md` → "Password-reset enablement".
 
 ## Rate-limit variables
 
@@ -55,15 +69,36 @@ configuration and never enter Kubernetes. See `auth0/README.md`.
 | `RATE_LIMIT_WINDOW_SECONDS` | non-secret | `api.env` |
 | `RATE_LIMIT_AUTHENTICATED_PER_WINDOW` | non-secret | `api.env` |
 | `RATE_LIMIT_ANONYMOUS_PER_WINDOW` | non-secret | `api.env` |
+| `RATE_LIMIT_PASSWORD_RESET_PER_WINDOW` | non-secret — password-reset budget, per pod | `api.env` |
+| `RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS` | non-secret — password-reset window, per pod | `api.env` |
+| `RATE_LIMIT_PAGE_PER_WINDOW` | non-secret — page-aggregation budget, per pod, per client IP | `api.env` |
+| `RATE_LIMIT_PAGE_WINDOW_SECONDS` | non-secret — page-aggregation window, per pod | `api.env` |
+| `RATE_LIMIT_LEGACY_PER_WINDOW` | non-secret — shared six-route legacy proxy budget per process per IP (default `60`, positive) | `api.env` |
+| `RATE_LIMIT_LEGACY_WINDOW_SECONDS` | non-secret — independent legacy fixed window in seconds (default `60`, positive) | `api.env` |
+| `UPSTREAM_MAX_RESPONSE_BYTES` | non-secret — ceiling on one upstream response body (decoded for page aggregations; raw bytes for the legacy proxy's buffered responses), per pod | `api.env` |
+| `LEGACY_DOWNLOAD_MAX_CONCURRENT` | non-secret — legacy run downloads in flight at once, per pod (default `32`); beyond it 503 + `Retry-After` | `api.env` |
+
+The legacy 60/60 defaults are provisional; tune for polling, downloads and shared NATs.
+They are independent of `RATE_LIMIT_PAGE_*` and apply regardless of caller tokens.
+Local exhaustion returns 429 with Retry-After before proxy work; the separate download
+concurrency cap returns 503, and admitted requests can still relay upstream 429s.
+`RATE_LIMIT_ENABLED=false` disables **all** budgets, not only legacy. Prefer tuning the
+legacy settings for normal-client throttling. Counters are process-local (multiple workers
+or replicas multiply allowances), reset on restart, and permit fixed-window boundary bursts.
+This reduces shared-egress upstream risk but does not guarantee upstream availability or
+stop distributed abuse. Verify the existing ingress trust assumptions before relying on IP
+identity; see `backend/CLAUDE.md` for deployment caveats and monitoring.
 
 None of these grant a capability by themselves -- they are policy numbers, not credentials
 -- so per this document's own rule ("a value is a secret if possessing it grants a
-capability"), all four are ordinary ConfigMap configuration.
+capability"), every value in this table is ordinary ConfigMap configuration.
 
-**PER-POD, NOT GLOBAL.** `common/ratelimit.py` keeps its counters in each pod's own memory;
-`api` runs 3 replicas (`base/api.yaml:8`). The above two `_PER_WINDOW` values are enforced
-independently by each pod. If you want a specific GLOBAL ceiling `G`, set the value to
-`G / 3`. See `backend/CLAUDE.md` → "Rate Limiting" for the full explanation.
+**PER-POD, NOT GLOBAL.** `common/ratelimit.py` keeps its counters in each pod's own memory,
+so every `_PER_WINDOW` value above is enforced independently by each pod. `base/api.yaml`
+declares 3 replicas, but every overlay overrides `api` to **1** (`overlays/<cluster>/
+kustomization.yaml` → `replicas:`), so today each value is the cluster-wide ceiling. If an
+overlay runs `N` replicas, set the value to `G / N` for a GLOBAL ceiling `G`. See
+`backend/CLAUDE.md` → "Rate Limiting" for the full explanation.
 
 ## Format requirements
 
@@ -78,7 +113,9 @@ matches no token. Since P0 #5 this is caught at startup, but catch it in review 
 When set, it must be a JSON **object** mapping each issuer URL to
 `{"audiences": ["..."], "jwks_uri": "https://..."}`. This is a pairing, not two
 independent allowlists: an audience listed under issuer A is not valid for issuer B.
-See `backend/docs/auth0-tokens-claims-endpoints.md`.
+See `backend/docs/auth0-tokens-claims-endpoints.md`. Resource ownership (`owner_sub`) is
+subject-only: do not trust a second issuer for owned resources until ownership is
+issuer-bound (see `roles.is_owner`).
 
 Every `.env` file here is `KEY=VALUE`, one per line, `#` comments, **and must end with a
 newline.**
@@ -111,10 +148,15 @@ if [ "$CLUSTER" != "biosim-local" ]; then
     echo "FAIL: AUTH_REQUIRED=false in $CLUSTER" && exit 1
 fi
 
+# 6. Password-reset tickets are never enabled without the recent-authentication gate.
+grep -qE '^ *AUTH0_PASSWORD_RESET_CLIENT_ID: *"?[^" ]' /tmp/rendered.yaml && \
+  ! grep -qiE '^ *AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH: *"?true"?$' /tmp/rendered.yaml && \
+  echo "FAIL: password reset enabled without AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true in $CLUSTER" && exit 1
+
 echo "OK: $CLUSTER configuration looks sane"
 ```
 
-Steps 3–5 exit non-zero on failure, so this is directly usable as a CI or pre-commit step
+Steps 3–6 exit non-zero on failure, so this is directly usable as a CI or pre-commit step
 if the team wants one.
 
 ## Adding a new secret
