@@ -6,6 +6,7 @@ time.time() via the module-global `time` name specifically so this fixture,
 built for auth0.py, is directly reusable here unmodified.
 """
 
+from collections.abc import Callable
 from typing import Iterator
 
 import pytest
@@ -47,6 +48,8 @@ def _restore_ratelimit_state() -> Iterator[None]:
         settings.password_reset_window_seconds,
         settings.page_per_window,
         settings.page_window_seconds,
+        settings.legacy_per_window,
+        settings.legacy_window_seconds,
     )
     yield
     (
@@ -58,6 +61,8 @@ def _restore_ratelimit_state() -> Iterator[None]:
         settings.password_reset_window_seconds,
         settings.page_per_window,
         settings.page_window_seconds,
+        settings.legacy_per_window,
+        settings.legacy_window_seconds,
     ) = original
 
 
@@ -239,6 +244,8 @@ class TestEviction:
         settings = get_settings().ratelimit
         settings.password_reset_per_window = 5
         settings.password_reset_window_seconds = 300
+        settings.legacy_per_window = 10_000
+        settings.legacy_window_seconds = 60
         settings.page_per_window = 10_000
         settings.page_window_seconds = 60
         settings.anonymous_per_window = 10_000
@@ -248,7 +255,9 @@ class TestEviction:
     @staticmethod
     def _short_window_hit(source: str, client_host: str) -> None:
         request = _make_request(client_host=client_host)
-        if source == "page":
+        if source == "legacy":
+            ratelimit_module.legacy_rate_limit(request)
+        elif source == "page":
             ratelimit_module.page_rate_limit(request)
         else:
             ratelimit_module.workflow_rate_limit(request=request, user=None)
@@ -264,12 +273,12 @@ class TestEviction:
         assert exc_info.value.status_code == 429
         assert exc_info.value.headers == {"Retry-After": retry_after}
 
-    @pytest.mark.parametrize("source", ["page", "workflow"])
+    @pytest.mark.parametrize("source", ["page", "workflow", "legacy"])
     def test_short_window_sweep_does_not_evict_an_active_reset_bucket(
         self, source: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         clock = self._configure_mixed_windows(monkeypatch)
-        sentinel_key = "pages:ip:10.9.9.9" if source == "page" else "ip:10.9.9.9"
+        sentinel_key = {"page": "pages:", "legacy": "legacy:", "workflow": ""}[source] + "ip:10.9.9.9"
         # A short-window bucket that expires at +60 s: its eviction proves a sweep ran.
         self._short_window_hit(source, "10.9.9.9")
 
@@ -437,6 +446,10 @@ class TestPolicyValidation:
             {"RATE_LIMIT_PASSWORD_RESET_PER_WINDOW": "0"},
             {"RATE_LIMIT_PASSWORD_RESET_PER_WINDOW": "-1"},
             {"RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS": "0"},
+            {"RATE_LIMIT_LEGACY_PER_WINDOW": "0"},
+            {"RATE_LIMIT_LEGACY_PER_WINDOW": "-1"},
+            {"RATE_LIMIT_LEGACY_WINDOW_SECONDS": "0"},
+            {"RATE_LIMIT_LEGACY_WINDOW_SECONDS": "-1"},
             {"RATE_LIMIT_PAGE_PER_WINDOW": "0"},
             {"RATE_LIMIT_PAGE_WINDOW_SECONDS": "-5"},
         ],
@@ -528,3 +541,80 @@ class TestCompatibilityQuotaIsIndependent:
         with pytest.raises(HTTPException) as exc_info:
             ratelimit_module.compatibility_rate_limit(request=request, user=None)
         assert exc_info.value.status_code == 429
+
+
+class TestLegacyBudget:
+    def test_defaults_and_independent_environment_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("RATE_LIMIT_LEGACY_PER_WINDOW", raising=False)
+        monkeypatch.delenv("RATE_LIMIT_LEGACY_WINDOW_SECONDS", raising=False)
+        settings = RateLimitSettings()
+        assert (settings.legacy_per_window, settings.legacy_window_seconds) == (60, 60)
+        monkeypatch.setenv("RATE_LIMIT_LEGACY_PER_WINDOW", "7")
+        monkeypatch.setenv("RATE_LIMIT_LEGACY_WINDOW_SECONDS", "300")
+        overridden = RateLimitSettings()
+        assert (overridden.legacy_per_window, overridden.legacy_window_seconds) == (7, 300)
+        assert overridden.page_per_window == settings.page_per_window
+        assert overridden.page_window_seconds == settings.page_window_seconds
+
+    def test_custom_window_and_ip_isolation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        settings = get_settings().ratelimit
+        settings.legacy_per_window = 1
+        settings.legacy_window_seconds = 300
+        clock = FakeClock(start=1_700_000_100.0)
+        monkeypatch.setattr(ratelimit_module, "time", clock)
+        request = _make_request()
+        ratelimit_module.legacy_rate_limit(request)
+        assert set(ratelimit_module._rate_limit_buckets) == {"legacy:ip:203.0.113.5"}
+        ratelimit_module.legacy_rate_limit(_make_request("8.8.8.8"))
+        clock.advance(60)
+        with pytest.raises(HTTPException) as exc:
+            ratelimit_module.legacy_rate_limit(request)
+        assert exc.value.status_code == 429
+        assert exc.value.headers == {"Retry-After": "241"}
+        clock.advance(240)
+        ratelimit_module.legacy_rate_limit(request)
+
+    @pytest.mark.parametrize("legacy_first", [True, False])
+    def test_all_other_budgets_are_independent(self, legacy_first: bool) -> None:
+        settings = get_settings().ratelimit
+        settings.legacy_per_window = 1
+        settings.page_per_window = 1
+        settings.anonymous_per_window = 1
+        settings.password_reset_per_window = 1
+        request = _make_request()
+        user = AuthenticatedUser(sub="owner", issuer="https://issuer.test/")
+
+        def exhaust_legacy() -> None:
+            ratelimit_module.legacy_rate_limit(request)
+            with pytest.raises(HTTPException) as exc:
+                ratelimit_module.legacy_rate_limit(request)
+            assert exc.value.status_code == 429
+
+        if legacy_first:
+            exhaust_legacy()
+        operations: list[Callable[[], None]] = [
+            lambda: ratelimit_module.page_rate_limit(request),
+            lambda: ratelimit_module.workflow_rate_limit(request, None),
+            lambda: ratelimit_module.compatibility_rate_limit(request, None),
+            lambda: ratelimit_module.password_reset_rate_limit(request, user),
+        ]
+        for operation in operations:
+            operation()
+            with pytest.raises(HTTPException) as exc:
+                operation()
+            assert exc.value.status_code == 429
+        if not legacy_first:
+            exhaust_legacy()
+
+    @pytest.mark.parametrize("trusted", [True, False])
+    def test_forwarded_ip_uses_existing_trust_boundary(self, trusted: bool) -> None:
+        get_settings().ratelimit.legacy_per_window = 1
+        peer = "10.0.0.1" if trusted else "8.8.8.8"
+        ratelimit_module.legacy_rate_limit(_make_request(peer, "1.1.1.1"))
+        second = _make_request(peer, "9.9.9.9")
+        if trusted:
+            ratelimit_module.legacy_rate_limit(second)
+        else:
+            with pytest.raises(HTTPException) as exc:
+                ratelimit_module.legacy_rate_limit(second)
+            assert exc.value.status_code == 429

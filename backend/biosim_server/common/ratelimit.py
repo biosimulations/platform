@@ -327,6 +327,24 @@ def page_rate_limit(request: Request) -> None:
     )
 
 
+def legacy_rate_limit(request: Request) -> None:
+    """Share one IP budget across legacy proxy operations, before proxy work.
+
+    Credentials belong to upstream: do not validate them locally or let token
+    rotation reset this allowance. A separate namespace preserves page and
+    workflow budgets while bounding traffic through their shared upstream.
+    Admitted requests are charged even if subsequent proxy work fails.
+    """
+    settings = get_settings().ratelimit
+    _enforce_rate_limit(
+        request,
+        None,
+        key_prefix="legacy",
+        per_window=settings.legacy_per_window,
+        window_seconds=settings.legacy_window_seconds,
+    )
+
+
 def password_reset_rate_limit(request: Request, user: AuthenticatedUser) -> None:
     """Separate self-service budget; caller supplies the required principal.
 

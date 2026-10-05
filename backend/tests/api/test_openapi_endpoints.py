@@ -560,3 +560,16 @@ def test_page_response_schemas_and_auth() -> None:
         assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
             "$ref": f"#/components/schemas/{model}",
         }
+
+
+def test_legacy_operations_document_local_throttling_without_platform_auth() -> None:
+    spec = app.openapi()
+    legacy_operations = [op for op in OPERATIONS if "legacy" in op.operation_id]
+    assert len(legacy_operations) == 6
+    for operation in legacy_operations:
+        contract = spec["paths"][operation.path][operation.method.lower()]
+        assert not contract.get("security")
+        response = contract["responses"]["429"]
+        assert "no upstream request" in response["description"]
+        assert "Retry-After" in response["headers"]
+        assert "per-client-IP" in contract["description"]

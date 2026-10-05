@@ -359,6 +359,12 @@ class RateLimitSettings(BaseSettings):
     page_per_window: int = Field(default=60, gt=0, alias="RATE_LIMIT_PAGE_PER_WINDOW")
     page_window_seconds: int = Field(default=60, gt=0, alias="RATE_LIMIT_PAGE_WINDOW_SECONDS")
 
+    # Separate per-process, per-IP budget for all legacy proxy operations.
+    # Shared egress means proxy abuse can also throttle owned pages upstream.
+    # Provisional defaults; tune independently for normal traffic and shared NATs.
+    legacy_per_window: int = Field(default=60, gt=0, alias="RATE_LIMIT_LEGACY_PER_WINDOW")
+    legacy_window_seconds: int = Field(default=60, gt=0, alias="RATE_LIMIT_LEGACY_WINDOW_SECONDS")
+
     model_config = SettingsConfigDict(env_prefix="", extra="ignore", populate_by_name=True)
 
 class Settings(BaseSettings):

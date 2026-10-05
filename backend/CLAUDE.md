@@ -515,6 +515,8 @@ distributes evenly; to target a global ceiling `G`, configure `G / N`.
 | `RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS` | `300` | Fixed-window size for the password-reset budget. |
 | `RATE_LIMIT_PAGE_PER_WINDOW` | `60` | Per-pod requests per page window for the two public page aggregations, keyed by client IP. More generous than a workflow start because browsing is the ordinary reading path — it still bounds the 3-4-call upstream fan-out. |
 | `RATE_LIMIT_PAGE_WINDOW_SECONDS` | `60` | Fixed-window size for the page-aggregation budget. |
+| `RATE_LIMIT_LEGACY_PER_WINDOW` | `60` | Provisional shared legacy proxy budget per client IP per process; strictly positive. |
+| `RATE_LIMIT_LEGACY_WINDOW_SECONDS` | `60` | Independent legacy fixed-window size in seconds; strictly positive. |
 
 Protects `POST /verify/omex`, `POST /verify/runs`, and `POST /simulations/run` -- the three
 endpoints that start a Temporal workflow. All three share ONE budget per caller identity, not
@@ -538,15 +540,31 @@ by design, so a caller must not be able to raise the ceiling or reset an exhaust
 by rotating tokens. A denied request never reaches upstream.
 
 The six transparent legacy runs proxy operations (`/runs/summary`, `/runs/{id}` GET/PATCH/
-DELETE, `/runs/{id}/download`, `/runs/{id}/validate`) are **deliberately not rate-limited**
-here. Each inbound request makes exactly one upstream request (no fan-out, no retry), the
-legacy API is itself public and enforces its own authorization, and the proxy already bounds
-what one request can cost this process: `LEGACY_DOWNLOAD_MAX_CONCURRENT` caps pinned download
-connections, PATCH bodies are capped at 20 MiB, and buffered responses at
-`UPSTREAM_MAX_RESPONSE_BYTES`. The accepted trade-off: the upstream sees all proxied traffic
-from the Platform's egress address, so one abusive client could trigger upstream throttling
-that every Platform user then shares. If that is observed, add an IP-keyed `legacy:` bucket
-with `_enforce_rate_limit`, the same shape as `page_rate_limit`.
+DELETE, `/runs/{id}/download`, `/runs/{id}/validate`) share ONE `legacy:` budget keyed
+only by client IP, using `legacy_rate_limit`. Caller credentials remain opaque to Platform
+and are forwarded for upstream authorization; token rotation never restores quota.
+The budget is independent of pages, workflow starts, compatibility checks and password
+resets. Each admitted request costs one unit even if later proxy work fails; range/resume
+requests count separately. A rejected request returns local **429 + Retry-After** before
+reading the PATCH body, claiming a download slot or sending upstream traffic. Active
+downloads continue. The independent download concurrency cap still returns **503**, and
+an admitted request may relay an upstream **429** and its Retry-After unchanged.
+
+If proxy and owned page/summary traffic share an egress IP and upstream throttling is
+IP-based, proxy abuse can impair those owned endpoints too. Separate pools, the 20 MiB
+PATCH cap, `UPSTREAM_MAX_RESPONSE_BYTES`, and `LEGACY_DOWNLOAD_MAX_CONCURRENT` do not bound
+request rate or isolate upstream IP reputation. This limiter reduces that risk without
+guaranteeing upstream availability; deployment egress and upstream policy need operational
+verification. The 60 requests/60 seconds defaults are provisional, independently tunable
+via `RATE_LIMIT_LEGACY_*`, not a measured upstream capacity. Shared NAT users share quota.
+Counters are process-local: replicas/workers multiply the possible allowance, restarts
+reset it, and fixed windows allow bursts at boundaries. Distributed abuse remains possible.
+
+Observe local 429s in request/access logs and limiter warnings, alongside upstream
+429/5xx/timeouts and owned page/summary failures. Denials never enter `proxy_run`, so its
+transfer log does not record them. Avoid logging credentials, raw identity keys or query
+strings. Prefer tuning the legacy settings over `RATE_LIMIT_ENABLED=false`, which disables
+all budgets and is not a legacy-only rollback.
 
 **Failure mode on exhaustion:** `429 Too Many Requests` with a `Retry-After` header naming
 the number of seconds until the current window rolls over.

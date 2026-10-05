@@ -278,7 +278,10 @@ paths:
       description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
         without platform authentication; the legacy service enforces its own permissions.
         Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
-        Single attempt; redirects are returned with Location, never followed.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work.
       operationId: get-legacy-runs-summary
       responses:
         '200':
@@ -286,6 +289,15 @@ paths:
         default:
           description: Opaque legacy status, body and allowlisted headers; authorization
             is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
         '502':
           description: Could not reach or read the legacy runs service.
         '504':
@@ -298,7 +310,10 @@ paths:
       description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
         without platform authentication; the legacy service enforces its own permissions.
         Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
-        Single attempt; redirects are returned with Location, never followed.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work.
       operationId: get-legacy-run
       parameters:
       - name: run_id
@@ -313,6 +328,15 @@ paths:
         default:
           description: Opaque legacy status, body and allowlisted headers; authorization
             is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
         '502':
           description: Could not reach or read the legacy runs service.
         '504':
@@ -324,9 +348,11 @@ paths:
       description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
         without platform authentication; the legacy service enforces its own permissions.
         Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
-        Single attempt; redirects are returned with Location, never followed. PATCH
-        forwards raw bytes and Content-Type, bounded to 20 MiB before sending; field
-        validation belongs to the legacy service.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work. PATCH forwards raw bytes and Content-Type,
+        bounded to 20 MiB before sending; field validation belongs to the legacy service.
       operationId: update-legacy-run
       parameters:
       - name: run_id
@@ -341,6 +367,15 @@ paths:
         default:
           description: Opaque legacy status, body and allowlisted headers; authorization
             is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
         '502':
           description: Could not reach or read the legacy runs service.
         '504':
@@ -372,7 +407,10 @@ paths:
       description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
         without platform authentication; the legacy service enforces its own permissions.
         Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
-        Single attempt; redirects are returned with Location, never followed.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work.
       operationId: delete-legacy-run
       parameters:
       - name: run_id
@@ -387,6 +425,15 @@ paths:
         default:
           description: Opaque legacy status, body and allowlisted headers; authorization
             is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
         '502':
           description: Could not reach or read the legacy runs service.
         '504':
@@ -399,9 +446,12 @@ paths:
       description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
         without platform authentication; the legacy service enforces its own permissions.
         Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
-        Single attempt; redirects are returned with Location, never followed. Streams
-        raw binary bytes, including error bodies. Range and conditional headers are
-        forwarded; upstream support determines the result.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work. Streams raw binary bytes, including
+        error bodies. Range and conditional headers are forwarded; upstream support
+        determines the result.
       operationId: download-legacy-run
       parameters:
       - name: run_id
@@ -416,6 +466,15 @@ paths:
         default:
           description: Opaque legacy status, body and allowlisted headers; authorization
             is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
         '502':
           description: Could not reach or read the legacy runs service.
         '504':
@@ -436,7 +495,10 @@ paths:
       description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
         without platform authentication; the legacy service enforces its own permissions.
         Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
-        Single attempt; redirects are returned with Location, never followed.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work.
       operationId: validate-legacy-run
       parameters:
       - name: run_id
@@ -451,6 +513,15 @@ paths:
         default:
           description: Opaque legacy status, body and allowlisted headers; authorization
             is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
         '502':
           description: Could not reach or read the legacy runs service.
         '504':
