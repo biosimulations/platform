@@ -11,6 +11,8 @@ paths:
       description: Upload an OMEX archive or provide a URL to find compatible simulators
         based on model format and algorithm requirements.
       operationId: check-compatibility
+      security:
+      - HTTPBearer: []
       parameters:
       - name: archive_url
         in: query
@@ -49,6 +51,66 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /validation/model:
+    post:
+      tags:
+      - Validation
+      summary: Validate a model document via the COMBINE API
+      description: 'Relayed to the COMBINE API server-side. **Works with or without
+        authentication**: a token, if present and valid, only raises the rate-limit
+        ceiling, and one that cannot be validated is treated as no token rather than
+        refused. The upstream status and body are returned unchanged for 2xx and 4xx
+        -- the validation report *is* a 400 for an invalid document, so the body matters
+        on failure. A 5xx becomes a sanitized 502. No caller credentials are forwarded
+        upstream.'
+      operationId: validate-model
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '413':
+          description: The uploaded document exceeded the size limit.
+        '429':
+          description: Validation rate limit exceeded.
+        '502':
+          description: The validation service failed, was unreachable, or answered
+            unreadably.
+        '504':
+          description: Timed out while contacting the validation service.
+      security:
+      - HTTPBearer: []
+  /validation/sed-ml:
+    post:
+      tags:
+      - Validation
+      summary: Validate a SED-ML document via the COMBINE API
+      description: 'Relayed to the COMBINE API server-side. **Works with or without
+        authentication**: a token, if present and valid, only raises the rate-limit
+        ceiling, and one that cannot be validated is treated as no token rather than
+        refused. The upstream status and body are returned unchanged for 2xx and 4xx
+        -- the validation report *is* a 400 for an invalid document, so the body matters
+        on failure. A 5xx becomes a sanitized 502. No caller credentials are forwarded
+        upstream.'
+      operationId: validate-sedml
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '413':
+          description: The uploaded document exceeded the size limit.
+        '429':
+          description: Validation rate limit exceeded.
+        '502':
+          description: The validation service failed, was unreachable, or answered
+            unreadably.
+        '504':
+          description: Timed out while contacting the validation service.
+      security:
+      - HTTPBearer: []
   /simulations/run:
     post:
       tags:
@@ -109,6 +171,8 @@ paths:
       - Simulations
       summary: Get status of a simulation run
       operationId: get-simulation-status
+      security:
+      - HTTPBearer: []
       parameters:
       - name: processing_id
         in: path
@@ -160,6 +224,8 @@ paths:
       summary: Get status of a simulation run (explicit sub-resource, same data as
         GET /{id})
       operationId: get-simulation-status-explicit
+      security:
+      - HTTPBearer: []
       parameters:
       - name: processing_id
         in: path
@@ -186,6 +252,8 @@ paths:
       - Simulations
       summary: Get the result-dataset catalog for each job in a simulation run
       operationId: get-simulation-results
+      security:
+      - HTTPBearer: []
       parameters:
       - name: processing_id
         in: path
@@ -212,6 +280,8 @@ paths:
       - Simulations
       summary: Get simulator logs for each job in a simulation run
       operationId: get-simulation-logs
+      security:
+      - HTTPBearer: []
       parameters:
       - name: processing_id
         in: path
@@ -260,6 +330,262 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /runs/summary:
+    get:
+      tags:
+      - Runs
+      summary: Get Legacy Runs Summary
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work.
+      operationId: get-legacy-runs-summary
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
+  /runs/{run_id}:
+    get:
+      tags:
+      - Runs
+      summary: Get Legacy Run
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work.
+      operationId: get-legacy-run
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
+    patch:
+      tags:
+      - Runs
+      summary: Update Legacy Run
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work. PATCH forwards raw bytes and Content-Type,
+        bounded to 20 MiB before sending; field validation belongs to the legacy service.
+      operationId: update-legacy-run
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
+        '413':
+          description: PATCH body exceeds 20 MiB; no upstream request is sent.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "UpdateSimulationRun \u2014 upstream PATCH contract (api.biosimulations.org).\
+                \ All fields are optional; the proxy forwards raw bytes and Content-Type\
+                \ without validation."
+              properties:
+                status:
+                  type: string
+                fileUrl:
+                  type: string
+                projectSize:
+                  type: number
+                resultsSize:
+                  type: number
+    delete:
+      tags:
+      - Runs
+      summary: Delete Legacy Run
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work.
+      operationId: delete-legacy-run
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
+  /runs/{run_id}/download:
+    get:
+      tags:
+      - Runs
+      summary: Download Legacy Run
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work. Streams raw binary bytes, including
+        error bodies. Range and conditional headers are forwarded; upstream support
+        determines the result.
+      operationId: download-legacy-run
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
+        '503':
+          description: Too many downloads are already in progress on this server;
+            nothing was sent upstream. Retry after the indicated delay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+  /runs/{run_id}/validate:
+    get:
+      tags:
+      - Runs
+      summary: Validate Legacy Run
+      description: Proxy to BIOSIMULATIONS_API_BASE_URL. Caller Authorization is forwarded
+        without platform authentication; the legacy service enforces its own permissions.
+        Cookies are not forwarded. Query bytes and opaque response bytes are preserved.
+        Single attempt; redirects are returned with Location, never followed. All
+        six legacy operations share one configurable per-client-IP rate budget, independent
+        of caller credentials and page/workflow budgets. Exhaustion returns local
+        429 with Retry-After before proxy work.
+      operationId: validate-legacy-run
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+        default:
+          description: Opaque legacy status, body and allowlisted headers; authorization
+            is enforced upstream.
+        '429':
+          description: Shared legacy proxy IP budget exhausted; no upstream request
+            was sent. Admitted requests can also relay an upstream 429.
+          headers:
+            Retry-After:
+              description: For local throttling, seconds until the window resets;
+                upstream retry headers are relayed unchanged.
+              schema:
+                type: string
+        '502':
+          description: Could not reach or read the legacy runs service.
+        '504':
+          description: Timed out while contacting the legacy runs service.
   /runs/{run_id}/summary:
     get:
       tags:
@@ -313,8 +639,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunsPagePayload'
+        '429':
+          description: The caller exhausted the page-aggregation budget. Retry after
+            the indicated delay.
+          headers:
+            Retry-After:
+              description: Seconds until the current fixed window rolls over.
+              schema:
+                type: integer
         '502':
-          description: The upstream service failed or returned an invalid page resource.
+          description: The upstream service failed, returned an oversized body, or
+            returned an invalid page resource.
         '504':
           description: Timed out while contacting the upstream service.
         '422':
@@ -507,8 +842,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectsPagePayload'
+        '429':
+          description: The caller exhausted the page-aggregation budget. Retry after
+            the indicated delay.
+          headers:
+            Retry-After:
+              description: Seconds until the current fixed window rolls over.
+              schema:
+                type: integer
         '502':
-          description: The upstream service failed or returned an invalid page resource.
+          description: The upstream service failed, returned an oversized body, or
+            returned an invalid page resource.
         '504':
           description: Timed out while contacting the upstream service.
         '422':
@@ -540,6 +884,10 @@ paths:
       responses:
         '204':
           description: Successful Response
+        '403':
+          description: The token's issuer is not the configured Auth0 tenant, so its
+            subject must not be resolved against that tenant's directory. No account
+            is deleted.
       security:
       - HTTPBearer: []
     patch:
@@ -560,12 +908,102 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserProfile'
+        '403':
+          description: The token's issuer is not the configured Auth0 tenant, so its
+            subject must not be resolved against that tenant's directory. No Management
+            API call is made.
         '422':
           description: Validation Error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/me/password-reset:
+    post:
+      tags:
+      - Users
+      summary: Create an Auth0-hosted password reset URL for the authenticated user
+      description: 'Issues a short-lived (600 s), single-use Auth0-hosted password-change
+        URL for the authenticated primary database user. The account is selected from
+        the verified bearer token only -- no email, user id, client id or return URL
+        is accepted from the caller, and supplying them changes nothing. No email
+        is sent: navigate the browser to the returned URL (it is a bearer capability,
+        so it must never be logged, cached, or fetched by script). Issuance is a single
+        attempt and is deliberately never retried, because an uncertain outcome may
+        already have minted a ticket. Every response, errors included, is `Cache-Control:
+        no-store` with `Referrer-Policy: no-referrer`. A 200 means a ticket was issued,
+        not that the password was changed.'
+      operationId: create-current-user-password-reset
+      responses:
+        '200':
+          description: 'A hosted password-change URL. Sensitive: no-store/no-referrer,
+            never persisted by the API, and not proof of a completed change.'
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+            Referrer-Policy:
+              description: Always `no-referrer`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordResetResponse'
+        '401':
+          description: Missing, malformed, expired, or otherwise unverifiable bearer
+            token. An access token without an expiry is rejected here too.
+          headers:
+            WWW-Authenticate:
+              description: RFC 6750 bearer challenge naming the fault.
+              schema:
+                type: string
+        '403':
+          description: 'This principal may not change a password here: its issuer
+            is not the configured tenant, its subject is not a primary `auth0|` database
+            user, or -- when recent authentication is required -- the token carries
+            no usable recent sign-in evidence.'
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+        '429':
+          description: The caller exhausted the password-reset budget (metered separately
+            from workflow starts, per issuer and subject). Retry after the indicated
+            delay; no ticket was issued.
+          headers:
+            Retry-After:
+              description: Seconds until the current fixed window rolls over.
+              schema:
+                type: integer
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+        '502':
+          description: 'Auth0 rejected or failed the ticket request. Generic by design:
+            it does not indicate whether the account exists.'
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
+        '503':
+          description: Password reset is not configured, authentication is temporarily
+            unavailable (no usable JWKS), or Auth0 is rate-limiting ticket issuance.
+          headers:
+            Retry-After:
+              description: Present for the Auth0-throttled and JWKS cases.
+              schema:
+                type: integer
+            Cache-Control:
+              description: Always `no-store`.
+              schema:
+                type: string
       security:
       - HTTPBearer: []
   /api/v1/demo/public:
@@ -613,6 +1051,22 @@ paths:
                 $ref: '#/components/schemas/RoleAnimalResponse'
       security:
       - HTTPBearer: []
+  /api/v1/demo/private/permission:
+    get:
+      tags:
+      - RBAC Demo
+      summary: Private endpoint -- requires the demo:read permission on the access
+        token
+      operationId: demo-private-permission
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionCheckResponse'
+      security:
+      - HTTPBearer: []
   /:
     get:
       summary: Root
@@ -645,6 +1099,8 @@ paths:
       - Verification
       summary: Request verification report for OMEX/COMBINE archive across simulators
       operationId: verify-omex
+      security:
+      - HTTPBearer: []
       parameters:
       - name: workflow_id_prefix
         in: query
@@ -766,6 +1222,8 @@ paths:
       - Verification
       summary: Retrieve verification report for OMEX/COMBINE archive
       operationId: get-verify-output
+      security:
+      - HTTPBearer: []
       parameters:
       - name: workflow_id
         in: path
@@ -792,6 +1250,8 @@ paths:
       - Verification
       summary: Request verification report for biosimulation runs by run IDs
       operationId: verify-runs
+      security:
+      - HTTPBearer: []
       parameters:
       - name: workflow_id_prefix
         in: query
@@ -1416,6 +1876,11 @@ components:
           - type: string
           - type: 'null'
           title: User
+        owner_sub:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Sub
         sort:
           anyOf:
           - $ref: '#/components/schemas/TableSort'
@@ -2136,6 +2601,28 @@ components:
       - status
       - id
       title: PageTaskLog
+    PasswordResetResponse:
+      properties:
+        url:
+          type: string
+          title: Url
+      type: object
+      required:
+      - url
+      title: PasswordResetResponse
+    PermissionCheckResponse:
+      properties:
+        permission:
+          type: string
+          title: Permission
+        granted:
+          type: boolean
+          title: Granted
+      type: object
+      required:
+      - permission
+      - granted
+      title: PermissionCheckResponse
     ProjectQueryStat:
       properties:
         target:
@@ -2392,6 +2879,19 @@ components:
           description: Optional salt for the (omex, simulator, cache_buster) result
             cache. Omit (or null) to reuse cached results for identical submissions;
             pass a unique value to force fresh biosimulations.org runs.
+        visibility:
+          anyOf:
+          - type: string
+            enum:
+            - public
+            - private
+          - type: 'null'
+          title: Visibility
+          description: 'Requested run visibility. Authenticated callers: omitted defaults
+            to private; ''public'' or ''private'' is honored (the run is always owned
+            by the caller). Anonymous submissions are always public -- a requested
+            ''private'' is forced to public because no identity exists to grant access
+            to.'
       type: object
       required:
       - omex_id
@@ -2699,10 +3199,13 @@ components:
       properties:
         page:
           type: integer
+          minimum: 1.0
           title: Page
           default: 1
         perPage:
           type: integer
+          maximum: 100.0
+          minimum: 1.0
           title: Perpage
           default: 20
         _total:
@@ -2839,6 +3342,11 @@ components:
           anyOf:
           - $ref: '#/components/schemas/GenerateStatisticsActivityOutput'
           - type: 'null'
+        owner_sub:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Sub
       type: object
       required:
       - workflow_id

@@ -3,15 +3,20 @@ __pycache__/
 *.py[cod]
 *$py.class
 .idea
-.junie
-.vscode
-.cursor
-.agents-new
-.freebuff
+.junie/
+.vscode/
+.cursor/
+.agents-new/
+.freebuff/
+.kilo/
 .postman
 postman/
 # Machine-local MCP configs (Cursor/PyCharm loopback). Not deployable.
 /.mcp.json
+.crush/
+backend/.agents/
+.agents
+/backend/agents/
 
 # C extensions
 *.so

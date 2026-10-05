@@ -8,11 +8,13 @@ required bearer), not the FastAPI-emitted ``security: [HTTPBearer]`` field.
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import assert_never
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from biosim_server.api.main import app
@@ -21,6 +23,7 @@ from biosim_server.common.auth import get_current_user
 from biosim_server.dependencies import get_combine_http_client
 from biosim_server.rbac_demo.models import PublicMessage
 from biosim_server.version import __version__
+from biosim_server.dependencies import get_legacy_http_client
 from tests.fixtures.auth_fixtures import make_authenticated_user
 
 _PATH_PARAMS = ("processing_id", "workflow_id", "run_id", "project_id")
@@ -34,6 +37,10 @@ _CORE_PATHS = frozenset({
     "/simulations/{processing_id}/results",
     "/simulations/{processing_id}/logs",
     "/simulations/{processing_id}/cancel",
+    "/runs/{run_id}",
+    "/runs/summary",
+    "/runs/{run_id}/download",
+    "/runs/{run_id}/validate",
     "/runs/{run_id}/summary",
     "/runs/{run_id}/page",
     "/validation/model",
@@ -44,6 +51,7 @@ _CORE_PATHS = frozenset({
     "/projects/{project_id}/summary",
     "/projects/{project_id}/page",
     "/api/v1/me",
+    "/api/v1/me/password-reset",
     "/api/v1/demo/public",
     "/api/v1/demo/private/me",
     "/api/v1/demo/private/animal",
@@ -57,6 +65,7 @@ _OPTIONAL_AUTH_OPERATION_IDS = frozenset({"run-simulations", "list-simulation-ru
 _REQUIRED_AUTH_OPERATION_IDS = frozenset({
     "delete-simulation-run",
     "cancel-simulation-run",
+    "create-current-user-password-reset",
     "get-current-user",
     "update-current-user",
     "delete-current-user",
@@ -115,6 +124,13 @@ OPERATIONS: tuple[Operation, ...] = tuple(_operations())
 OPERATION_IDS: frozenset[str] = frozenset(op.operation_id for op in OPERATIONS)
 
 AUTH_MODE: dict[str, AuthMode] = {
+    "get-legacy-run": AuthMode.NONE,
+    "update-legacy-run": AuthMode.NONE,
+    "delete-legacy-run": AuthMode.NONE,
+    "download-legacy-run": AuthMode.NONE,
+    "validate-legacy-run": AuthMode.NONE,
+    "get-legacy-runs-summary": AuthMode.NONE,
+
     "check-compatibility": AuthMode.NONE,
     "run-simulations": AuthMode.OPTIONAL,
     "list-simulation-runs": AuthMode.OPTIONAL,
@@ -131,6 +147,7 @@ AUTH_MODE: dict[str, AuthMode] = {
     "list-project-stats": AuthMode.NONE,
     "get-project-summary": AuthMode.NONE,
     "get-project-page": AuthMode.NONE,
+    "create-current-user-password-reset": AuthMode.REQUIRED,
     "get-current-user": AuthMode.REQUIRED,
     "update-current-user": AuthMode.REQUIRED,
     "delete-current-user": AuthMode.REQUIRED,
@@ -151,6 +168,13 @@ AUTH_MODE: dict[str, AuthMode] = {
 }
 
 VALIDATION_SKIP: dict[str, str] = {
+    "get-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "update-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "delete-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "download-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "validate-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "get-legacy-runs-summary": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+
     "get-simulation-status": "path-only; omitting the id is a different route",
     "get-simulation-status-explicit": "path-only; omitting the id is a different route",
     "get-simulation-results": "path-only; omitting the id is a different route",
@@ -162,6 +186,7 @@ VALIDATION_SKIP: dict[str, str] = {
     "get-project-summary": "path-only; unauthenticated probe uses encoded-dot 404",
     "get-project-page": "path-only; unauthenticated probe uses encoded-dot 404",
     "reindex-projects": "no body; gated by static token, not Pydantic",
+    "create-current-user-password-reset": "no request body; identity comes from Bearer token",
     "get-current-user": "no request body",
     "delete-current-user": "no request body",
     "demo-public": "no request body",
@@ -290,6 +315,42 @@ def _probe_version(client: TestClient) -> None:
     assert response.json() == __version__
 
 
+def _probe_get_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("GET", "/runs/%2E"), 404)
+
+
+def _probe_update_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("PATCH", "/runs/%2E"), 404)
+
+
+def _probe_delete_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("DELETE", "/runs/%2E"), 404)
+
+
+def _probe_download_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("GET", "/runs/%2E/download"), 404)
+
+
+def _probe_validate_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("GET", "/runs/%2E/validate"), 404)
+
+
+def _probe_get_legacy_runs_summary(client: TestClient) -> None:
+    # A static route has no dot-id rejection. Use a hermetic upstream failure.
+    def unavailable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("unavailable", request=request)
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(unavailable), base_url="https://upstream.test")
+    app.dependency_overrides[get_legacy_http_client] = lambda: upstream
+    try:
+        _assert_status(client.get("/runs/summary"), 502)
+    finally:
+        app.dependency_overrides.pop(get_legacy_http_client, None)
+        # MockTransport owns no sockets, but close the client lifecycle as well.
+        import asyncio
+        asyncio.run(upstream.aclose())
+
+
 def _probe_validation(client: TestClient, path: str) -> None:
     """Reachable without a token, and a dead upstream is a sanitized 502.
 
@@ -324,6 +385,12 @@ def _probe_validate_sedml(client: TestClient) -> None:
 UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "validate-model": _probe_validate_model,
     "validate-sedml": _probe_validate_sedml,
+    "get-legacy-run": _probe_get_legacy_run,
+    "update-legacy-run": _probe_update_legacy_run,
+    "delete-legacy-run": _probe_delete_legacy_run,
+    "download-legacy-run": _probe_download_legacy_run,
+    "validate-legacy-run": _probe_validate_legacy_run,
+    "get-legacy-runs-summary": _probe_get_legacy_runs_summary,
     "check-compatibility": _probe_check_compatibility,
     "run-simulations": _probe_run_simulations,
     "list-simulation-runs": _probe_list_simulation_runs,
@@ -487,6 +554,42 @@ def test_validation_error_probe(operation: Operation, client: TestClient) -> Non
     runner(client)
 
 
+def test_password_reset_documents_its_error_header_and_retry_contract() -> None:
+    """AUTH-MIN-003: generated/documentation-driven clients must not have to guess.
+
+    The reset route is the one operation whose success value is a bearer
+    capability and whose failures are deliberately generic, so its contract lives
+    in the spec rather than in prose: which errors exist, which carry Retry-After,
+    that nothing is cacheable, and that a 200 is not a completed password change.
+    """
+    operation = app.openapi()["paths"]["/api/v1/me/password-reset"]["post"]
+    responses = operation["responses"]
+    assert {"200", "401", "403", "429", "502", "503"} <= set(responses)
+    assert all(responses[code]["description"] for code in ("401", "403", "429", "502", "503"))
+    assert "Retry-After" in responses["429"]["headers"]
+    assert "WWW-Authenticate" in responses["401"]["headers"]
+    description = operation["description"]
+    assert "no-store" in description
+    assert "single attempt" in description
+    assert "not that the password was changed" in description
+    # The response model still owns the 200 body.
+    assert responses["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/PasswordResetResponse"
+    }
+
+
+def test_committed_openapi_artifact_matches_the_in_process_spec() -> None:
+    """The checked-in artifact is the contract clients read; keep it honest.
+
+    A route/model/description change that is not regenerated with
+    ``python -m scripts.generate_openapi`` silently forks the published contract
+    from the running app. The generator forces ENABLE_RBAC_DEMO on, and this
+    suite's conftest sets it before import, so both sides see the same routes.
+    """
+    spec_path = Path(__file__).resolve().parents[2] / "biosim_server/api/spec/openapi_3_1_0_generated.yaml"
+    assert yaml.safe_load(spec_path.read_text()) == app.openapi()
+
+
 def test_page_response_schemas_and_auth() -> None:
     spec = app.openapi()
     for path, model in [
@@ -499,3 +602,16 @@ def test_page_response_schemas_and_auth() -> None:
         assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
             "$ref": f"#/components/schemas/{model}",
         }
+
+
+def test_legacy_operations_document_local_throttling_without_platform_auth() -> None:
+    spec = app.openapi()
+    legacy_operations = [op for op in OPERATIONS if "legacy" in op.operation_id]
+    assert len(legacy_operations) == 6
+    for operation in legacy_operations:
+        contract = spec["paths"][operation.path][operation.method.lower()]
+        assert not contract.get("security")
+        response = contract["responses"]["429"]
+        assert "no upstream request" in response["description"]
+        assert "Retry-After" in response["headers"]
+        assert "per-client-IP" in contract["description"]
