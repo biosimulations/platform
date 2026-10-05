@@ -889,3 +889,45 @@ async def get_optional_user(
     return await get_current_user(
         credentials, settings=settings, jwks_cache=jwks_cache
     )
+
+
+async def get_advisory_user(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
+    ] = None,
+    settings: Annotated[Auth0Settings | None, Depends(get_auth0_settings)] = None,
+    jwks_cache: Annotated[JwksCache | None, Depends(get_jwks_cache)] = None,
+) -> AuthenticatedUser | None:
+    """Identify the caller when that is possible, and never fail when it is not.
+
+    For endpoints that work the same with or without authentication, create
+    nothing and own nothing -- where a token only selects a rate-limit ceiling.
+
+    ``get_optional_user`` rejects a present-but-invalid token, and its reason is
+    specific: on an optional-auth *creation* path an expired token would
+    silently produce a public resource. That reasoning does not reach an
+    endpoint that creates no resource. Enforcing it anyway would break a public
+    endpoint for a caller whose session merely lapsed -- and the frontend
+    attaches the Platform token to every Platform-bound request, so a stale
+    session would arrive here routinely.
+
+    An unvalidatable token is therefore treated exactly as no token: the caller
+    is anonymous and gets the anonymous ceiling. A JWKS outage degrades the same
+    way rather than failing a request that never needed an identity.
+
+    NOT for anything that reads owned data, writes, or creates. A caller who has
+    to *be* someone must go through ``get_current_user`` or
+    ``get_optional_user``; silently continuing as anonymous there would be an
+    authorization bypass.
+    """
+    if credentials is None:
+        return None
+    try:
+        return await get_current_user(
+            credentials, settings=settings, jwks_cache=jwks_cache
+        )
+    except HTTPException:
+        # Routine, not an incident: an expired session looks exactly like this.
+        # No claim or token material is logged, consistent with this module.
+        logger.debug("Advisory authentication did not validate; continuing anonymously")
+        return None

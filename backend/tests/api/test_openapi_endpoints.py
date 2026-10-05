@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from biosim_server.api.main import app
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
 from biosim_server.common.auth import get_current_user
+from biosim_server.dependencies import get_combine_http_client
 from biosim_server.rbac_demo.models import PublicMessage
 from biosim_server.version import __version__
 from biosim_server.dependencies import get_legacy_http_client
@@ -42,6 +43,8 @@ _CORE_PATHS = frozenset({
     "/runs/{run_id}/validate",
     "/runs/{run_id}/summary",
     "/runs/{run_id}/page",
+    "/validation/model",
+    "/validation/sed-ml",
     "/projects",
     "/projects/reindex",
     "/projects/stats",
@@ -157,6 +160,11 @@ AUTH_MODE: dict[str, AuthMode] = {
     "verify-omex": AuthMode.REQUIRED,
     "get-verify-output": AuthMode.REQUIRED,
     "verify-runs": AuthMode.REQUIRED,
+    # Advisory auth: a valid token only raises the rate-limit ceiling, and one
+    # that does not validate is treated as absent. NONE rather than OPTIONAL
+    # because these never 401, whatever the Authorization header holds.
+    "validate-model": AuthMode.NONE,
+    "validate-sedml": AuthMode.NONE,
 }
 
 VALIDATION_SKIP: dict[str, str] = {
@@ -189,6 +197,8 @@ VALIDATION_SKIP: dict[str, str] = {
     "get_version_version_get": "no request body",
     "get-verify-output": "path-only; unauthenticated probe is 401",
     "verify-runs": "all query params optional; unauthenticated probe is 401",
+    "validate-model": "raw multipart relay; no Pydantic body model to reject",
+    "validate-sedml": "raw multipart relay; no Pydantic body model to reject",
 }
 
 
@@ -341,14 +351,46 @@ def _probe_get_legacy_runs_summary(client: TestClient) -> None:
         asyncio.run(upstream.aclose())
 
 
+def _probe_validation(client: TestClient, path: str) -> None:
+    """Reachable without a token, and a dead upstream is a sanitized 502.
+
+    The COMBINE client is replaced with a transport that refuses, so the probe
+    proves the route is mounted and unauthenticated without making a real
+    request to combine.api.biosimulations.org.
+    """
+    def refuse(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("probe")
+
+    # AsyncClient: the relay uses `async with client.stream(...)`, which a sync
+    # Client cannot satisfy. MockTransport opens no sockets, so not closing it
+    # leaks nothing.
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(refuse), base_url="https://combine.test"
+    )
+    app.dependency_overrides[get_combine_http_client] = lambda: upstream
+    try:
+        _assert_status(client.post(path, content=b"x", headers={"Content-Type": "text/plain"}), 502)
+    finally:
+        app.dependency_overrides.pop(get_combine_http_client, None)
+
+
+def _probe_validate_model(client: TestClient) -> None:
+    _probe_validation(client, "/validation/model")
+
+
+def _probe_validate_sedml(client: TestClient) -> None:
+    _probe_validation(client, "/validation/sed-ml")
+
+
 UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
+    "validate-model": _probe_validate_model,
+    "validate-sedml": _probe_validate_sedml,
     "get-legacy-run": _probe_get_legacy_run,
     "update-legacy-run": _probe_update_legacy_run,
     "delete-legacy-run": _probe_delete_legacy_run,
     "download-legacy-run": _probe_download_legacy_run,
     "validate-legacy-run": _probe_validate_legacy_run,
     "get-legacy-runs-summary": _probe_get_legacy_runs_summary,
-
     "check-compatibility": _probe_check_compatibility,
     "run-simulations": _probe_run_simulations,
     "list-simulation-runs": _probe_list_simulation_runs,

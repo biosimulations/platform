@@ -51,6 +51,66 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /validation/model:
+    post:
+      tags:
+      - Validation
+      summary: Validate a model document via the COMBINE API
+      description: 'Relayed to the COMBINE API server-side. **Works with or without
+        authentication**: a token, if present and valid, only raises the rate-limit
+        ceiling, and one that cannot be validated is treated as no token rather than
+        refused. The upstream status and body are returned unchanged for 2xx and 4xx
+        -- the validation report *is* a 400 for an invalid document, so the body matters
+        on failure. A 5xx becomes a sanitized 502. No caller credentials are forwarded
+        upstream.'
+      operationId: validate-model
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '413':
+          description: The uploaded document exceeded the size limit.
+        '429':
+          description: Validation rate limit exceeded.
+        '502':
+          description: The validation service failed, was unreachable, or answered
+            unreadably.
+        '504':
+          description: Timed out while contacting the validation service.
+      security:
+      - HTTPBearer: []
+  /validation/sed-ml:
+    post:
+      tags:
+      - Validation
+      summary: Validate a SED-ML document via the COMBINE API
+      description: 'Relayed to the COMBINE API server-side. **Works with or without
+        authentication**: a token, if present and valid, only raises the rate-limit
+        ceiling, and one that cannot be validated is treated as no token rather than
+        refused. The upstream status and body are returned unchanged for 2xx and 4xx
+        -- the validation report *is* a 400 for an invalid document, so the body matters
+        on failure. A 5xx becomes a sanitized 502. No caller credentials are forwarded
+        upstream.'
+      operationId: validate-sedml
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '413':
+          description: The uploaded document exceeded the size limit.
+        '429':
+          description: Validation rate limit exceeded.
+        '502':
+          description: The validation service failed, was unreachable, or answered
+            unreadably.
+        '504':
+          description: Timed out while contacting the validation service.
+      security:
+      - HTTPBearer: []
   /simulations/run:
     post:
       tags:

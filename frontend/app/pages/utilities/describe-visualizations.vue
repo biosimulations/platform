@@ -5,7 +5,7 @@ import type { BreadcrumbItem } from '#ui/components/Breadcrumb.vue'
 import type { TabsItem } from '#ui/components/Tabs.vue'
 
 useSeoMeta({
-  title: 'Describe Visualizations with Vega — BioSimulations',
+  title: 'Describe Visualizations with Vega - BioSimulations',
   description: 'Design and embed publication-quality Vega visualizations in COMBINE/OMEX archives, or convert Escher, GINsim, and SBGN diagrams using biosimulators-utils.'
 })
 
@@ -252,7 +252,7 @@ function copyCode(text: string) {
                 <span class="size-2.5 rounded-full bg-rose-500/80" />
                 <span class="size-2.5 rounded-full bg-amber-500/80" />
                 <span class="size-2.5 rounded-full bg-emerald-500/80" />
-                <span class="ml-2 font-sans font-medium text-neutral-400">Terminal — bash</span>
+                <span class="ml-2 font-sans font-medium text-neutral-400">Terminal - bash</span>
               </div>
               <UButton
                 :icon="copied ? 'i-lucide-check' : 'i-lucide-copy'"

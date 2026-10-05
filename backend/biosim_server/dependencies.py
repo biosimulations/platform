@@ -163,6 +163,29 @@ def get_legacy_http_client() -> httpx.AsyncClient:
         global_legacy_http_client = _new_legacy_http_client()
     return global_legacy_http_client
 
+#------ pooled HTTP client for the COMBINE validation relay ------
+# Its own pool, deliberately not global_http_client's. A validation request
+# uploads a document and then waits on a validator, so it holds its connection
+# far longer than a summary or page fetch does. Sharing one pool would let slow
+# validations starve the endpoints that have latency budgets.
+
+_COMBINE_TIMEOUT = httpx.Timeout(60.0)
+
+global_combine_http_client: httpx.AsyncClient | None = None
+
+def set_combine_http_client(http_client: httpx.AsyncClient | None) -> None:
+    global global_combine_http_client
+    global_combine_http_client = http_client
+
+def get_combine_http_client() -> httpx.AsyncClient:
+    global global_combine_http_client
+    if global_combine_http_client is None:
+        global_combine_http_client = httpx.AsyncClient(
+            base_url=get_settings().combine_api_base_url.rstrip("/"),
+            timeout=_COMBINE_TIMEOUT,
+        )
+    return global_combine_http_client
+
 #------ Temporal workflow client ------
 
 global_temporal_client: TemporalClient | None = None
@@ -198,6 +221,12 @@ async def init_standalone() -> None:
         )
     )
     set_legacy_http_client(_new_legacy_http_client())
+    set_combine_http_client(
+        httpx.AsyncClient(
+            base_url=settings.combine_api_base_url.rstrip("/"),
+            timeout=_COMBINE_TIMEOUT,
+        )
+    )
     set_temporal_client(await TemporalClient.connect(settings.temporal_service_url))
 
     # Local import avoids the simulations -> dependencies import cycle at module load.
@@ -245,6 +274,9 @@ async def shutdown_standalone() -> None:
     if global_legacy_http_client is not None:
         await global_legacy_http_client.aclose()
         set_legacy_http_client(None)
+    if global_combine_http_client is not None:
+        await global_combine_http_client.aclose()
+        set_combine_http_client(None)
     # biosim_service = get_biosim_service()
     # if biosim_service:
     #     await biosim_service.close()

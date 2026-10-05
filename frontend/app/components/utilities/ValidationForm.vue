@@ -7,13 +7,15 @@ interface Props {
   accept?: string;
   supportedExtensions?: string[];
   submitLabel?: string;
+  dropLabel?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isLoading: false,
   accept: '*',
   supportedExtensions: () => [],
-  submitLabel: 'Validate'
+  submitLabel: 'Validate',
+  dropLabel: 'Drop file here'
 });
 
 const emit = defineEmits<{
@@ -41,7 +43,7 @@ const canSubmit = computed(() => {
 
 function validateUrl(val: string): boolean {
   if (!val.trim()) {
-    urlError.value = 'Please provide a model URL.';
+    urlError.value = 'Please provide a valid URL.';
     return false;
   }
   try {
@@ -121,7 +123,7 @@ function handleReset() {
           :accept="accept"
           layout="list"
           icon="i-lucide-upload-cloud"
-          label="Drop model file here"
+          :label="dropLabel"
           class="w-full min-h-40"
           :disabled="isLoading"
         >

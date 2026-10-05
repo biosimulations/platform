@@ -13,7 +13,7 @@ import ValidationForm from '~/components/utilities/ValidationForm.vue';
 import ValidationReportView from '~/components/utilities/ValidationReportView.vue';
 
 useSeoMeta({
-  title: 'Validate Model — BioSimulations',
+  title: 'Validate Model - BioSimulations',
   description: 'Validate SBML, CellML, BNGL, Smoldyn, GINsim, NeuroML, LEMS, RBA, and XPP models against COMBINE community standards.'
 });
 

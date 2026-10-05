@@ -175,12 +175,6 @@ const navigation_items = ref<NavigationMenuItem[][]>([
           to: '/simulators/suggest',
           class: 'cursor-pointer',
         },
-        {
-          label: 'Validate a simulator',
-          icon: 'i-lucide-cpu',
-          to: '/simulators/validate',
-          class: 'cursor-pointer',
-        },
       ]
     },
     {
@@ -203,6 +197,12 @@ const navigation_items = ref<NavigationMenuItem[][]>([
           label: 'Validate a simulation',
           icon: 'i-lucide-activity',
           to: '/utilities/validate-simulation',
+          class: 'cursor-pointer',
+        },
+        {
+          label: 'Validate a simulator',
+          icon: 'i-lucide-cpu',
+          to: '/simulators/validate',
           class: 'cursor-pointer',
         },
         {

@@ -85,7 +85,14 @@ export function normalizeValidationReport(raw: any): ValidationReport {
  */
 export function useCombineApi() {
   const config = useRuntimeConfig();
-  const baseUrl = config.public.combine_api_url as string;
+  // Routed through the Platform API rather than combine.api.biosimulations.org
+  // directly. The COMBINE API returns no Access-Control-Allow-Origin header for
+  // any origin, and its preflight answers 200 with no Access-Control-* headers
+  // at all, so a browser call to it fails everywhere -- production included, not
+  // just localhost. The Platform relays it server-side, where CORS does not
+  // apply. See backend/biosim_server/validation/router.py.
+  const platformApiUrl = (config.public.api_url as string | undefined) ?? '';
+  const baseUrl = `${platformApiUrl.replace(/\/+$/, '')}/validation`;
 
   /**
    * Validate a model file or public URL against the COMBINE API.
@@ -107,7 +114,7 @@ export function useCombineApi() {
     }
 
     try {
-      const response = await $fetch<any>(`${baseUrl}/model/validate`, {
+      const response = await $fetch<any>(`${baseUrl}/model`, {
         method: 'POST',
         body: formData
       });
@@ -138,8 +145,57 @@ export function useCombineApi() {
     }
   }
 
+  /**
+   * Validate a SED-ML simulation experiment file or public URL against the COMBINE API.
+   *
+   * @param fileOrUrl - Either a File object or a string URL to the SED-ML file.
+   */
+  async function validateSedml(
+    fileOrUrl: File | string
+  ): Promise<ValidationReport> {
+    const formData = new FormData();
+
+    if (typeof fileOrUrl === 'string') {
+      formData.append('url', fileOrUrl.trim());
+    } else {
+      formData.append('file', fileOrUrl, fileOrUrl.name);
+    }
+
+    try {
+      const response = await $fetch<any>(`${baseUrl}/sed-ml`, {
+        method: 'POST',
+        body: formData
+      });
+
+      return normalizeValidationReport(response);
+    } catch (err: any) {
+      // Check for structured HTTPError payload from COMBINE API (e.g. 400 Bad Request)
+      const errorData = err?.data;
+      if (errorData && (errorData.title || errorData.detail)) {
+        return {
+          _type: 'ValidationReport',
+          status: 'invalid',
+          errors: [
+            {
+              _type: 'ValidationMessage',
+              summary: errorData.title || 'Simulation validation error',
+              details: errorData.detail
+                ? [{ _type: 'ValidationMessage', summary: errorData.detail }]
+                : undefined
+            }
+          ],
+          warnings: []
+        };
+      }
+
+      // Re-throw unexpected connection or server errors
+      throw err;
+    }
+  }
+
   return {
     baseUrl,
-    validateModel
+    validateModel,
+    validateSedml
   };
 }
