@@ -385,6 +385,16 @@ class Settings(BaseSettings):
     simdata_api_base_url: str = "https://simdata.api.biosimulations.org"
     biosimulators_api_base_url: str = "https://api.biosimulators.org"
     biosimulations_api_base_url: str = "https://api.biosimulations.org"
+    # COMBINE validation service, relayed by biosim_server/validation/. See that
+    # module's docstring for why the relay exists at all.
+    combine_api_base_url: str = "https://combine.api.biosimulations.org"
+    # Matches the ingress limit (nginx proxy-body-size: 20m), so a body the
+    # ingress would accept is one this relay will also accept, and a rejection
+    # is never a surprise that depends on which hop saw it first.
+    combine_max_request_bytes: int = 20 * 1024 * 1024
+    # Validation reports are JSON and normally kilobytes; this bounds a
+    # pathological or hostile upstream, not ordinary use.
+    combine_max_response_bytes: int = 16 * 1024 * 1024
     auth0: Auth0Settings = Field(default_factory=Auth0Settings)
 
     slurm_submit_host: str = ""   # "hamantis.cam.uchc.edu"

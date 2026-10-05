@@ -25,6 +25,7 @@ from biosim_server.common.auth.roles import require_owner_or_admin
 from biosim_server.common.ratelimit import workflow_rate_limit
 from biosim_server.rbac_demo.router import router as rbac_demo_router
 from biosim_server.users.router import router as users_router
+from biosim_server.validation import validation_router
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflow, OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput, RunsVerifyWorkflow
@@ -171,6 +172,7 @@ app.add_middleware(
 
 # include routers
 app.include_router(compatibility_router)
+app.include_router(validation_router)
 app.include_router(simulations_router)
 app.include_router(run_summary_router)
 app.include_router(projects_router)

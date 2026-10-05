@@ -50,7 +50,7 @@ import time
 
 from fastapi import Depends, HTTPException, Request, status
 
-from biosim_server.common.auth.auth0 import AuthenticatedUser, get_optional_user
+from biosim_server.common.auth.auth0 import AuthenticatedUser, get_advisory_user, get_optional_user
 from biosim_server.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -246,3 +246,31 @@ def compatibility_rate_limit(
     authenticated/anonymous ceilings, keyed as ``compat:<identity>``.
     """
     _enforce_rate_limit(request, user, key_prefix="compat")
+
+
+def validation_rate_limit(
+        request: Request,
+        user: AuthenticatedUser | None = Depends(get_advisory_user),
+) -> None:
+    """
+    FastAPI dependency: enforce the COMBINE validation-relay budget.
+
+    These two routes relay to a third-party validator from this cluster's
+    egress address, so the upstream sees our IP and not the caller's. An
+    unmetered relay would let one client spend the Platform's whole reputation
+    with that service, and the fallout would land on every caller rather than
+    on the one responsible. Metering here is the only place that distinction
+    still exists.
+
+    Keyed as ``validate:<identity>``, separate from ``compat`` and from the
+    workflow budget, so a validation loop in a utility page cannot starve
+    simulation starts. Identity-keyed rather than IP-keyed, matching
+    ``compatibility_rate_limit``: both are public upload endpoints where an
+    authenticated caller reasonably gets the higher ceiling.
+
+    Resolved with ``get_advisory_user``, not ``get_optional_user``: validation
+    works with or without authentication, so a token here only chooses a
+    ceiling. A stale one degrades to the anonymous ceiling instead of 401ing a
+    request that never needed an identity.
+    """
+    _enforce_rate_limit(request, user, key_prefix="validate")
