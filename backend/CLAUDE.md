@@ -144,6 +144,8 @@ backend/
 | `/verify/omex` | POST | Verify OMEX file across simulators (authenticated; persists `owner_sub`) |
 | `/verify/{workflow_id}` | GET | Get verification results (authenticated; owner-or-admin when `owner_sub` is set) |
 | `/verify/runs` | POST | Compare existing biosimulation runs (authenticated; persists `owner_sub`) |
+| `/validation/model` | POST | Validate a model document via the COMBINE API (relay; works with or without auth; rate-limited) |
+| `/validation/sed-ml` | POST | Validate a SED-ML document via the COMBINE API (relay; works with or without auth; rate-limited) |
 | `/version` | GET | Get API version |
 | `/docs` | GET | Swagger UI |
 
@@ -211,6 +213,37 @@ These point at the public biosimulations.org services. Defaults are production; 
 | `BIOSIMULATIONS_API_BASE_URL` | `https://api.biosimulations.org` | `BiosimServiceRest` — submit and poll simulation jobs |
 | `SIMDATA_API_BASE_URL` | `https://simdata.api.biosimulations.org` | `BiosimServiceRest` — fetch HDF5 outputs |
 | `BIOSIMULATORS_API_BASE_URL` | `https://api.biosimulators.org` | Simulator version metadata |
+| `COMBINE_API_BASE_URL` | `https://combine.api.biosimulations.org` | COMBINE validation service, relayed by `/validation/*` |
+| `COMBINE_MAX_REQUEST_BYTES` | `20971520` (20 MiB) | Upload cap for `/validation/*`, matching the ingress `proxy-body-size` |
+| `COMBINE_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Cap on a relayed validation report |
+
+### Why `/validation/*` exists
+
+`combine.api.biosimulations.org` returns **no** `Access-Control-Allow-Origin`
+header for any origin, and its preflight answers 200 with no `Access-Control-*`
+headers at all. A browser treats that as a denial, so the frontend's
+validate-\* utility pages cannot reach it from the client anywhere -- production
+included, not only localhost. Relaying server-side moves the request onto the
+Platform's own origin, which the frontend is already allowed to call.
+
+It is a **relay, not an owned contract**: the validation report is COMBINE's
+schema and we neither model nor validate it. `docs/legacy-api-passthrough-policy.md`
+requires that to be justified rather than assumed; the justification is that
+alternative here is not a worse contract but a feature that cannot work in any
+browser, and there is no Platform concept to own -- the report belongs to the
+COMBINE validators. If the Platform grows its own validation, this is deleted
+rather than promoted.
+
+Authentication is **advisory** (`get_advisory_user`): validation needs no
+identity, so a valid token only raises the rate-limit ceiling and a token that
+cannot be validated is treated as absent rather than refused. This differs
+deliberately from `get_optional_user`, which rejects an invalid token because on
+a *creation* path an expired one would silently produce a public resource -- no
+resource is created here, and the frontend attaches the Platform token to every
+Platform-bound request, so a lapsed session must not break a public page.
+
+No caller credentials are forwarded upstream. The two upstream paths are
+literals, so no caller input reaches the upstream URL.
 
 ### Infrastructure
 
