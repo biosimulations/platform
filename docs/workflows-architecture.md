@@ -45,6 +45,8 @@ Two entry points, both producing pairwise NxN comparison statistics:
 | `POST /verify/omex` | `OmexVerifyWorkflow` | starts N `OmexSimWorkflow` children (one per simulator) |
 | `POST /verify/runs` | `RunsVerifyWorkflow` | imports N pre-existing biosimulations runs via `get_existing_biosim_simulation_run_activity` |
 
+Both POST handlers write a **verification ledger row** (`BiosimCompare` collection, fields `workflow_id`, `verify_type`, `owner_sub`, `created`) **before** `start_workflow`, following the same insert-before-start pattern as `POST /simulations/run`. The ledger enables `GET /verification_ids` (caller-scoped listing: ownerless IDs for anonymous callers, plus the caller's own IDs when authenticated) and provides a "no longer retained" 404 detail for callers querying an expired Temporal history. `POST /verify/runs` also runs a **model-compatibility preflight** — if ≥ 2 runs have retrievable HDF5 metadata with no overlapping `(dataset_name, sedmlDataSetLabels)`, the request returns 400 before any ledger row or workflow is created. Requests whose `observables` have no overlap with the common labels also return 400; `observables` is validated only and is not yet used to filter the comparison. Both POST endpoints reject workflow ID prefixes containing `/` with 422. Missing datasets encountered during comparison produce per-cell errors without aborting the activity.
+
 ```mermaid
 flowchart LR
     subgraph "API"
@@ -364,7 +366,9 @@ erDiagram
     }
     BiosimCompare {
         string workflow_id PK
-        object comparison_statistics
+        string verify_type "omex | runs"
+        string owner_sub
+        date   created
     }
     BiosimSims ||--o| BiosimOmex : "file_hash_md5"
     BiosimSimulationRuns }o--|| BiosimSims : "biosimulations_run_id → biosim_run.id (many-to-one; cache dedup)"
@@ -568,3 +572,9 @@ when one starts firing in production.
   Submissions with >100 simulators silently lose enrichment past job 100.
   Cap is well above any realistic submission today. *Fix:* `length=None` (or
   match the workflow's job count exactly).
+
+### Verification recovery after transport failures
+
+A start exception does not prove that Temporal rejected the workflow. The API deletes a ledger row only for a definitive invalid-request rejection. For uncertain outcomes it describes the same ID and verifies the original input/owner from the first history event. A matching accepted start returns its existing handle; otherwise the API retains the ledger and returns 503 with the workflow ID for polling, without starting another execution. A retained uncertain row may have no history, so the legacy “no longer retained” detail alone does not prove execution.
+
+If a failed/terminated/timed-out/canceled execution cannot answer its query (including termination before the first worker task), the API reconstructs a FAILED output from that same history event and the described terminal state. Original ownership checks apply before the output is returned. This needs retained Temporal history, not a worker replay or a ledger schema change.

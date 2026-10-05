@@ -8,7 +8,7 @@ All commands below assume the working directory is `backend/` (i.e., `cd backend
 
 The platform backend is a distributed microservices application for biosimulation verification and comparison. It runs biological simulations across multiple simulators (AMICI, COPASI, PySCES, Tellurium, VCell) and compares outputs to verify model correctness.
 
-**Version:** 0.4.0
+**Version:** 0.10.0
 **Python:** 3.13
 **Production URL:** [https://biosim.biosimulations.org/docs](https://biosim.biosimulations.org/docs)
 
@@ -100,8 +100,10 @@ backend/
 │   │   ├── models.py          # Pydantic models (BiosimulatorVersion, etc.)
 │   │   └── workflows.py       # OmexSimWorkflow
 │   ├── biosim_verify/         # Verification workflows
-│   │   ├── activities.py      # generate_statistics_activity
-│   │   ├── models.py          # Verification models
+│   │   ├── activities.py      # generate_statistics_activity (tolerates missing datasets)
+│   │   ├── compatibility.py   # find_common_datasets — preflight overlap check
+│   │   ├── database.py        # VerificationDatabaseService + Mongo impl (BiosimCompare ledger)
+│   │   ├── models.py          # Verification models (incl. VerificationRecord, VerificationType)
 │   │   ├── omex_verify_workflow.py  # Multi-simulator OMEX verification
 │   │   ├── runs_verify_workflow.py  # Compare existing runs
 │   │   └── hdf5_compare.py    # Comparison logic
@@ -152,9 +154,10 @@ backend/
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
 | `/simulations/runs` | POST | List simulation runs (`type=all` public with email redacted; `type=user` scoped to `owner_sub`) |
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
-| `/verify/omex` | POST | Verify OMEX file across simulators (authenticated; persists `owner_sub`) |
-| `/verify/{workflow_id}` | GET | Get verification results (authenticated; owner-or-admin when `owner_sub` is set) |
-| `/verify/runs` | POST | Compare existing biosimulation runs (authenticated; persists `owner_sub`) |
+| `/verification_ids` | GET | List verification workflow IDs, newest first, paginated (`limit` ≤ 1000, opaque `cursor`; optional auth: ownerless plus caller-owned IDs) |
+| `/verify/omex` | POST | Verify OMEX file across simulators (token optional; a valid token persists `owner_sub`) |
+| `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin) |
+| `/verify/runs` | POST | Compare existing biosimulation runs (token optional; a valid token persists `owner_sub`) |
 | `/api/v1/me/password-reset` | POST | Issue a short-lived Auth0-hosted password-change URL for the authenticated primary database user (New Universal Login; no email is sent; requires `create:user_tickets` on the server M2M client) |
 | `/validation/model` | POST | Validate a model document via the COMBINE API (relay; works with or without auth; rate-limited) |
 | `/validation/sed-ml` | POST | Validate a SED-ML document via the COMBINE API (relay; works with or without auth; rate-limited) |
@@ -165,7 +168,7 @@ backend/
 
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
-- **BiosimCompare** - Comparison results
+- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired.
 - **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns
@@ -508,15 +511,82 @@ and frontend-originated runs persist `owner_sub = NULL` until the frontend
 attaches tokens. This is an explicit product decision, not an omission.
 Revisit when the frontend sends bearer tokens (that is the gate for Option A).
 
-The frontend does **not** call `POST /verify/omex` or `POST /verify/runs`;
-those two endpoints require authentication. **`GET /verify/{workflow_id}`
-also requires an access token** (breaking change for anonymous Swagger/poll
-clients). When the workflow payload includes `owner_sub` (set from the
-starter's token on POST), GET is owner-or-admin; in-flight Temporal histories
-with `owner_sub` unset remain readable by any authenticated caller. External
-consumers of `/verify/*` must send a bearer token. No inventory of those
-consumers exists in this repository — treat that as an operational follow-up
-before advertising the gated contract as a breaking API change.
+**Anonymous `/verify/*` (legacy API).** The verification endpoints serve the
+legacy API, which has no authentication, so all of them work without a token.
+The pattern is the same as `POST /simulations/run`, using `get_optional_user`:
+
+- `POST /verify/omex` and `POST /verify/runs` accept anonymous callers. With no
+  token the verification is **ownerless** (`owner_sub = NULL`; an uploaded
+  archive is stored `visibility=public`). With a valid token the caller's `sub`
+  is persisted as `owner_sub` (archive `private`). Both are rate-limited by the
+  shared workflow budget (anonymous callers are keyed on client IP).
+- `GET /verify/{workflow_id}`: an ownerless verification is readable by
+  anyone. One started with a token stays owner-or-admin: **401** without a
+  token, **403** for another user.
+- A **present-but-invalid token is rejected with 401**, never downgraded to
+  anonymous. Omit the `Authorization` header entirely to call anonymously; in
+  Swagger, use *Authorize → Logout* to clear a stale token.
+- **Selection bounds.** One request is one workflow-start quota unit, so the
+  work it can buy is bounded (`MAX_VERIFY_*` in `biosim_verify/models.py`): at
+  most **10** `biosimulations_run_ids` and **10** `simulators` (more → **422**,
+  published as OpenAPI `maxItems`). Duplicate run IDs or simulator strings, and
+  two simulators that resolve to the same `id:version` (e.g. `copasi` and
+  `copasi:<latest>`), → **400**. The same limits apply to anonymous and
+  authenticated callers, and all of these are rejected before any storage
+  write, metadata lookup, ledger row or workflow start. Simulators are resolved
+  before the uploaded archive is stored, so a bad simulator costs no write.
+
+**Upload limits.** The OMEX cap is **100 MiB (104,857,600 bytes)**
+(`omex_storage.MAX_OMEX_BYTES`). Multipart bodies are bounded *while they are
+received* (`common/upload_limit.py`: the cap plus 64 KiB of framing) and
+rejected with **413** -- before authentication, rate limiting, or any handler
+runs, because FastAPI otherwise parses and spools the whole form first. A
+declared over-limit `Content-Length` is refused without reading the body; a
+missing or understated one cannot bypass the count. Spooled temp files are
+closed on rejection and on client disconnect. The file content is then
+re-checked exactly by `read_upload_capped`, and `archive_url` downloads are
+streamed against the same cap. Public ingresses additionally cap request bodies
+at `20m` (`proxy-body-size`). Internal worker/storage reads (local-file and raw
+helpers, worker archive reads) are not HTTP ingestion and are not covered.
+
+Both POST handlers persist a ledger row in `BiosimCompare` before starting the
+Temporal workflow. Temporal unavailable returns **503**, not 404. The frontend
+does not call `/verify/*`.
+
+**`GET /verification_ids`** is the listing endpoint for verification workflow
+IDs. Anonymous callers see only ownerless rows (null or missing `owner_sub`);
+authenticated callers see those rows plus their own. Administrators get no global
+listing bypass. Invalid credentials return 401 rather than anonymous access;
+authentication infrastructure failures retain the existing fail-closed behavior.
+Returns one bounded page at a time, newest first (`created` descending,
+`workflow_id` ascending): `{"verification_ids": [...], "next_cursor": ...}`.
+Successful responses carry `Cache-Control: private, no-store`.
+`limit` defaults to **100** and may not exceed **1000** (otherwise **422**).
+Pass a page's `next_cursor` back as `cursor` for the next, older page;
+`next_cursor` is `null` on the last page, and a malformed `cursor` is **400**.
+A cursor is unpadded base64url of `"<created ISO 8601>\n<workflow_id>"` --
+not JSON, whose escaping would make its length depend on the ID's content.
+The route accepts up to `VERIFICATION_CURSOR_MAX_LENGTH` (**1370**) characters:
+the token for a workflow ID at Temporal's 1000-byte ID limit
+(`MAX_WORKFLOW_ID_BYTES`), so every stored ID -- including any written before
+the prefix bound -- yields a cursor the route accepts. New IDs stay within that
+limit because `workflow_id_prefix` is capped at **200** characters
+(`WORKFLOW_ID_PREFIX_MAX_LENGTH`; more → **422**).
+Callers that want their visible history follow `next_cursor` with the same identity;
+restart pagination after login/logout. Each request applies visibility in Mongo before
+one projected `limit + 1` read, using the existing owner/sort indexes. Hidden rows do not
+supply cursor anchors or lookahead. Cursors are decodable positions, not credentials:
+replaying or forging one never widens the current caller's scope.
+Ownerless IDs/results remain public. Owned IDs can contain private caller-chosen prefixes
+and are listed only to their owners; result access remains owner-or-admin. Existing
+owned rows are protected without renaming IDs or backfilling data. Missing-owner rows
+remain public; do not infer ownership from their labels. Clients discovering their own
+private verifications must now authenticate. Before rollout, invalidate any deployed
+cache of the former all-rows listing if one exists: new headers cannot remove historical
+cached or scraped data. No live cache invalidation is implied by this code change.
+Keep logs limited to count/has-more, never IDs, subjects, raw cursors, or credentials.
+503 when the
+ledger service is unavailable.
 
 **Which token to send:** the Platform API is an OAuth resource server and
 accepts **access tokens** only. Do not send an OIDC ID token in

@@ -207,7 +207,7 @@ ComparisonStatistics:
 |------------|---------|------------|
 | BiosimOmex | OMEX file metadata | file_hash_md5, omex_gcs_path |
 | BiosimSims | Simulation workflow runs | workflow_id, status, hdf5_file |
-| BiosimCompare | Comparison results | (future use) |
+| BiosimCompare | Verification ledger | workflow_id, owner_sub, created |
 
 ---
 

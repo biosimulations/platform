@@ -1,5 +1,4 @@
 import logging
-import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -81,8 +80,7 @@ class BiosimServiceRest(BiosimService):
         logger.info(f"Polling simulation with simulation run_id {simulation_run_id}")
 
         """ raises ClientResponseError if the response status is not 2xx """
-        api_base_url = os.environ.get('API_BASE_URL') or "https://api.biosimulations.org"
-        assert (api_base_url is not None)
+        api_base_url = get_settings().biosimulations_api_base_url
 
         async with aiohttp.ClientSession() as session:
             async with session.get(api_base_url + "/runs/" + simulation_run_id) as resp:

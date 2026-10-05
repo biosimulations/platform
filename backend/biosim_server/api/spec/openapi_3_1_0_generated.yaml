@@ -1107,10 +1107,13 @@ paths:
         required: false
         schema:
           type: string
-          description: Prefix for the workflow id.
+          maxLength: 200
+          pattern: ^[^/]*$
+          description: Prefix for the workflow id; must not contain / (at most 200
+            characters).
           default: omex-verification-
           title: Workflow Id Prefix
-        description: Prefix for the workflow id.
+        description: Prefix for the workflow id; must not contain / (at most 200 characters).
       - name: simulators
         in: query
         required: false
@@ -1118,7 +1121,9 @@ paths:
           type: array
           items:
             type: string
-          description: List of simulators 'name' or 'name:version' to compare.
+          maxItems: 10
+          description: List of simulators 'name' or 'name:version' to compare (at
+            most 10, no duplicates).
           default:
           - amici
           - copasi
@@ -1126,7 +1131,8 @@ paths:
           - tellurium
           - vcell
           title: Simulators
-        description: List of simulators 'name' or 'name:version' to compare.
+        description: List of simulators 'name' or 'name:version' to compare (at most
+          10, no duplicates).
       - name: include_outputs
         in: query
         required: false
@@ -1210,6 +1216,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VerifyWorkflowOutput'
+        '400':
+          description: Unknown simulator, duplicate simulators, or simulators that
+            resolve to the same version.
+        '401':
+          description: Invalid bearer token (omit the header to call anonymously).
+        '503':
+          description: Verification database or Temporal unavailable.
         '422':
           description: Validation Error
           content:
@@ -1238,6 +1251,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VerifyWorkflowOutput'
+        '401':
+          description: Invalid bearer token, or no token for a verification started
+            with one.
+        '403':
+          description: Caller is not the workflow owner or an admin.
+        '404':
+          description: Verification not found, or not a verification workflow ID.
+        '503':
+          description: Temporal is unreachable or the client is not initialized.
         '422':
           description: Validation Error
           content:
@@ -1258,10 +1280,13 @@ paths:
         required: false
         schema:
           type: string
-          description: Prefix for the workflow id.
+          maxLength: 200
+          pattern: ^[^/]*$
+          description: Prefix for the workflow id; must not contain / (at most 200
+            characters).
           default: runs-verification-
           title: Workflow Id Prefix
-        description: Prefix for the workflow id.
+        description: Prefix for the workflow id; must not contain / (at most 200 characters).
       - name: biosimulations_run_ids
         in: query
         required: false
@@ -1269,12 +1294,13 @@ paths:
           type: array
           items:
             type: string
-          description: List of biosimulations run IDs to compare.
+          maxItems: 10
+          description: List of biosimulations run IDs to compare (at most 10, no duplicates).
           default:
           - 67817a2e1f52f47f628af971
           - 67817a2eba5a3f02b9f2938d
           title: Biosimulations Run Ids
-        description: List of biosimulations run IDs to compare.
+        description: List of biosimulations run IDs to compare (at most 10, no duplicates).
       - name: include_outputs
         in: query
         required: false
@@ -1331,9 +1357,13 @@ paths:
             items:
               type: string
           - type: 'null'
-          description: List of observables to include in the return data.
+          description: 'SED-ML data set labels of interest. Validated only: the request
+            is rejected with 400 if none appear in the runs'' common dataset labels.
+            Not yet used to filter the returned comparison.'
           title: Observables
-        description: List of observables to include in the return data.
+        description: 'SED-ML data set labels of interest. Validated only: the request
+          is rejected with 400 if none appear in the runs'' common dataset labels.
+          Not yet used to filter the returned comparison.'
       responses:
         '200':
           description: Successful Response
@@ -1341,6 +1371,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VerifyWorkflowOutput'
+        '400':
+          description: Duplicate run IDs, or runs lack common datasets or requested
+            observables.
+        '401':
+          description: Invalid bearer token (omit the header to call anonymously).
+        '503':
+          description: Verification database or Temporal unavailable.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /verification_ids:
+    get:
+      tags:
+      - Verification
+      summary: List verification workflow IDs usable with GET /verify/{workflow_id}
+      description: 'Caller-scoped, newest-first listing: anonymous callers see ownerless
+        verifications; authenticated callers see ownerless plus their own, with no
+        administrator bypass. Invalid credentials are rejected. Responses use Cache-Control:
+        private, no-store. Keep the same identity while paginating; restart after
+        login/logout. One bounded page at a time. Follow `next_cursor` (pass it back
+        as `cursor`) for older IDs; it is null on the last page.'
+      operationId: list-verification-ids
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          description: Page size (1-1000).
+          default: 100
+          title: Limit
+        description: Page size (1-1000).
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 1370
+          - type: 'null'
+          description: Opaque `next_cursor` from a previous page.
+          title: Cursor
+        description: Opaque `next_cursor` from a previous page.
+      responses:
+        '200':
+          description: One page visible to the current caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationIdsResponse'
+          headers:
+            Cache-Control:
+              description: private, no-store
+              schema:
+                type: string
+        '400':
+          description: Malformed cursor.
+        '401':
+          description: Invalid credentials; no anonymous fallback.
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+        '503':
+          description: Verification database or authentication service unavailable.
         '422':
           description: Validation Error
           content:
@@ -3316,6 +3418,29 @@ components:
       - count
       title: ValueFrequency
       description: One facet value and how many matching projects carry it.
+    VerificationIdsResponse:
+      properties:
+        verification_ids:
+          items:
+            type: string
+          type: array
+          title: Verification Ids
+          description: One page of workflow IDs that can be passed to GET /verify/{workflow_id},
+            newest first (created descending, then workflow_id ascending). Anonymous
+            callers see ownerless verifications; authenticated callers see ownerless
+            plus their own. Follow `next_cursor` with the same identity for older
+            visible IDs.
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+          description: 'Opaque continuation token: pass it as `cursor` to get the
+            next (older) page. null when this is the last page.'
+      type: object
+      required:
+      - verification_ids
+      title: VerificationIdsResponse
     VerifyWorkflowOutput:
       properties:
         workflow_id:
