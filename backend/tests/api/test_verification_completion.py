@@ -485,7 +485,7 @@ async def test_recovered_start_must_match_submission(client: AsyncClient) -> Non
 
 
 class _OnePageLedger:
-    """In-memory ledger: every stored ID on page one, cursor at the last, then empty.
+    """In-memory cursor-codec fixture: visible IDs on page one, then empty.
 
     Keeps the production cursor codec and routes in the loop without Mongo.
     """
@@ -504,9 +504,12 @@ class _OnePageLedger:
         self.afters.append(after)
         if after is not None:
             return VerificationIdPage(verification_ids=[], next_cursor=None)
-        last = self.records[-1]
+        visible = [r for r in self.records if r.owner_sub is None or r.owner_sub == owner_sub]
+        if not visible:
+            return VerificationIdPage(verification_ids=[], next_cursor=None)
+        last = visible[-1]
         return VerificationIdPage(
-            verification_ids=[r.workflow_id for r in self.records],
+            verification_ids=[r.workflow_id for r in visible[:limit]],
             next_cursor=VerificationCursor(created=last.created.replace(tzinfo=None), workflow_id=last.workflow_id),
         )
 

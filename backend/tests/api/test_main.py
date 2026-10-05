@@ -1072,7 +1072,7 @@ async def test_get_verify_temporal_unavailable_rpc_error_is_503() -> None:
 
 
 # ---------------------------------------------------------------------------
-# GET /verification_ids — plan tests 10-16 (public: no token, every ID)
+# GET /verification_ids — plan tests 10-16 (optional auth: ownerless plus self)
 # ---------------------------------------------------------------------------
 
 async def _get_verification_ids(ledger: object, params: dict[str, object] | None = None) -> Response:
@@ -1092,7 +1092,7 @@ def _ledger_returning(ids: list[str], next_cursor: VerificationCursor | None = N
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ids", [["wf-b", "wf-a"], ["wf-only"], []])
 async def test_list_verification_ids_anonymous_gets_the_first_bounded_page(ids: list[str]) -> None:
-    """No token → 200 with the unfiltered first page, in ledger order."""
+    """No token → 200 with the ownerless first page, in ledger order."""
     app.dependency_overrides.pop(get_current_user, None)
     app.dependency_overrides.pop(get_optional_user, None)
     ledger = _ledger_returning(ids)
@@ -1154,17 +1154,15 @@ async def test_list_verification_ids_malformed_cursor_is_rejected_without_db_cal
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("authorization", ["Bearer not-a-jwt", "Bearer "])
-async def test_list_verification_ids_ignores_any_token(authorization: str) -> None:
-    """A token, even an invalid one, is neither validated nor used to scope the list."""
+async def test_list_verification_ids_rejects_invalid_token(authorization: str) -> None:
+    """Invalid credentials must never fall back to anonymous listing."""
+    app.dependency_overrides.pop(get_optional_user, None)
     ledger = _ledger_returning(["wf-a"])
     with patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/verification_ids", headers={"Authorization": authorization})
-    assert resp.status_code == 200
-    assert resp.json() == {"verification_ids": ["wf-a"], "next_cursor": None}
-    ledger.list_verification_ids.assert_awaited_once_with(
-        None, limit=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, after=None
-    )
+    assert resp.status_code == 401
+    ledger.list_verification_ids.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1175,13 +1173,15 @@ async def test_list_verification_ids_ledger_none_is_503() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_verification_ids_ledger_raises_503() -> None:
+async def test_list_verification_ids_ledger_raises_503(caplog: pytest.LogCaptureFixture) -> None:
     """Ledger raises → 503, detail does not contain raw exception text."""
     ledger = AsyncMock()
     ledger.list_verification_ids = AsyncMock(side_effect=RuntimeError("mongo exploded"))
     resp = await _get_verification_ids(ledger)
     assert resp.status_code == 503
     assert "mongo exploded" not in resp.json()["detail"]
+    assert "mongo exploded" not in caplog.text
+    assert "Failed to list verification IDs" in caplog.text
 
 
 @pytest.mark.asyncio

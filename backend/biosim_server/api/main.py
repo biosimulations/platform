@@ -904,20 +904,34 @@ async def _load_hdf5_metadata_for_preflight(
     dependencies=[Depends(get_verification_database_service)],
     summary="List verification workflow IDs usable with GET /verify/{workflow_id}",
     description=(
-        "Public, newest-first listing of every verification workflow ID, one bounded page "
+        "Caller-scoped, newest-first listing: anonymous callers see ownerless verifications; "
+        "authenticated callers see ownerless plus their own, with no administrator bypass. "
+        "Invalid credentials are rejected. Responses use Cache-Control: private, no-store. "
+        "Keep the same identity while paginating; restart after login/logout. One bounded page "
         "at a time. Follow `next_cursor` (pass it back as `cursor`) for older IDs; it is "
         "null on the last page."
     ),
-    responses={400: {"description": "Malformed cursor."}, 503: {"description": "Verification database unavailable."}},
+    responses={
+        200: {"description": "One page visible to the current caller.", "headers": {
+            "Cache-Control": {"description": "private, no-store", "schema": {"type": "string"}},
+        }},
+        400: {"description": "Malformed cursor."},
+        401: {"description": "Invalid credentials; no anonymous fallback.", "headers": {
+            "WWW-Authenticate": {"schema": {"type": "string"}},
+        }},
+        503: {"description": "Verification database or authentication service unavailable."},
+    },
 )
 async def list_verification_ids(
+        response: Response,
+        user: AuthenticatedUser | None = Depends(get_optional_user),
         limit: int = Query(default=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, ge=1, le=VERIFICATION_IDS_MAX_PAGE_SIZE,
                            description=f"Page size (1-{VERIFICATION_IDS_MAX_PAGE_SIZE})."),
         cursor: Optional[str] = Query(default=None, max_length=VERIFICATION_CURSOR_MAX_LENGTH,
                                       description="Opaque `next_cursor` from a previous page."),
 ) -> VerificationIdsResponse:
-    # Public, like the legacy API: no token, every ID. The IDs alone expose no
-    # results -- GET /verify/{workflow_id} still enforces owner-or-admin.
+    # IDs can contain private caller text. Always scope the database read,
+    # including anonymous requests and continuation pages.
     after: VerificationCursor | None = None
     if cursor is not None:
         try:
@@ -929,15 +943,17 @@ async def list_verification_ids(
         raise HTTPException(status_code=503, detail="Verification database service not available")
 
     try:
-        page = await ledger.list_verification_ids(None, limit=limit, after=after)
-    except Exception as e:
-        logger.error("Failed to list verification IDs: %s", e, exc_info=e)
-        raise HTTPException(status_code=503, detail="Failed to list verification IDs")
+        page = await ledger.list_verification_ids(user.sub if user is not None else None, limit=limit, after=after)
+    except Exception:
+        # Driver errors can include the scoped query (subjects/cursor IDs).
+        logger.error("Failed to list verification IDs")
+        raise HTTPException(status_code=503, detail="Failed to list verification IDs") from None
 
     logger.info(
         "listing verification ids (count=%d, has_more=%s)",
         len(page.verification_ids), page.next_cursor is not None,
     )
+    response.headers["Cache-Control"] = "private, no-store"
     return VerificationIdsResponse(
         verification_ids=page.verification_ids,
         next_cursor=encode_verification_cursor(page.next_cursor) if page.next_cursor else None,

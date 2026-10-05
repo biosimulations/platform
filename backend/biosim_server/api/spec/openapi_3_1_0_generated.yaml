@@ -961,10 +961,15 @@ paths:
       tags:
       - Verification
       summary: List verification workflow IDs usable with GET /verify/{workflow_id}
-      description: Public, newest-first listing of every verification workflow ID,
-        one bounded page at a time. Follow `next_cursor` (pass it back as `cursor`)
-        for older IDs; it is null on the last page.
+      description: 'Caller-scoped, newest-first listing: anonymous callers see ownerless
+        verifications; authenticated callers see ownerless plus their own, with no
+        administrator bypass. Invalid credentials are rejected. Responses use Cache-Control:
+        private, no-store. Keep the same identity while paginating; restart after
+        login/logout. One bounded page at a time. Follow `next_cursor` (pass it back
+        as `cursor`) for older IDs; it is null on the last page.'
       operationId: list-verification-ids
+      security:
+      - HTTPBearer: []
       parameters:
       - name: limit
         in: query
@@ -990,15 +995,26 @@ paths:
         description: Opaque `next_cursor` from a previous page.
       responses:
         '200':
-          description: Successful Response
+          description: One page visible to the current caller.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/VerificationIdsResponse'
+          headers:
+            Cache-Control:
+              description: private, no-store
+              schema:
+                type: string
         '400':
           description: Malformed cursor.
+        '401':
+          description: Invalid credentials; no anonymous fallback.
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
         '503':
-          description: Verification database unavailable.
+          description: Verification database or authentication service unavailable.
         '422':
           description: Validation Error
           content:
@@ -2973,9 +2989,10 @@ components:
           type: array
           title: Verification Ids
           description: One page of workflow IDs that can be passed to GET /verify/{workflow_id},
-            newest first (created descending, then workflow_id ascending). Covers
-            every verification; no token is required. Follow `next_cursor` for older
-            IDs.
+            newest first (created descending, then workflow_id ascending). Anonymous
+            callers see ownerless verifications; authenticated callers see ownerless
+            plus their own. Follow `next_cursor` with the same identity for older
+            visible IDs.
         next_cursor:
           anyOf:
           - type: string

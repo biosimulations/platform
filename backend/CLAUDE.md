@@ -143,7 +143,7 @@ backend/
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
 | `/simulations/runs` | POST | List simulation runs (`type=all` public with email redacted; `type=user` scoped to `owner_sub`) |
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
-| `/verification_ids` | GET | List verification workflow IDs, newest first, paginated (`limit` ≤ 1000, opaque `cursor`; public, no token, like the legacy API) |
+| `/verification_ids` | GET | List verification workflow IDs, newest first, paginated (`limit` ≤ 1000, opaque `cursor`; optional auth: ownerless plus caller-owned IDs) |
 | `/verify/omex` | POST | Verify OMEX file across simulators (token optional; a valid token persists `owner_sub`) |
 | `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin) |
 | `/verify/runs` | POST | Compare existing biosimulation runs (token optional; a valid token persists `owner_sub`) |
@@ -324,9 +324,13 @@ Temporal workflow. Temporal unavailable returns **503**, not 404. The frontend
 does not call `/verify/*`.
 
 **`GET /verification_ids`** is the listing endpoint for verification workflow
-IDs. It is **public** -- no token, matching the legacy API -- and returns one
-bounded page at a time, newest first (`created` descending, `workflow_id`
-ascending as the tie-breaker): `{"verification_ids": [...], "next_cursor": ...}`.
+IDs. Anonymous callers see only ownerless rows (null or missing `owner_sub`);
+authenticated callers see those rows plus their own. Administrators get no global
+listing bypass. Invalid credentials return 401 rather than anonymous access;
+authentication infrastructure failures retain the existing fail-closed behavior.
+Returns one bounded page at a time, newest first (`created` descending,
+`workflow_id` ascending): `{"verification_ids": [...], "next_cursor": ...}`.
+Successful responses carry `Cache-Control: private, no-store`.
 `limit` defaults to **100** and may not exceed **1000** (otherwise **422**).
 Pass a page's `next_cursor` back as `cursor` for the next, older page;
 `next_cursor` is `null` on the last page, and a malformed `cursor` is **400**.
@@ -338,13 +342,20 @@ the token for a workflow ID at Temporal's 1000-byte ID limit
 the prefix bound -- yields a cursor the route accepts. New IDs stay within that
 limit because `workflow_id_prefix` is capped at **200** characters
 (`WORKFLOW_ID_PREFIX_MAX_LENGTH`; more → **422**).
-Callers that want the full history must follow `next_cursor`. Each request is a
-single `limit + 1` read over the `(created, workflow_id)` index, however large
-the ledger grows. A token, if sent, is ignored.
-Listed IDs of ownerless (anonymous) verifications are readable by anyone via
-`GET /verify/{workflow_id}`. IDs of verifications started with a token remain
-owner-or-admin. Note that `workflow_id_prefix` is
-caller-chosen and therefore publicly visible in this listing. 503 when the
+Callers that want their visible history follow `next_cursor` with the same identity;
+restart pagination after login/logout. Each request applies visibility in Mongo before
+one projected `limit + 1` read, using the existing owner/sort indexes. Hidden rows do not
+supply cursor anchors or lookahead. Cursors are decodable positions, not credentials:
+replaying or forging one never widens the current caller's scope.
+Ownerless IDs/results remain public. Owned IDs can contain private caller-chosen prefixes
+and are listed only to their owners; result access remains owner-or-admin. Existing
+owned rows are protected without renaming IDs or backfilling data. Missing-owner rows
+remain public; do not infer ownership from their labels. Clients discovering their own
+private verifications must now authenticate. Before rollout, invalidate any deployed
+cache of the former all-rows listing if one exists: new headers cannot remove historical
+cached or scraped data. No live cache invalidation is implied by this code change.
+Keep logs limited to count/has-more, never IDs, subjects, raw cursors, or credentials.
+503 when the
 ledger service is unavailable.
 
 **Which token to send:** the Platform API is an OAuth resource server and

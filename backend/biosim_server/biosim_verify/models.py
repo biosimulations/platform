@@ -129,8 +129,9 @@ class VerificationIdsResponse(BaseModel):
     verification_ids: list[str] = Field(
         description=(
             "One page of workflow IDs that can be passed to GET /verify/{workflow_id}, "
-            "newest first (created descending, then workflow_id ascending). Covers every "
-            "verification; no token is required. Follow `next_cursor` for older IDs."
+            "newest first (created descending, then workflow_id ascending). Anonymous callers "
+            "see ownerless verifications; authenticated callers see ownerless plus their own. "
+            "Follow `next_cursor` with the same identity for older visible IDs."
         )
     )
     next_cursor: Optional[str] = Field(

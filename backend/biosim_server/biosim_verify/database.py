@@ -2,7 +2,7 @@
 
 One document is written per verification workflow immediately before
 ``temporal_client.start_workflow`` in both POST /verify/* handlers.  This
-enables GET /verification_ids (a public, cursor-paginated listing) and produces
+enables GET /verification_ids (a caller-scoped, cursor-paginated listing) and produces
 an informative 404 detail for callers who query an expired Temporal history.
 """
 
@@ -114,9 +114,10 @@ class VerificationDatabaseService(ABC):
     ) -> VerificationIdPage:
         """Return one page of workflow_id values, newest-first.
 
-        ``owner_sub=None`` means no owner filter (all rows); ``owner_sub=<sub>``
-        filters to that caller's rows. ``limit`` (1..VERIFICATION_IDS_MAX_PAGE_SIZE)
-        bounds the read; ``after`` continues strictly past a previous page's
+        ``owner_sub`` is the verified caller subject, not an arbitrary owner selector.
+        ``None`` returns only ownerless (null or missing owner) rows; a subject
+        returns ownerless rows plus that caller's own. There is no unfiltered mode.
+        ``limit`` (1..VERIFICATION_IDS_MAX_PAGE_SIZE) bounds the read; ``after`` continues strictly past a previous page's
         ``next_cursor``, which is ``None`` on the last page.
         """
         ...
@@ -169,15 +170,25 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
     ) -> VerificationIdPage:
         if not 1 <= limit <= VERIFICATION_IDS_MAX_PAGE_SIZE:
             raise ValueError(f"limit must be between 1 and {VERIFICATION_IDS_MAX_PAGE_SIZE}")
-        clauses: list[dict[str, object]] = []
-        if owner_sub is not None:
-            clauses.append({"owner_sub": owner_sub})
+        # Scope before pagination: hidden rows must not affect lookahead/cursors.
+        visibility: dict[str, object] = (
+            {"owner_sub": None}
+            if owner_sub is None
+            else {"owner_sub": {"$in": [None, owner_sub]}}
+        )
+        clauses: list[dict[str, object]] = [visibility]
         if after is not None:
-            clauses.append({"$or": [
-                {"created": {"$lt": after.created}},
-                {"created": after.created, "workflow_id": {"$gt": after.workflow_id}},
-            ]})
-        query: dict[str, object] = {"$and": clauses} if clauses else {}
+            # Equivalent to the lexicographic continuation predicate for
+            # (created DESC, workflow_id ASC), expressed as one bounded range
+            # so Mongo can preserve the compound index order.
+            clauses.extend([
+                {"created": {"$lte": after.created}},
+                {"$nor": [{
+                    "created": after.created,
+                    "workflow_id": {"$lte": after.workflow_id},
+                }]},
+            ])
+        query: dict[str, object] = {"$and": clauses}
         # One extra row tells us whether another page exists; the read is bounded
         # however large the ledger grows.
         cursor = self._collection.find(

@@ -70,12 +70,12 @@ async def _all_ids(
 
 
 @pytest.mark.asyncio
-async def test_list_all_returns_newest_first(svc: VerificationDatabaseServiceMongo) -> None:
-    """3 records inserted out of order → returned newest-first (no owner filter)."""
-    await svc.insert_verification(_omex_record("wf-a", "u1", _utc(2025, 1, 1)))
-    await svc.insert_verification(_omex_record("wf-b", "u1", _utc(2025, 1, 3)))
+async def test_list_public_returns_newest_first(svc: VerificationDatabaseServiceMongo) -> None:
+    """3 ownerless records inserted out of order → returned newest-first."""
+    await svc.insert_verification(_omex_record("wf-a", None, _utc(2025, 1, 1)))
+    await svc.insert_verification(_omex_record("wf-b", None, _utc(2025, 1, 3)))
     await svc.insert_verification(VerificationRecord(
-        workflow_id="wf-c", verify_type=VerificationType.RUNS, owner_sub="u2", created=_utc(2025, 1, 2),
+        workflow_id="wf-c", verify_type=VerificationType.RUNS, owner_sub=None, created=_utc(2025, 1, 2),
     ))
 
     page = await svc.list_verification_ids(None, limit=10)
@@ -87,23 +87,24 @@ async def test_list_all_returns_newest_first(svc: VerificationDatabaseServiceMon
 async def test_list_same_created_tiebreak_by_workflow_id(svc: VerificationDatabaseServiceMongo) -> None:
     """Identical created timestamps → tiebreak is workflow_id ascending."""
     ts = _utc(2025, 6, 1)
-    await svc.insert_verification(_omex_record("wf-z", "u1", ts))
-    await svc.insert_verification(_omex_record("wf-a", "u1", ts))
-    await svc.insert_verification(_omex_record("wf-m", "u1", ts))
+    await svc.insert_verification(_omex_record("wf-z", None, ts))
+    await svc.insert_verification(_omex_record("wf-a", None, ts))
+    await svc.insert_verification(_omex_record("wf-m", None, ts))
 
     page = await svc.list_verification_ids(None, limit=10)
     assert page.verification_ids == ["wf-a", "wf-m", "wf-z"]
 
 
 @pytest.mark.asyncio
-async def test_list_owner_scoped_returns_only_own(svc: VerificationDatabaseServiceMongo) -> None:
-    """owner_sub filter returns only that caller's rows."""
+async def test_list_owner_scoped_returns_public_plus_own(svc: VerificationDatabaseServiceMongo) -> None:
+    """owner_sub filter returns ownerless plus that caller's rows."""
     await svc.insert_verification(_omex_record("wf-own-1", "auth0|alice", _utc(2025, 1, 2)))
     await svc.insert_verification(_omex_record("wf-own-2", "auth0|alice", _utc(2025, 1, 1)))
     await svc.insert_verification(_omex_record("wf-other", "auth0|bob",   _utc(2025, 1, 3)))
 
+    await svc.insert_verification(_omex_record("wf-public", None, _utc(2025, 1, 4)))
     ids, _ = await _all_ids(svc, "auth0|alice")
-    assert ids == ["wf-own-1", "wf-own-2"]
+    assert ids == ["wf-public", "wf-own-1", "wf-own-2"]
 
 
 @pytest.mark.asyncio
@@ -221,22 +222,36 @@ class _RecordingCursor:
 class _RecordingCollection:
     def __init__(self, cursor: _RecordingCursor) -> None:
         self.cursor = cursor
+        self.find_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def find(self, *_args: object, **_kwargs: object) -> _RecordingCursor:
+    def find(self, *args: object, **kwargs: object) -> _RecordingCursor:
+        self.find_calls.append((args, kwargs))
         return self.cursor
 
 
 @pytest.mark.asyncio
-async def test_page_read_is_bounded() -> None:
+@pytest.mark.parametrize("owner", [None, "alice"])
+@pytest.mark.parametrize("after", [None, VerificationCursor(datetime(2025, 1, 2), "private-anchor")])
+async def test_page_read_is_bounded(owner: str | None, after: VerificationCursor | None) -> None:
     """Each page is one limit+1 read: never ``to_list(length=None)``."""
     docs: list[dict[str, object]] = [
         {"workflow_id": f"wf-{i}", "created": datetime(2025, 1, 1, 0, 0, i)} for i in range(10)
     ]
     cursor = _RecordingCursor(docs)
     svc = object.__new__(VerificationDatabaseServiceMongo)
-    svc._collection = _RecordingCollection(cursor)  # type: ignore[assignment]
+    collection = _RecordingCollection(cursor)
+    svc._collection = collection  # type: ignore[assignment]
 
-    page = await svc.list_verification_ids(None, limit=4)
+    page = await svc.list_verification_ids(owner, limit=4, after=after)
+    visibility: dict[str, object] = {"owner_sub": None} if owner is None else {"owner_sub": {"$in": [None, owner]}}
+    clauses: list[dict[str, object]] = [visibility]
+    if after is not None:
+        clauses.extend([{"created": {"$lte": after.created}},
+                        {"$nor": [{"created": after.created,
+                                   "workflow_id": {"$lte": after.workflow_id}}]}])
+    assert collection.find_calls == [(({"$and": clauses},), {
+        "projection": {"workflow_id": 1, "created": 1, "_id": 0},
+    })]
 
     assert cursor.limits == [5]
     assert cursor.to_list_lengths == [5]

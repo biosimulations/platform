@@ -150,7 +150,7 @@ AUTH_MODE: dict[str, AuthMode] = {
     "verify-omex": AuthMode.OPTIONAL,
     "get-verify-output": AuthMode.OPTIONAL,
     "verify-runs": AuthMode.OPTIONAL,
-    "list-verification-ids": AuthMode.NONE,
+    "list-verification-ids": AuthMode.OPTIONAL,
 }
 
 VALIDATION_SKIP: dict[str, str] = {
@@ -505,3 +505,12 @@ def test_page_response_schemas_and_auth() -> None:
         assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
             "$ref": f"#/components/schemas/{model}",
         }
+
+
+def test_verification_listing_documents_optional_auth_and_private_caching() -> None:
+    operation = app.openapi()["paths"]["/verification_ids"]["get"]
+    assert operation["security"] == [{"HTTPBearer": []}]
+    assert AUTH_MODE["list-verification-ids"] == AuthMode.OPTIONAL
+    assert "ownerless plus their own" in operation["description"]
+    assert "private, no-store" in operation["responses"]["200"]["headers"]["Cache-Control"]["description"]
+    assert "WWW-Authenticate" in operation["responses"]["401"]["headers"]
