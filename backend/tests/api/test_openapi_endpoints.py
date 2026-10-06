@@ -8,18 +8,28 @@ required bearer), not the FastAPI-emitted ``security: [HTTPBearer]`` field.
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import assert_never
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from biosim_server.api.main import app
-from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
-from biosim_server.common.auth import get_current_user
+from biosim_server.biosim_verify.database import VerificationIdPage
+from biosim_server.biosim_verify.models import (
+    MAX_VERIFY_RUN_IDS,
+    MAX_VERIFY_SIMULATORS,
+    VerifyWorkflowOutput,
+    VerifyWorkflowStatus,
+)
+from biosim_server.common.auth import get_current_user, get_optional_user
+from biosim_server.dependencies import get_combine_http_client
 from biosim_server.rbac_demo.models import PublicMessage
 from biosim_server.version import __version__
+from biosim_server.dependencies import get_legacy_http_client
 from tests.fixtures.auth_fixtures import make_authenticated_user
 
 _PATH_PARAMS = ("processing_id", "workflow_id", "run_id", "project_id")
@@ -33,14 +43,21 @@ _CORE_PATHS = frozenset({
     "/simulations/{processing_id}/results",
     "/simulations/{processing_id}/logs",
     "/simulations/{processing_id}/cancel",
+    "/runs/{run_id}",
+    "/runs/summary",
+    "/runs/{run_id}/download",
+    "/runs/{run_id}/validate",
     "/runs/{run_id}/summary",
     "/runs/{run_id}/page",
+    "/validation/model",
+    "/validation/sed-ml",
     "/projects",
     "/projects/reindex",
     "/projects/stats",
     "/projects/{project_id}/summary",
     "/projects/{project_id}/page",
     "/api/v1/me",
+    "/api/v1/me/password-reset",
     "/api/v1/demo/public",
     "/api/v1/demo/private/me",
     "/api/v1/demo/private/animal",
@@ -49,20 +66,25 @@ _CORE_PATHS = frozenset({
     "/verify/omex",
     "/verify/{workflow_id}",
     "/verify/runs",
+    "/verification_ids",
 })
-_OPTIONAL_AUTH_OPERATION_IDS = frozenset({"run-simulations", "list-simulation-runs"})
+_OPTIONAL_AUTH_OPERATION_IDS = frozenset({
+    "run-simulations",
+    "list-simulation-runs",
+    "verify-omex",
+    "get-verify-output",
+    "verify-runs",
+})
 _REQUIRED_AUTH_OPERATION_IDS = frozenset({
     "delete-simulation-run",
     "cancel-simulation-run",
+    "create-current-user-password-reset",
     "get-current-user",
     "update-current-user",
     "delete-current-user",
     "demo-private-whoami",
     "demo-private-animal",
     "demo-private-permission",
-    "verify-omex",
-    "get-verify-output",
-    "verify-runs",
 })
 
 
@@ -112,6 +134,13 @@ OPERATIONS: tuple[Operation, ...] = tuple(_operations())
 OPERATION_IDS: frozenset[str] = frozenset(op.operation_id for op in OPERATIONS)
 
 AUTH_MODE: dict[str, AuthMode] = {
+    "get-legacy-run": AuthMode.NONE,
+    "update-legacy-run": AuthMode.NONE,
+    "delete-legacy-run": AuthMode.NONE,
+    "download-legacy-run": AuthMode.NONE,
+    "validate-legacy-run": AuthMode.NONE,
+    "get-legacy-runs-summary": AuthMode.NONE,
+
     "check-compatibility": AuthMode.NONE,
     "run-simulations": AuthMode.OPTIONAL,
     "list-simulation-runs": AuthMode.OPTIONAL,
@@ -128,6 +157,7 @@ AUTH_MODE: dict[str, AuthMode] = {
     "list-project-stats": AuthMode.NONE,
     "get-project-summary": AuthMode.NONE,
     "get-project-page": AuthMode.NONE,
+    "create-current-user-password-reset": AuthMode.REQUIRED,
     "get-current-user": AuthMode.REQUIRED,
     "update-current-user": AuthMode.REQUIRED,
     "delete-current-user": AuthMode.REQUIRED,
@@ -137,12 +167,25 @@ AUTH_MODE: dict[str, AuthMode] = {
     "demo-private-permission": AuthMode.REQUIRED_ROLES,  # require_permissions("demo:read")
     "root__get": AuthMode.NONE,
     "get_version_version_get": AuthMode.NONE,
-    "verify-omex": AuthMode.REQUIRED,
-    "get-verify-output": AuthMode.REQUIRED,
-    "verify-runs": AuthMode.REQUIRED,
+    "verify-omex": AuthMode.OPTIONAL,
+    "get-verify-output": AuthMode.OPTIONAL,
+    "verify-runs": AuthMode.OPTIONAL,
+    "list-verification-ids": AuthMode.OPTIONAL,
+    # Advisory auth: a valid token only raises the rate-limit ceiling, and one
+    # that does not validate is treated as absent. NONE rather than OPTIONAL
+    # because these never 401, whatever the Authorization header holds.
+    "validate-model": AuthMode.NONE,
+    "validate-sedml": AuthMode.NONE,
 }
 
 VALIDATION_SKIP: dict[str, str] = {
+    "get-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "update-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "delete-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "download-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "validate-legacy-run": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+    "get-legacy-runs-summary": "Opaque legacy input; path/header/body-size behavior tested in test_legacy_runs_proxy",
+
     "get-simulation-status": "path-only; omitting the id is a different route",
     "get-simulation-status-explicit": "path-only; omitting the id is a different route",
     "get-simulation-results": "path-only; omitting the id is a different route",
@@ -154,6 +197,7 @@ VALIDATION_SKIP: dict[str, str] = {
     "get-project-summary": "path-only; unauthenticated probe uses encoded-dot 404",
     "get-project-page": "path-only; unauthenticated probe uses encoded-dot 404",
     "reindex-projects": "no body; gated by static token, not Pydantic",
+    "create-current-user-password-reset": "no request body; identity comes from Bearer token",
     "get-current-user": "no request body",
     "delete-current-user": "no request body",
     "demo-public": "no request body",
@@ -162,8 +206,11 @@ VALIDATION_SKIP: dict[str, str] = {
     "demo-private-permission": "no request body",
     "root__get": "no request body",
     "get_version_version_get": "no request body",
-    "get-verify-output": "path-only; unauthenticated probe is 401",
-    "verify-runs": "all query params optional; unauthenticated probe is 401",
+    "get-verify-output": "path-only",
+    "verify-runs": "all query params optional",
+    "list-verification-ids": "no parameters",
+    "validate-model": "raw multipart relay; no Pydantic body model to reject",
+    "validate-sedml": "raw multipart relay; no Pydantic body model to reject",
 }
 
 
@@ -242,6 +289,26 @@ def _probe_list_projects(client: TestClient) -> None:
         _assert_status(client.get("/projects"), 503)
 
 
+def _probe_list_verification_ids(client: TestClient) -> None:
+    with patch("biosim_server.api.main.get_verification_database_service", return_value=None):
+        _assert_status(client.get("/verification_ids"), 503)
+
+
+def _probe_verify_omex(client: TestClient) -> None:
+    # Anonymous callers reach request validation instead of a 401.
+    _assert_status(client.post("/verify/omex"), 422)
+
+
+def _probe_verify_runs(client: TestClient) -> None:
+    with patch("biosim_server.api.main.get_temporal_client", return_value=None):
+        _assert_status(client.post("/verify/runs"), 503)
+
+
+def _probe_get_verify_output(client: TestClient) -> None:
+    with patch("biosim_server.api.main.get_temporal_client", return_value=None):
+        _assert_status(client.get("/verify/probe-id"), 503)
+
+
 def _probe_reindex_projects(client: TestClient) -> None:
     with patch("biosim_server.projects.router.get_settings") as mock_settings:
         mock_settings.return_value = MagicMock(project_reindex_token="")
@@ -280,7 +347,82 @@ def _probe_version(client: TestClient) -> None:
     assert response.json() == __version__
 
 
+def _probe_get_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("GET", "/runs/%2E"), 404)
+
+
+def _probe_update_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("PATCH", "/runs/%2E"), 404)
+
+
+def _probe_delete_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("DELETE", "/runs/%2E"), 404)
+
+
+def _probe_download_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("GET", "/runs/%2E/download"), 404)
+
+
+def _probe_validate_legacy_run(client: TestClient) -> None:
+    _assert_status(client.request("GET", "/runs/%2E/validate"), 404)
+
+
+def _probe_get_legacy_runs_summary(client: TestClient) -> None:
+    # A static route has no dot-id rejection. Use a hermetic upstream failure.
+    def unavailable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("unavailable", request=request)
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(unavailable), base_url="https://upstream.test")
+    app.dependency_overrides[get_legacy_http_client] = lambda: upstream
+    try:
+        _assert_status(client.get("/runs/summary"), 502)
+    finally:
+        app.dependency_overrides.pop(get_legacy_http_client, None)
+        # MockTransport owns no sockets, but close the client lifecycle as well.
+        import asyncio
+        asyncio.run(upstream.aclose())
+
+
+def _probe_validation(client: TestClient, path: str) -> None:
+    """Reachable without a token, and a dead upstream is a sanitized 502.
+
+    The COMBINE client is replaced with a transport that refuses, so the probe
+    proves the route is mounted and unauthenticated without making a real
+    request to combine.api.biosimulations.org.
+    """
+    def refuse(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("probe")
+
+    # AsyncClient: the relay uses `async with client.stream(...)`, which a sync
+    # Client cannot satisfy. MockTransport opens no sockets, so not closing it
+    # leaks nothing.
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(refuse), base_url="https://combine.test"
+    )
+    app.dependency_overrides[get_combine_http_client] = lambda: upstream
+    try:
+        _assert_status(client.post(path, content=b"x", headers={"Content-Type": "text/plain"}), 502)
+    finally:
+        app.dependency_overrides.pop(get_combine_http_client, None)
+
+
+def _probe_validate_model(client: TestClient) -> None:
+    _probe_validation(client, "/validation/model")
+
+
+def _probe_validate_sedml(client: TestClient) -> None:
+    _probe_validation(client, "/validation/sed-ml")
+
+
 UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
+    "validate-model": _probe_validate_model,
+    "validate-sedml": _probe_validate_sedml,
+    "get-legacy-run": _probe_get_legacy_run,
+    "update-legacy-run": _probe_update_legacy_run,
+    "delete-legacy-run": _probe_delete_legacy_run,
+    "download-legacy-run": _probe_download_legacy_run,
+    "validate-legacy-run": _probe_validate_legacy_run,
+    "get-legacy-runs-summary": _probe_get_legacy_runs_summary,
     "check-compatibility": _probe_check_compatibility,
     "run-simulations": _probe_run_simulations,
     "list-simulation-runs": _probe_list_simulation_runs,
@@ -291,6 +433,10 @@ UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "get-run-summary": _probe_get_run_summary,
     "get-run-page": _probe_get_run_page,
     "list-projects": _probe_list_projects,
+    "list-verification-ids": _probe_list_verification_ids,
+    "verify-omex": _probe_verify_omex,
+    "verify-runs": _probe_verify_runs,
+    "get-verify-output": _probe_get_verify_output,
     "reindex-projects": _probe_reindex_projects,
     "list-project-stats": _probe_list_project_stats,
     "get-project-summary": _probe_get_project_summary,
@@ -332,12 +478,7 @@ def _validate_update_current_user(client: TestClient) -> None:
 
 
 def _validate_verify_omex(client: TestClient) -> None:
-    user = make_authenticated_user()
-    app.dependency_overrides[get_current_user] = lambda: user
-    try:
-        _assert_status(client.post("/verify/omex"), 422)
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
+    _assert_status(client.post("/verify/omex"), 422)
 
 
 VALIDATION_RUNNERS: dict[str, Callable[[TestClient], None]] = {
@@ -352,7 +493,7 @@ VALIDATION_RUNNERS: dict[str, Callable[[TestClient], None]] = {
 
 
 def test_verify_runs_authenticated_caller_starts_pending_workflow(client: TestClient) -> None:
-    """verify-runs requires auth; an authenticated caller gets a PENDING workflow it owns."""
+    """verify-runs is optional-auth; an authenticated caller gets a PENDING workflow it owns."""
     async def start_workflow(*_args: object, **kwargs: object) -> MagicMock:
         handle = MagicMock()
         handle.id = str(kwargs["id"])
@@ -361,13 +502,18 @@ def test_verify_runs_authenticated_caller_starts_pending_workflow(client: TestCl
 
     temporal = MagicMock()
     temporal.start_workflow = start_workflow
+    ledger = MagicMock()
+    ledger.insert_verification = AsyncMock(return_value=None)
+    ledger.list_verification_ids = AsyncMock(return_value=VerificationIdPage(verification_ids=[], next_cursor=None))
     user = make_authenticated_user()
-    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_optional_user] = lambda: user
     try:
-        with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+        with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+             patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
+             patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=AsyncMock(return_value={})):
             response = client.post("/verify/runs")
     finally:
-        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_optional_user, None)
     _assert_status(response, 200)
     body = VerifyWorkflowOutput.model_validate(response.json())
     assert body.workflow_status == VerifyWorkflowStatus.PENDING
@@ -386,6 +532,19 @@ def test_every_operation_id_is_accounted_for() -> None:
 
 def test_openapi_lists_expected_core_paths() -> None:
     assert _CORE_PATHS <= set(app.openapi()["paths"])
+
+
+def _query_param_schema(path: str, method: str, name: str) -> dict[str, object]:
+    operation = app.openapi()["paths"][path][method]
+    (param,) = [p for p in operation["parameters"] if p["name"] == name]
+    schema: dict[str, object] = param["schema"]
+    return schema
+
+
+def test_verification_selection_bounds_are_published() -> None:
+    """PR #120 B2: generated clients see the per-request selection bounds."""
+    assert _query_param_schema("/verify/runs", "post", "biosimulations_run_ids")["maxItems"] == MAX_VERIFY_RUN_IDS
+    assert _query_param_schema("/verify/omex", "post", "simulators")["maxItems"] == MAX_VERIFY_SIMULATORS
 
 
 def test_hidden_routes_are_not_in_openapi_paths() -> None:
@@ -444,6 +603,42 @@ def test_validation_error_probe(operation: Operation, client: TestClient) -> Non
     runner(client)
 
 
+def test_password_reset_documents_its_error_header_and_retry_contract() -> None:
+    """AUTH-MIN-003: generated/documentation-driven clients must not have to guess.
+
+    The reset route is the one operation whose success value is a bearer
+    capability and whose failures are deliberately generic, so its contract lives
+    in the spec rather than in prose: which errors exist, which carry Retry-After,
+    that nothing is cacheable, and that a 200 is not a completed password change.
+    """
+    operation = app.openapi()["paths"]["/api/v1/me/password-reset"]["post"]
+    responses = operation["responses"]
+    assert {"200", "401", "403", "429", "502", "503"} <= set(responses)
+    assert all(responses[code]["description"] for code in ("401", "403", "429", "502", "503"))
+    assert "Retry-After" in responses["429"]["headers"]
+    assert "WWW-Authenticate" in responses["401"]["headers"]
+    description = operation["description"]
+    assert "no-store" in description
+    assert "single attempt" in description
+    assert "not that the password was changed" in description
+    # The response model still owns the 200 body.
+    assert responses["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/PasswordResetResponse"
+    }
+
+
+def test_committed_openapi_artifact_matches_the_in_process_spec() -> None:
+    """The checked-in artifact is the contract clients read; keep it honest.
+
+    A route/model/description change that is not regenerated with
+    ``python -m scripts.generate_openapi`` silently forks the published contract
+    from the running app. The generator forces ENABLE_RBAC_DEMO on, and this
+    suite's conftest sets it before import, so both sides see the same routes.
+    """
+    spec_path = Path(__file__).resolve().parents[2] / "biosim_server/api/spec/openapi_3_1_0_generated.yaml"
+    assert yaml.safe_load(spec_path.read_text()) == app.openapi()
+
+
 def test_page_response_schemas_and_auth() -> None:
     spec = app.openapi()
     for path, model in [
@@ -456,3 +651,25 @@ def test_page_response_schemas_and_auth() -> None:
         assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
             "$ref": f"#/components/schemas/{model}",
         }
+
+
+def test_verification_listing_documents_optional_auth_and_private_caching() -> None:
+    operation = app.openapi()["paths"]["/verification_ids"]["get"]
+    assert operation["security"] == [{"HTTPBearer": []}]
+    assert AUTH_MODE["list-verification-ids"] == AuthMode.OPTIONAL
+    assert "ownerless plus their own" in operation["description"]
+    assert "private, no-store" in operation["responses"]["200"]["headers"]["Cache-Control"]["description"]
+    assert "WWW-Authenticate" in operation["responses"]["401"]["headers"]
+
+
+def test_legacy_operations_document_local_throttling_without_platform_auth() -> None:
+    spec = app.openapi()
+    legacy_operations = [op for op in OPERATIONS if "legacy" in op.operation_id]
+    assert len(legacy_operations) == 6
+    for operation in legacy_operations:
+        contract = spec["paths"][operation.path][operation.method.lower()]
+        assert not contract.get("security")
+        response = contract["responses"]["429"]
+        assert "no upstream request" in response["description"]
+        assert "Retry-After" in response["headers"]
+        assert "per-client-IP" in contract["description"]

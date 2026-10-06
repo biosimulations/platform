@@ -8,7 +8,7 @@ All commands below assume the working directory is `backend/` (i.e., `cd backend
 
 The platform backend is a distributed microservices application for biosimulation verification and comparison. It runs biological simulations across multiple simulators (AMICI, COPASI, PySCES, Tellurium, VCell) and compares outputs to verify model correctness.
 
-**Version:** 0.4.0
+**Version:** 0.10.0
 **Python:** 3.13
 **Production URL:** [https://biosim.biosimulations.org/docs](https://biosim.biosimulations.org/docs)
 
@@ -35,7 +35,16 @@ uv run mypy biosim_server
 
 # Single test file
 uv run pytest tests/biosim_runs/test_sim_workflow.py -v
+
+# Regenerate the committed OpenAPI artifact after changing any route or model
+uv run python -m scripts.generate_openapi
 ```
+
+Always regenerate the spec with `scripts/generate_openapi.py` rather than by hand.
+The demo router is environment-gated (`ENABLE_RBAC_DEMO`, default false), so dumping
+`app.openapi()` in a default shell silently deletes `/api/v1/demo/*` from the
+artifact; the script forces the flag on so the output does not depend on the
+shell it ran in.
 
 ## Verification
 
@@ -91,8 +100,10 @@ backend/
 │   │   ├── models.py          # Pydantic models (BiosimulatorVersion, etc.)
 │   │   └── workflows.py       # OmexSimWorkflow
 │   ├── biosim_verify/         # Verification workflows
-│   │   ├── activities.py      # generate_statistics_activity
-│   │   ├── models.py          # Verification models
+│   │   ├── activities.py      # generate_statistics_activity (tolerates missing datasets)
+│   │   ├── compatibility.py   # find_common_datasets — preflight overlap check
+│   │   ├── database.py        # VerificationDatabaseService + Mongo impl (BiosimCompare ledger)
+│   │   ├── models.py          # Verification models (incl. VerificationRecord, VerificationType)
 │   │   ├── omex_verify_workflow.py  # Multi-simulator OMEX verification
 │   │   ├── runs_verify_workflow.py  # Compare existing runs
 │   │   └── hdf5_compare.py    # Comparison logic
@@ -137,13 +148,19 @@ backend/
 
 | Endpoint | Method | Purpose |
 | --- | --- | --- |
+| `/projects/{id}/page` | GET | Platform-owned project page aggregation (public; rate-limited per client IP; 3 upstream calls) |
+| `/runs/{id}/page` | GET | Platform-owned run page aggregation (public; rate-limited per client IP; 4 upstream calls) |
 | `/compatibility/check` | POST | Check OMEX archive compatibility with simulators (public; rate-limited; `archive_url` SSRF-restricted) |
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
 | `/simulations/runs` | POST | List simulation runs (`type=all` public with email redacted; `type=user` scoped to `owner_sub`) |
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
-| `/verify/omex` | POST | Verify OMEX file across simulators (authenticated; persists `owner_sub`) |
-| `/verify/{workflow_id}` | GET | Get verification results (authenticated; owner-or-admin when `owner_sub` is set) |
-| `/verify/runs` | POST | Compare existing biosimulation runs (authenticated; persists `owner_sub`) |
+| `/verification_ids` | GET | List verification workflow IDs, newest first, paginated (`limit` ≤ 1000, opaque `cursor`; optional auth: ownerless plus caller-owned IDs) |
+| `/verify/omex` | POST | Verify OMEX file across simulators (token optional; a valid token persists `owner_sub`) |
+| `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin) |
+| `/verify/runs` | POST | Compare existing biosimulation runs (token optional; a valid token persists `owner_sub`) |
+| `/api/v1/me/password-reset` | POST | Issue a short-lived Auth0-hosted password-change URL for the authenticated primary database user (New Universal Login; no email is sent; requires `create:user_tickets` on the server M2M client) |
+| `/validation/model` | POST | Validate a model document via the COMBINE API (relay; works with or without auth; rate-limited) |
+| `/validation/sed-ml` | POST | Validate a SED-ML document via the COMBINE API (relay; works with or without auth; rate-limited) |
 | `/version` | GET | Get API version |
 | `/docs` | GET | Swagger UI |
 
@@ -151,7 +168,7 @@ backend/
 
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
-- **BiosimCompare** - Comparison results
+- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired.
 - **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns
@@ -208,9 +225,40 @@ These point at the public biosimulations.org services. Defaults are production; 
 
 | Variable | Default | Used by |
 | --- | --- | --- |
-| `BIOSIMULATIONS_API_BASE_URL` | `https://api.biosimulations.org` | `BiosimServiceRest` — submit and poll simulation jobs |
+| `BIOSIMULATIONS_API_BASE_URL` | `https://api.biosimulations.org` | `BiosimServiceRest` submission/polling, typed summaries/pages, and legacy `/runs` proxies |
 | `SIMDATA_API_BASE_URL` | `https://simdata.api.biosimulations.org` | `BiosimServiceRest` — fetch HDF5 outputs |
 | `BIOSIMULATORS_API_BASE_URL` | `https://api.biosimulators.org` | Simulator version metadata |
+| `COMBINE_API_BASE_URL` | `https://combine.api.biosimulations.org` | COMBINE validation service, relayed by `/validation/*` |
+| `COMBINE_MAX_REQUEST_BYTES` | `20971520` (20 MiB) | Upload cap for `/validation/*`, matching the ingress `proxy-body-size` |
+| `COMBINE_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Cap on a relayed validation report |
+
+### Why `/validation/*` exists
+
+`combine.api.biosimulations.org` returns **no** `Access-Control-Allow-Origin`
+header for any origin, and its preflight answers 200 with no `Access-Control-*`
+headers at all. A browser treats that as a denial, so the frontend's
+validate-\* utility pages cannot reach it from the client anywhere -- production
+included, not only localhost. Relaying server-side moves the request onto the
+Platform's own origin, which the frontend is already allowed to call.
+
+It is a **relay, not an owned contract**: the validation report is COMBINE's
+schema and we neither model nor validate it. `docs/legacy-api-passthrough-policy.md`
+requires that to be justified rather than assumed; the justification is that
+alternative here is not a worse contract but a feature that cannot work in any
+browser, and there is no Platform concept to own -- the report belongs to the
+COMBINE validators. If the Platform grows its own validation, this is deleted
+rather than promoted.
+
+Authentication is **advisory** (`get_advisory_user`): validation needs no
+identity, so a valid token only raises the rate-limit ceiling and a token that
+cannot be validated is treated as absent rather than refused. This differs
+deliberately from `get_optional_user`, which rejects an invalid token because on
+a *creation* path an expired one would silently produce a public resource -- no
+resource is created here, and the frontend attaches the Platform token to every
+Platform-bound request, so a lapsed session must not break a public page.
+
+No caller credentials are forwarded upstream. The two upstream paths are
+literals, so no caller input reaches the upstream URL.
 
 ### Infrastructure
 
@@ -225,6 +273,135 @@ These point at the public biosimulations.org services. Defaults are production; 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CORS_EXTRA_ORIGINS` | _empty_ | Comma-separated list of additional CORS origins appended to the built-in allowlist in `api/main.py`. **Required** for every deployment so the deployed frontend host (e.g. `https://biosim.biosimulations.org`) is allowed. The built-in list only covers local-dev loopbacks and cross-org trusted services — deploy-specific URLs are not hardcoded by design. |
+
+### Legacy runs proxy
+
+Six transparent operations against `BIOSIMULATIONS_API_BASE_URL`: GET/PATCH/DELETE
+`/runs/{id}`, GET `/runs/{id}/download`, GET `/runs/{id}/validate`, and GET
+`/runs/summary`. They use their own pooled client (`dependencies.get_legacy_http_client`),
+separate from the page/summary client, so proxied traffic cannot exhaust the pool the
+public pages need.
+`GET /runs/{id}/summary` keeps the existing typed `RunSummary` projection,
+credential/query isolation, size cap and sanitized upstream errors.
+
+The transparent operations forward caller `Authorization` without local Auth0
+validation or platform ownership checks. Authorization belongs to the upstream;
+no service credentials are added, and neither caller nor pooled-client cookies
+are sent. Requests are attempted once, with no retry and no redirect following.
+A returned redirect retains `Location`. Received statuses and opaque bodies,
+including 4xx/5xx, are relayed with allowlisted headers. Transport failures before
+response delivery are sanitized 502/504; failures after download headers have
+been sent abort the stream and close upstream resources.
+
+PATCH forwards raw bytes and the caller's Content-Type; upstream owns field
+validation. `LEGACY_PATCH_MAX_BYTES` is **20 MiB**, matching the existing gke/rke
+20m ingress ceiling (not the unrelated 16 MiB `UPSTREAM_MAX_RESPONSE_BYTES` cap on buffered *response* bodies). Actual chunks
+are counted, including requests without Content-Length. Over-limit requests
+return 413 before any mutation is sent. GET and DELETE send no body.
+
+Query bytes retain repeated keys and original escaping. IDs use `upstream_url`:
+dot-only IDs are rejected, special characters quoted, and decoded slashes do
+not match the single-segment route. Accept and Authorization are allowlisted;
+GET also forwards If-None-Match/If-Modified-Since, download additionally Range
+and If-Range, and PATCH additionally Content-Type. If-Range travels with Range so a
+resumed download with a stale validator gets the full current 200 from upstream,
+not a 206 slice of a newer file (RFC 9110 §13.1.5). Connection-nominated headers are stripped.
+Host/framing are generated afresh; arbitrary X-* and proxy headers are not sent.
+
+Downloads stream raw bytes (also for non-success bodies), remain open through
+downstream iteration, and close on completion, disconnect or failure. Because each one
+holds a pooled connection for as long as its reader takes, at most
+`LEGACY_DOWNLOAD_MAX_CONCURRENT` (default **32**, per pod) run at once; beyond that a
+download is refused with **503** + `Retry-After: 5` before anything is sent upstream
+(`legacy_outcome: busy`). The proxy pool holds that many plus 32, so the other
+operations, which buffer their bodies and so are never pinned by a slow reader, keep
+headroom. A caller who holds every slot can still deny *downloads* to others (there is no
+per-IP share); the cap bounds the damage to the download path. Upstream
+Content-Encoding is preserved with raw bytes so compression cannot invalidate
+Content-Length, Content-Range or ETag. Accept-Encoding is explicitly `identity`,
+but compressed responses are still handled correctly. Metadata responses (all
+buffered non-download, non-204/304 paths) buffer opaque raw bytes and recalculate
+length; they are capped at `UPSTREAM_MAX_RESPONSE_BYTES` raw bytes (the Page
+aggregation table below documents that setting's two consumers and their
+differing measurement bases). A buffered body that exceeds the cap is refused
+with a sanitized **502** (`legacy_outcome: too_large`), never relayed truncated.
+The cap is measured on raw wire bytes, not decoded bytes, so `Content-Encoding`
+cannot widen it. Downloads stream lazily and are never buffered or capped. Response
+headers are limited to Content-Type/Disposition/Length/Range/Encoding,
+Accept-Ranges, ETag, Last-Modified, Cache-Control, Expires, Vary, Location and
+Retry-After; Set-Cookie and hop-by-hop headers are stripped.
+
+Each operation logs only `legacy_operation`, `legacy_outcome`, `legacy_status`,
+`legacy_duration_ms`, and `legacy_bytes`. The proxy suppresses httpx's full-URL
+INFO line for its outbound request. Deployment access-log policy remains owned
+by the ingress/server; do not enable logs containing credentials or query values.
+
+Contract evidence: read-only inspection of the live
+[legacy OpenAPI](https://api.biosimulations.org/openapi.json) on 2026-09-28 found:
+PATCH `application/json` / `UpdateSimulationRun` (status, fileUrl, projectSize,
+resultsSize), OAuth scopes `write:SimulationRuns` for PATCH and
+`delete:SimulationRuns` for DELETE, and DELETE success 204. Collection summaries
+are a JSON array with `read:SimulationRuns`; no pagination parameters are
+specified. Validation documents 204/400 and `validateSimulationResultsData`.
+Download documents 200/301/404. No PATCH size or Range/conditional support is
+specified. The proxy's raw-body policy, 20 MiB bound, optional header forwarding
+and permissive query relay are platform compatibility decisions, not claims of
+additional upstream support. Platform Auth0 tokens are not guaranteed to have
+the legacy audience/scopes; upstream 401/403 remain visible. No live mutation
+was performed to verify the documentation.
+
+Frontend rollout is separate: switch direct legacy calls and download links to
+the platform base URL after deployment. **Run deletion has already switched**: the
+Simulations page sends `DELETE` to `${api_url}/runs/{id}`, because the auth0 plugin now
+attaches the Platform token only to Platform API requests and a direct legacy call would
+go out unauthenticated (401). That frontend build therefore needs a backend release that
+includes this proxy already deployed in the same cluster; deploy the backend first. The current legacy summary consumer
+expects an array of metadata; it must adapt to the typed platform summary before
+switching that URL. Prefer same-origin download navigation; cross-origin fetch
+clients must not assume Content-Disposition is exposed by CORS.
+
+### Page aggregation (public page endpoints)
+
+`GET /projects/{id}/page` and `GET /runs/{id}/page` assemble a page from 3-4 upstream
+calls each. Both are public (no authentication) and metered — see Rate Limiting — and both
+bound what they will buffer from the upstream API this project does not own.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `UPSTREAM_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Hard ceiling on one upstream response body, on a different measurement basis per consumer. **Page aggregations** (this section): one upstream JSON body's **decoded** size. Fetches ask for `Accept-Encoding: identity`; a body compressed anyway (gzip/deflate) is inflated in 64 KiB steps in `common/upstream.py`, each checked against the cap before it is kept, so peak memory is the cap plus one step whatever the compression ratio (httpx's own decoder inflated a whole network read first, ~64 MiB from one 64 KiB read). Any other or stacked `Content-Encoding` is a 502. **Legacy runs proxy** (see Legacy runs proxy): buffered non-download responses are counted on **raw** bytes through `aiter_raw()` (`biosim_runs/legacy_api.py`), because the proxy relays raw bytes and never decodes them — so a compressed body is capped on the wire, not after expansion. In both consumers a declared `Content-Length` decides nothing, the stream is abandoned the moment the cap is crossed, and a breach is a sanitized **502** (`too_large` in the logs) — never a truncated payload. Provisional pending the representative-payload measurements the page audit asks for; raise it per cluster if a legitimate response exceeds it. |
+
+`UPSTREAM_MAX_RESPONSE_BYTES` is not page-specific: it is the single shared ceiling for
+every buffered upstream body the API relays, including the legacy runs proxy's opaque
+responses. Both consumers measure the bytes they actually read, so the one setting is
+enforced without either consumer widening the other's semantics.
+
+Every platform-owned upstream fetch -- these pages and the typed `GET /runs/{id}/summary`
+and `GET /projects/{id}/summary` -- is built afresh in `common/upstream.py`, never through
+the pooled client's request builder. httpx stores every upstream `Set-Cookie` in a client's
+jar, and a pooled client serves many callers (this one was shared with the legacy runs proxy
+until the proxy got its own), so `client.get()`/`client.stream()` would replay one caller's
+session (plus any client default headers, auth or query parameters) on another caller's
+anonymous request. A public fetch takes only the client's base URL (query defaults and URL
+credentials stripped) and timeout, sends a fixed `Accept`/`Accept-Encoding: identity`/
+`User-Agent` set, never follows redirects, and never reads the jar. Clearing the jar instead
+would race concurrent requests. Any new consumer of `get_http_client()` must build its
+requests the same way.
+
+Both pages also carry a total time budget derived from the shared per-phase httpx timeout
+(`common/upstream.UPSTREAM_TIMEOUT_SECONDS`, 30 s) and the assembler's real serial depth —
+two hops for the project page (identity → embedded run id → satellites) and one for the run
+page (identity ∥ satellites) — plus 10 s of bounded local slack: **70 s** and **40 s**. The
+httpx timeout is per phase, not per request: the read timeout restarts on every received
+chunk, so a slow-drip body can keep one fetch alive well past 30 s, and these budgets are
+the only total deadline on page assembly. A budget below the serial depth would cancel
+healthy requests; one far above it (the run page's old flat 60 s, sized for two hops) lets
+a slow-drip upstream hold the request longer than the assembly needs.
+
+Each page emits one structured record per request (`page`, `page_outcome`, `page_status`,
+`page_duration_ms`, `page_identity_duration_ms`, `page_satellites_duration_ms`) and one
+per upstream fetch (`upstream_resource`, `upstream_outcome`, `upstream_duration_ms`,
+`upstream_bytes`). `log_config.JsonFormatter` copies only allowlisted fields, so no id,
+URL, or payload can reach the logs through `extra=`.
 
 ### Authentication (Auth0)
 
@@ -244,8 +421,12 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | `AUTH0_EMAIL_VERIFIED_CLAIM` | `https://api.biosimulations.org/email_verified` | Namespaced claim carrying whether that email is verified. Stamped by the same Action. Authorization treats a missing claim as unverified (fail closed). Override only if the Action uses a different namespace. |
 | `AUTH0_PERMISSIONS_CLAIM` | `permissions` | Auth0 RBAC access-token claim (array) used by `require_permissions`. Missing/malformed → no permissions (fail closed). Roles never satisfy a permission check. See `docs/auth0-tokens-claims-endpoints.md`. |
 | `AUTH0_TRUSTED_ISSUERS` | _empty_ | Optional JSON object mapping `issuer` → `{audiences, jwks_uri}`. When set, token validation uses this **pairing** (an audience trusted for issuer A is not valid for issuer B). When unset, `AUTH0_DOMAIN`/`AUTH0_AUDIENCE` (or `AUTH0_ISSUER`/`AUTH0_JWKS_URI`) remain the single-issuer configuration. |
-| `AUTH0_MANAGEMENT_CLIENT_ID` | _empty_ | M2M credentials for `PATCH`/`DELETE /api/v1/me`. **Secret** — sealed-secret path only. Unset in every cluster today, so those endpoints return 503. |
+| `AUTH0_MANAGEMENT_CLIENT_ID` | _empty_ | M2M credentials for the Auth0 Management API: `PATCH`/`DELETE /api/v1/me` (`update:users`/`delete:users`) and `POST /api/v1/me/password-reset` (`create:user_tickets`). **Secret** — sealed-secret path only. Unset in every cluster today, so those endpoints return 503; password reset also requires the M2M application to be authorized for the `create:user_tickets` scope. |
 | `AUTH0_MANAGEMENT_CLIENT_SECRET` | _empty_ | See above. |
+| `AUTH0_PASSWORD_RESET_CLIENT_ID` | _empty_ | **Non-secret** SPA application client ID used as the `client_id` for the hosted password-change ticket (`POST /api/v1/me/password-reset`). Blank disables the endpoint (503). Not the M2M client ID. Configure New Universal Login and the SPA's Application Login URI in Auth0 before enabling. |
+| `AUTH0_AUTH_TIME_CLAIM` | `auth_time` | Namespaced/standard claim carrying the end-user's last **interactive** authentication time. Read into `AuthenticatedUser.auth_time`; used only by the password-reset step-up gate. Missing/malformed → no evidence (fail closed). |
+| `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` | `false` | Step-up gate on `POST /api/v1/me/password-reset` (decision D-12). When true, the token must carry an `auth_time` no older than the max age below, else **403** and no ticket. Needs the Post-Login Action to stamp the claim, so it ships off; the startup gate WARNs while the reset endpoint is configured without it. **Must be `true` in any overlay that sets `AUTH0_PASSWORD_RESET_CLIENT_ID`** (see Password-reset enablement below). A refreshed token or `iat` is deliberately not accepted as evidence. |
+| `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` | `300` | How fresh that interactive authentication must be. Must be positive (validated at startup). |
 
 **Per-cluster configuration:**
 
@@ -264,10 +445,62 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | Auth0 unreachable, warm JWKS cache | Tokens still validate for up to 24 h; a WARN is logged per request. |
 | Auth0 unreachable, cold JWKS cache | **503** with `Retry-After: 10`. |
 | Invalid, expired, or wrongly-audienced token | **401**. |
+| Signed token with **no `exp`** claim, or a non-numeric one | **401** (`missing_exp` / `invalid_exp`). python-jose does not require `exp` by default; its `require_exp` option runs only after the JWKS lookup and lets `"exp": null` through, so the presence and type check is explicit and runs first. |
+| Signed token whose `sub` has leading/trailing whitespace (or is whitespace-only) | **401**. Identity keys are never rewritten; `owner_sub` comparisons stay exact. |
+| Token from a trusted issuer that is not the configured tenant | `GET /api/v1/me`: **200**, JWT-only profile, no Management call or enrichment. `PATCH`/`DELETE /api/v1/me`: **403**, no Management call. |
+| `POST /api/v1/me/password-reset` with `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true` and missing/stale/future `auth_time` | **403**, no ticket. |
 | Valid token, missing role | **403**. |
 | Valid token, missing required permission/scope | **403**. |
 | Management API (`PATCH`/`DELETE /api/v1/me`) rate-limited (429) through all retries | **503** with `Retry-After`. |
 | Management API 5xx or transport failure through all retries | **502**. |
+| Password reset unconfigured (`AUTH0_DOMAIN`, `AUTH0_PASSWORD_RESET_CLIENT_ID`, or Management credentials blank) | **503** `Password reset is unavailable`. |
+| Password-reset ticket 429 (Auth0 rate limit) | **503** with `Retry-After` set to Auth0's own `Retry-After` (rounded up, clamped to 30 s), or 10 s when it sends none; issuance is deliberately not retried (non-idempotent). |
+| Auth0 token endpoint 429 (any Management-backed route) | **503** with `Retry-After`, for the caller that hit it **and** every caller during the shared refresh cooldown. The cooldown lasts as long as the delay advertised (Auth0's `Retry-After` as above, never under the 5 s cooldown), so concurrent callers are all sent back at the same moment and none re-posts to the token endpoint before then. One token request per throttling event per pod. |
+| Password-reset ticket/token non-429 4xx, 5xx, transport, malformed or unsafe URL | **502** generic; upstream body is never logged or returned. |
+| Valid token, non-`auth0\|` sub, or issuer ≠ `https://AUTH0_DOMAIN/` | **403** `Password reset is unavailable for this account`. |
+
+**Password-reset enablement — merge-ready is not deploy-enabled.** Ticket issuance needs
+`AUTH0_DOMAIN`, `AUTH0_PASSWORD_RESET_CLIENT_ID` and both Management API credentials;
+any one blank is a 503. As of 2026-10-02 no overlay sets the reset client ID or the
+Management credentials (no `api.env` entry, no `SealedSecret` key, no `secretKeyRef`), so
+issuance is off in every cluster. That is the **only** condition under which the `false`
+default of `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` is acceptable (D-12 in
+`docs/auth0-p2-decisions.md`). Enabling issuance in any overlay requires, in the same
+change:
+
+1. `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true` in that overlay's `api.env`. Setting the
+   client ID without it is a **deployment blocker**: the startup WARN is a backstop, not
+   an approval, and `kustomize/README-config.md` checklist step 6 fails on it.
+2. A Post-Login Action that stamps the user's last interactive authentication time onto
+   the **access token** under the claim `AUTH0_AUTH_TIME_CLAIM` names.
+   `auth0/actions/post-login.js` does not do this today. If the tenant will not set a
+   reserved OIDC claim name on access tokens, stamp a namespaced claim and point
+   `AUTH0_AUTH_TIME_CLAIM` at it.
+3. A tested interactive re-authentication step in whatever client calls the endpoint
+   (force a fresh sign-in, e.g. `max_age`/`prompt=login`, immediately before requesting a
+   ticket). A silently refreshed access token has a new `iat` but no new sign-in: `iat`
+   is never accepted as evidence, so without this step every reset is a 403.
+4. The Management M2M application authorized for `create:user_tickets`, with its
+   credentials delivered through the sealed secret (`kustomize/README-config.md` → "Adding
+   a new secret"), and the SPA's client ID in `api.env`.
+
+**Known limitation: custom domains.** Issuance works only for tokens whose issuer is exactly
+`https://{AUTH0_DOMAIN}/`, and only accepts a returned ticket URL whose host is exactly
+`AUTH0_DOMAIN`. A tenant served under an Auth0 custom domain (tokens issued by the custom
+domain, `AUTH0_ISSUER` set to it, `AUTH0_DOMAIN` left as the canonical tenant domain the
+Management API needs) therefore gets **403** for every caller, or **502** if Auth0 returns the
+ticket on the custom host. This is deliberate (`reset_my_password` in `users/router.py`
+keeps the stricter domain-only rule instead of `_configured_tenant_issuers`), and harmless
+while issuance is off everywhere. Before enabling reset on a custom-domain tenant, decide
+which issuer and ticket host are acceptable and change both checks together.
+
+**Enablement gate (separate from merging, run in an approved environment before
+exposing the capability or any UI that calls it):** decode a live access token and confirm
+the claim is present and current after an interactive sign-in and unchanged after a silent
+refresh; confirm the endpoint returns 403 without fresh evidence; redeem one ticket end to
+end on a test account. No live account mutation is authorized by merging. The profile
+page's existing "Send Password Reset Link" calls Auth0's public
+`/dbconnections/change_password` email flow, not this endpoint, and is unaffected.
 
 **Anonymous `POST /simulations/run` (P1 #9 Option B).** This endpoint stays
 reachable without a bearer token, paired with the workflow rate limiter
@@ -278,15 +511,82 @@ and frontend-originated runs persist `owner_sub = NULL` until the frontend
 attaches tokens. This is an explicit product decision, not an omission.
 Revisit when the frontend sends bearer tokens (that is the gate for Option A).
 
-The frontend does **not** call `POST /verify/omex` or `POST /verify/runs`;
-those two endpoints require authentication. **`GET /verify/{workflow_id}`
-also requires an access token** (breaking change for anonymous Swagger/poll
-clients). When the workflow payload includes `owner_sub` (set from the
-starter's token on POST), GET is owner-or-admin; in-flight Temporal histories
-with `owner_sub` unset remain readable by any authenticated caller. External
-consumers of `/verify/*` must send a bearer token. No inventory of those
-consumers exists in this repository — treat that as an operational follow-up
-before advertising the gated contract as a breaking API change.
+**Anonymous `/verify/*` (legacy API).** The verification endpoints serve the
+legacy API, which has no authentication, so all of them work without a token.
+The pattern is the same as `POST /simulations/run`, using `get_optional_user`:
+
+- `POST /verify/omex` and `POST /verify/runs` accept anonymous callers. With no
+  token the verification is **ownerless** (`owner_sub = NULL`; an uploaded
+  archive is stored `visibility=public`). With a valid token the caller's `sub`
+  is persisted as `owner_sub` (archive `private`). Both are rate-limited by the
+  shared workflow budget (anonymous callers are keyed on client IP).
+- `GET /verify/{workflow_id}`: an ownerless verification is readable by
+  anyone. One started with a token stays owner-or-admin: **401** without a
+  token, **403** for another user.
+- A **present-but-invalid token is rejected with 401**, never downgraded to
+  anonymous. Omit the `Authorization` header entirely to call anonymously; in
+  Swagger, use *Authorize → Logout* to clear a stale token.
+- **Selection bounds.** One request is one workflow-start quota unit, so the
+  work it can buy is bounded (`MAX_VERIFY_*` in `biosim_verify/models.py`): at
+  most **10** `biosimulations_run_ids` and **10** `simulators` (more → **422**,
+  published as OpenAPI `maxItems`). Duplicate run IDs or simulator strings, and
+  two simulators that resolve to the same `id:version` (e.g. `copasi` and
+  `copasi:<latest>`), → **400**. The same limits apply to anonymous and
+  authenticated callers, and all of these are rejected before any storage
+  write, metadata lookup, ledger row or workflow start. Simulators are resolved
+  before the uploaded archive is stored, so a bad simulator costs no write.
+
+**Upload limits.** The OMEX cap is **100 MiB (104,857,600 bytes)**
+(`omex_storage.MAX_OMEX_BYTES`). Multipart bodies are bounded *while they are
+received* (`common/upload_limit.py`: the cap plus 64 KiB of framing) and
+rejected with **413** -- before authentication, rate limiting, or any handler
+runs, because FastAPI otherwise parses and spools the whole form first. A
+declared over-limit `Content-Length` is refused without reading the body; a
+missing or understated one cannot bypass the count. Spooled temp files are
+closed on rejection and on client disconnect. The file content is then
+re-checked exactly by `read_upload_capped`, and `archive_url` downloads are
+streamed against the same cap. Public ingresses additionally cap request bodies
+at `20m` (`proxy-body-size`). Internal worker/storage reads (local-file and raw
+helpers, worker archive reads) are not HTTP ingestion and are not covered.
+
+Both POST handlers persist a ledger row in `BiosimCompare` before starting the
+Temporal workflow. Temporal unavailable returns **503**, not 404. The frontend
+does not call `/verify/*`.
+
+**`GET /verification_ids`** is the listing endpoint for verification workflow
+IDs. Anonymous callers see only ownerless rows (null or missing `owner_sub`);
+authenticated callers see those rows plus their own. Administrators get no global
+listing bypass. Invalid credentials return 401 rather than anonymous access;
+authentication infrastructure failures retain the existing fail-closed behavior.
+Returns one bounded page at a time, newest first (`created` descending,
+`workflow_id` ascending): `{"verification_ids": [...], "next_cursor": ...}`.
+Successful responses carry `Cache-Control: private, no-store`.
+`limit` defaults to **100** and may not exceed **1000** (otherwise **422**).
+Pass a page's `next_cursor` back as `cursor` for the next, older page;
+`next_cursor` is `null` on the last page, and a malformed `cursor` is **400**.
+A cursor is unpadded base64url of `"<created ISO 8601>\n<workflow_id>"` --
+not JSON, whose escaping would make its length depend on the ID's content.
+The route accepts up to `VERIFICATION_CURSOR_MAX_LENGTH` (**1370**) characters:
+the token for a workflow ID at Temporal's 1000-byte ID limit
+(`MAX_WORKFLOW_ID_BYTES`), so every stored ID -- including any written before
+the prefix bound -- yields a cursor the route accepts. New IDs stay within that
+limit because `workflow_id_prefix` is capped at **200** characters
+(`WORKFLOW_ID_PREFIX_MAX_LENGTH`; more → **422**).
+Callers that want their visible history follow `next_cursor` with the same identity;
+restart pagination after login/logout. Each request applies visibility in Mongo before
+one projected `limit + 1` read, using the existing owner/sort indexes. Hidden rows do not
+supply cursor anchors or lookahead. Cursors are decodable positions, not credentials:
+replaying or forging one never widens the current caller's scope.
+Ownerless IDs/results remain public. Owned IDs can contain private caller-chosen prefixes
+and are listed only to their owners; result access remains owner-or-admin. Existing
+owned rows are protected without renaming IDs or backfilling data. Missing-owner rows
+remain public; do not infer ownership from their labels. Clients discovering their own
+private verifications must now authenticate. Before rollout, invalidate any deployed
+cache of the former all-rows listing if one exists: new headers cannot remove historical
+cached or scraped data. No live cache invalidation is implied by this code change.
+Keep logs limited to count/has-more, never IDs, subjects, raw cursors, or credentials.
+503 when the
+ledger service is unavailable.
 
 **Which token to send:** the Platform API is an OAuth resource server and
 accepts **access tokens** only. Do not send an OIDC ID token in
@@ -300,11 +600,13 @@ and compares the bearer token with `secrets.compare_digest` on UTF-8 bytes.
 ### Rate Limiting
 
 All values are **non-secret** and belong in each overlay's `api.env` ConfigMap. The limiter
-(`biosim_server/common/ratelimit.py`) is **per-pod, not global** -- `api` runs 3 replicas
-(`kustomize/base/api.yaml:8`) and there is no Redis or shared cache in this stack. Each pod
-enforces the configured number independently; the effective global ceiling is up to
-`replica_count` (currently 3) times the configured per-pod value if traffic distributes
-evenly. To target a global ceiling `G`, configure the per-pod value as `G / 3`.
+(`biosim_server/common/ratelimit.py`) is **per-pod, not global** -- there is no Redis or
+shared cache in this stack, so each pod enforces the configured number independently.
+`kustomize/base/api.yaml` declares 3 replicas, but every deployed overlay (`biosim-gke`,
+`biosim-rke`, `biosim-local`) overrides `api` to **1** (`overlays/<cluster>/kustomization.yaml`
+→ `replicas:`), so today each configured value **is** the cluster-wide ceiling. If an overlay
+runs `N` replicas, the effective ceiling becomes up to `N` times the value when traffic
+distributes evenly; to target a global ceiling `G`, configure `G / N`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -312,6 +614,12 @@ evenly. To target a global ceiling `G`, configure the per-pod value as `G / 3`.
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Fixed-window size in seconds. |
 | `RATE_LIMIT_AUTHENTICATED_PER_WINDOW` | `30` | Per-pod requests per window for a caller identified by a verified token's `sub`. |
 | `RATE_LIMIT_ANONYMOUS_PER_WINDOW` | `5` | Per-pod requests per window for a caller identified only by client IP. |
+| `RATE_LIMIT_PASSWORD_RESET_PER_WINDOW` | `5` | Per-pod requests per **password-reset** window, keyed by `(issuer, subject)`. Deliberately separate policy from the workflow ceilings so operators can tune a sensitive account action without changing simulation throughput. |
+| `RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS` | `300` | Fixed-window size for the password-reset budget. |
+| `RATE_LIMIT_PAGE_PER_WINDOW` | `60` | Per-pod requests per page window for the two public page aggregations, keyed by client IP. More generous than a workflow start because browsing is the ordinary reading path — it still bounds the 3-4-call upstream fan-out. |
+| `RATE_LIMIT_PAGE_WINDOW_SECONDS` | `60` | Fixed-window size for the page-aggregation budget. |
+| `RATE_LIMIT_LEGACY_PER_WINDOW` | `60` | Provisional shared legacy proxy budget per client IP per process; strictly positive. |
+| `RATE_LIMIT_LEGACY_WINDOW_SECONDS` | `60` | Independent legacy fixed-window size in seconds; strictly positive. |
 
 Protects `POST /verify/omex`, `POST /verify/runs`, and `POST /simulations/run` -- the three
 endpoints that start a Temporal workflow. All three share ONE budget per caller identity, not
@@ -320,6 +628,46 @@ three separate ones.
 `POST /compatibility/check` stays unauthenticated (run wizard) but is rate-limited with a
 **separate** `compat:` bucket so it cannot starve workflow starts. `archive_url` is restricted
 to http/https hosts that resolve to public addresses (SSRF).
+
+`POST /api/v1/me/password-reset` has its own `password-reset:` bucket with its own
+ceiling/window (`RATE_LIMIT_PASSWORD_RESET_*`) and a `(issuer, subject)` key, so it can
+neither consume nor be consumed by workflow starts, and a same-named subject from a second
+trusted issuer cannot burn another principal's quota before the route's issuer eligibility
+check rejects it. Quota is charged before eligibility, so a denied principal cannot hammer
+the 403 branch unbounded.
+
+`GET /projects/{id}/page` and `GET /runs/{id}/page` share ONE `pages:` bucket keyed on
+client IP alone (`page_rate_limit`), with their own ceiling/window (`RATE_LIMIT_PAGE_*`).
+Keying on IP even when a bearer token is presented is deliberate: those routes are public
+by design, so a caller must not be able to raise the ceiling or reset an exhausted bucket
+by rotating tokens. A denied request never reaches upstream.
+
+The six transparent legacy runs proxy operations (`/runs/summary`, `/runs/{id}` GET/PATCH/
+DELETE, `/runs/{id}/download`, `/runs/{id}/validate`) share ONE `legacy:` budget keyed
+only by client IP, using `legacy_rate_limit`. Caller credentials remain opaque to Platform
+and are forwarded for upstream authorization; token rotation never restores quota.
+The budget is independent of pages, workflow starts, compatibility checks and password
+resets. Each admitted request costs one unit even if later proxy work fails; range/resume
+requests count separately. A rejected request returns local **429 + Retry-After** before
+reading the PATCH body, claiming a download slot or sending upstream traffic. Active
+downloads continue. The independent download concurrency cap still returns **503**, and
+an admitted request may relay an upstream **429** and its Retry-After unchanged.
+
+If proxy and owned page/summary traffic share an egress IP and upstream throttling is
+IP-based, proxy abuse can impair those owned endpoints too. Separate pools, the 20 MiB
+PATCH cap, `UPSTREAM_MAX_RESPONSE_BYTES`, and `LEGACY_DOWNLOAD_MAX_CONCURRENT` do not bound
+request rate or isolate upstream IP reputation. This limiter reduces that risk without
+guaranteeing upstream availability; deployment egress and upstream policy need operational
+verification. The 60 requests/60 seconds defaults are provisional, independently tunable
+via `RATE_LIMIT_LEGACY_*`, not a measured upstream capacity. Shared NAT users share quota.
+Counters are process-local: replicas/workers multiply the possible allowance, restarts
+reset it, and fixed windows allow bursts at boundaries. Distributed abuse remains possible.
+
+Observe local 429s in request/access logs and limiter warnings, alongside upstream
+429/5xx/timeouts and owned page/summary failures. Denials never enter `proxy_run`, so its
+transfer log does not record them. Avoid logging credentials, raw identity keys or query
+strings. Prefer tuning the legacy settings over `RATE_LIMIT_ENABLED=false`, which disables
+all budgets and is not a legacy-only rollback.
 
 **Failure mode on exhaustion:** `429 Too Many Requests` with a `Retry-After` header naming
 the number of seconds until the current window rolls over.

@@ -1,5 +1,6 @@
 """FastAPI router for OMEX compatibility checking."""
 
+import asyncio
 import hashlib
 import ipaddress
 import logging
@@ -10,7 +11,7 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
-from biosim_server.biosim_omex.omex_storage import get_cached_omex_file_from_raw
+from biosim_server.biosim_omex.omex_storage import MAX_OMEX_BYTES, get_cached_omex_file_from_raw, read_upload_capped
 from biosim_server.common.ratelimit import compatibility_rate_limit
 from biosim_server.compatibility.models import CompatibilityResponse
 from biosim_server.compatibility.omex_parser import parse_omex_content
@@ -22,6 +23,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/compatibility", tags=["Compatibility"])
 
 _MAX_ARCHIVE_REDIRECTS = 5
+_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+def _archive_too_large() -> HTTPException:
+    return HTTPException(
+        status_code=413,
+        detail=f"OMEX archive exceeds the {MAX_OMEX_BYTES // (1024 * 1024)} MiB limit",
+    )
 
 
 def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -37,11 +46,15 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
     )
 
 
-def assert_archive_url_safe(url: str) -> None:
+async def assert_archive_url_safe(url: str) -> None:
     """Reject ``archive_url`` values that could be used for SSRF.
 
     Allows only http/https, no userinfo, and a host that resolves exclusively
     to public unicast addresses (no loopback, RFC1918, link-local/metadata).
+
+    ``getaddrinfo`` is a blocking syscall that can take seconds on a slow or
+    unreachable resolver, so it runs in a worker thread -- otherwise one
+    hostile ``archive_url`` stalls the whole event loop.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -53,7 +66,7 @@ def assert_archive_url_safe(url: str) -> None:
         raise HTTPException(status_code=400, detail="archive_url is missing a host")
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
-        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        infos = await asyncio.to_thread(socket.getaddrinfo, hostname, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise HTTPException(status_code=400, detail="archive_url host could not be resolved") from exc
     if not infos:
@@ -72,7 +85,7 @@ async def _download_archive(url: str) -> bytes:
     timeout = aiohttp.ClientTimeout(total=30)
     async with aiohttp.ClientSession() as session:
         for _ in range(_MAX_ARCHIVE_REDIRECTS + 1):
-            assert_archive_url_safe(current)
+            await assert_archive_url_safe(current)
             try:
                 async with session.get(
                     current, timeout=timeout, allow_redirects=False
@@ -91,7 +104,20 @@ async def _download_archive(url: str) -> bytes:
                             status_code=400,
                             detail=f"Failed to download archive from URL: HTTP {resp.status}",
                         )
-                    return await resp.read()
+                    # Reject an oversized body up front when the server declares
+                    # its size, then stream with a hard cap for the lying/absent
+                    # Content-Length case -- `resp.read()` would buffer it all.
+                    declared = resp.headers.get("Content-Length")
+                    if declared is not None and declared.isdigit() and int(declared) > MAX_OMEX_BYTES:
+                        raise _archive_too_large()
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_BYTES):
+                        total += len(chunk)
+                        if total > MAX_OMEX_BYTES:
+                            raise _archive_too_large()
+                        chunks.append(chunk)
+                    return b"".join(chunks)
             except HTTPException:
                 raise
             except aiohttp.ClientError as e:
@@ -123,7 +149,9 @@ async def check_compatibility(
     # Get file content from upload or URL
     if uploaded_file is not None:
         try:
-            file_content = await uploaded_file.read()
+            file_content = await read_upload_capped(uploaded_file)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to read uploaded file: {e}")
     elif archive_url is not None:

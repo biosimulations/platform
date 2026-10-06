@@ -25,8 +25,14 @@ The Platform API is an OAuth 2.0 **resource server**. It validates **access toke
 2. An RS256 signature matching a key from the configured JWKS URL for that token's issuer.
 3. `iss` matching a configured issuer.
 4. `aud` matching an audience **explicitly allowed for that same issuer**.
-5. A non-empty string `sub`.
-6. `exp` / `nbf` within a 60-second clock-skew leeway.
+5. A non-empty string `sub` with no surrounding whitespace. The accepted string is
+   preserved byte-for-byte: it is an identity key (`owner_sub`), so a value that
+   whitespace normalization would rewrite is rejected rather than repaired.
+6. An **`exp` claim that is present** and, together with `nbf`, within a 60-second
+   clock-skew leeway. python-jose treats a missing `exp` as "no expiry to check",
+   so the presence requirement is enforced explicitly (`missing_exp`); a
+   non-numeric value is `invalid_exp`. A signed token with no bounded lifetime is
+   not a usable credential.
 
 An ID token fails step 4: its `aud` is the application client id, not `AUTH0_AUDIENCE` / the issuer's configured API identifier. That rejection is the intended control, not an accident.
 
@@ -101,7 +107,7 @@ issuer's JWKS. A failure is HTTP **401**.
 | --- | --- | --- |
 | `iss` | JWT | Must equal the configured issuer (`AUTH0_ISSUER`, or `https://{AUTH0_DOMAIN}/`, or an `AUTH0_TRUSTED_ISSUERS` map key). Unknown issuers are rejected **before** any JWKS fetch. |
 | `aud` | JWT | Must include an audience allowed **for that issuer**. Missing `aud` is rejected. An audience configured for issuer B is not valid on a token from issuer A. |
-| `exp` | JWT | Must not be in the past (60s leeway). |
+| `exp` | JWT | **Required.** Must be a NumericDate and not in the past (60s leeway). Missing/null → 401 `missing_exp`; non-numeric → 401 `invalid_exp`. |
 | `nbf` | JWT | If present, must not be in the future (60s leeway). |
 | `alg` (header) | JWT header | Allowlist is the module constant `_ALLOWED_ALGORITHMS = ("RS256",)` — not configurable. `alg:none` and HS256 are rejected. |
 | `kid` (header) | JWT header | Must match an RSA key in that issuer's JWKS. Unknown kids trigger one cooldown-guarded refresh, then 401. |
@@ -133,9 +139,10 @@ tokens.
 
 | Claim | Config | Used for |
 | --- | --- | --- |
-| `sub` | standard | Stable user id. Required. Persisted as `owner_sub` on simulation runs. Primary ownership key (`roles.is_owner`). |
+| `sub` | standard | Stable user id. Required, and accepted exactly as sent: a padded or whitespace-only value is rejected (401), never trimmed into a different identity. Persisted as `owner_sub` on simulation runs. Primary ownership key (`roles.is_owner`). |
 | `https://api.biosimulations.org/email` | `AUTH0_EMAIL_CLAIM` | Email. Fallback: plain `email` (Keycloak test tokens). Informational on `/api/v1/me`; **authorization** only via the verified-email ownership fallback. |
 | `https://api.biosimulations.org/email_verified` | `AUTH0_EMAIL_VERIFIED_CLAIM` | Whether that email is verified. Fallback: plain `email_verified`. Missing → `False` (fail closed). A legacy run without `owner_sub` is owned only when this is true **and** the emails match. |
+| `auth_time` | `AUTH0_AUTH_TIME_CLAIM` (default `auth_time`) | Optional. The end-user's last **interactive** authentication time (OIDC `auth_time`), read into `AuthenticatedUser.auth_time`. Absent or malformed (including non-finite `1e309`/`Infinity`/`NaN`) → `None`. Used only by the password-reset step-up gate (below), never as an authorization input. |
 
 These namespaced claims are stamped onto the **access token** by
 `auth0/actions/post-login.js`. They are not present on Auth0 access tokens by default.
@@ -176,6 +183,10 @@ Empty lists fail closed. Missing permissions on the token fail closed.
 
 `/api/v1/me` may enrich `name` / `email_verified` from the Auth0 Management API when
 configured. That enrichment is **not** an authorization input.
+`POST /api/v1/me/password-reset` uses the same Management API client to issue a hosted
+password-change ticket. The returned URL is a bearer capability: it is returned with
+`Cache-Control: no-store`, and the browser must navigate to it directly (never fetch it
+with the application's `Authorization` header).
 
 ---
 
@@ -194,12 +205,14 @@ return 401.
 | `GET /simulations/{id}/results`, `/logs` | `get_optional_user` | `authorize_resource_access`: public/legacy readable; private owner-only. **No admin bypass** on private. | `sub` vs `owner_sub` |
 | `POST /simulations/{id}/cancel` | `get_current_user` | Private: owner-only (no admin bypass). Public: `require_owner_or_admin` (admin may cancel a public run). | `sub` / verified email vs `owner_sub` |
 | `DELETE /simulations/{id}` | `get_current_user` | `require_roles(admin, publisher)` first, then the same mutation rule as cancel: private is owner-only (admin non-owner **denied**). | roles, then `sub` / verified email vs `owner_sub` |
-| `POST /verify/omex`, `POST /verify/runs` | `get_current_user` | any valid access token; OMEX verify stamps `owner=sub` and `visibility=private`. Query-param `owner=` is ignored. | `sub` |
-| `GET /verify/{workflow_id}` | `get_current_user` | owner-or-admin when `owner_sub` is set; any authenticated caller for legacy payloads with `owner_sub` unset. **Breaking:** anonymous pollers receive 401. | `sub` |
+| `POST /verify/omex`, `POST /verify/runs` | `get_optional_user` | anonymous allowed (legacy API): ownerless verification, OMEX stored `visibility=public`. A valid token stamps `owner_sub=sub` (OMEX `owner=sub`, `visibility=private`); an invalid token is 401, never anonymous. Query-param `owner=` is ignored. Persists a ledger row in `BiosimCompare` before starting the Temporal workflow. | `sub` if present |
+| `GET /verify/{workflow_id}` | `get_optional_user` | ownerless (anonymous/legacy) verifications are public; owned ones are owner-or-admin (anonymous → 401, other user → 403). Temporal unavailable → 503 (not 404). | `sub` if present |
+| `GET /verification_ids` | `get_optional_user` | Anonymous: ownerless IDs only. Authenticated: ownerless plus own IDs, with no administrator bypass. Invalid credentials fail closed. Visibility is applied before pagination (`limit` ≤ 1000, `cursor` / `next_cursor`); successful responses are `Cache-Control: private, no-store`. Keep the same identity across pages. Results retain their existing owner-or-admin/ownerless policy. | verified `sub` if present |
 | `GET /projects`, `GET /projects/stats` | none | public published search | n/a |
 | `POST /projects/reindex` | shared secret, **not** Auth0 | `PROJECT_REINDEX_TOKEN` | n/a |
 | `GET /api/v1/me` | `get_current_user` | any valid access token | `sub`, namespaced email (display) |
 | `PATCH` / `DELETE /api/v1/me` | `get_current_user` | same, plus Management API configured | `sub` (Management API user id) |
+| `POST /api/v1/me/password-reset` | `get_current_user` | same, plus Management API configured and authorized for `create:user_tickets`; caller's `iss` must be exactly `https://AUTH0_DOMAIN/` and `sub` must be a primary `auth0\|<id>` database user; when `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true`, the token must also carry an `auth_time` no older than `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` (otherwise **403**) | `sub` only — caller-supplied email/user id/`result_url` are never forwarded; returns an Auth0-hosted ticket URL and sends no email |
 | `GET /api/v1/demo/private/me` | `get_current_user` | any valid access token | email or `sub` (gated by `ENABLE_RBAC_DEMO`) |
 | `GET /api/v1/demo/private/animal` | `get_current_user` | `require_roles(admin, publisher, user)` | namespaced **roles** |
 | `GET /api/v1/demo/private/permission` | `get_current_user` | `require_permissions("demo:read")` | **permissions** / `scope` |
@@ -265,3 +278,6 @@ Non-secret values belong in each overlay's `api.env`.
 | `AUTH0_EMAIL_CLAIM` | Default `https://api.biosimulations.org/email` |
 | `AUTH0_EMAIL_VERIFIED_CLAIM` | Default `https://api.biosimulations.org/email_verified` |
 | `AUTH0_PERMISSIONS_CLAIM` | Default `permissions` (Auth0 RBAC access-token claim) |
+| `AUTH0_AUTH_TIME_CLAIM` | Default `auth_time`; interactive-auth timestamp, used by the step-up gate |
+| `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH` | Default `false`. Require fresh `auth_time` evidence for `POST /api/v1/me/password-reset` |
+| `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` | Default `300`; how fresh that evidence must be |
