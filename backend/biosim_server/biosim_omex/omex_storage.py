@@ -6,7 +6,7 @@ from typing import Literal
 
 import aiofiles
 from aiofiles import open as aiofiles_open
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 
 from biosim_server.common.storage import FileService
 from biosim_server.config import get_settings
@@ -14,6 +14,50 @@ from biosim_server.biosim_omex import OmexDatabaseService
 from biosim_server.biosim_omex.models import OmexFile
 
 logger = logging.getLogger(__name__)
+
+# OMEX archives are parsed in memory (zipfile), so every caller-reachable HTTP
+# ingestion path is capped: multipart uploads are bounded while received
+# (common/upload_limit.py, this cap plus framing) and their content re-checked
+# exactly by read_upload_capped; `archive_url` downloads are streamed against
+# the same cap. Internal local/raw helpers below are not HTTP ingestion and are
+# not capped. 100 MiB (104,857,600 bytes) is far above any real archive and well
+# inside a pod's memory budget; a hostile caller must not be able to OOM the
+# process.
+MAX_OMEX_MB = 100  # MiB (1024 * 1024 bytes), despite the historical name
+MAX_OMEX_BYTES = MAX_OMEX_MB * 1024 * 1024
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+async def read_upload_capped(uploaded_file: UploadFile, *, max_bytes: int | None = None) -> bytes:
+    """Read an OMEX upload, aborting as soon as it passes ``max_bytes``.
+
+    Reads in chunks rather than ``await uploaded_file.read()`` so an oversized
+    body is rejected mid-stream instead of after the whole thing is resident.
+    ``max_bytes`` defaults to the module-level cap (resolved at call time, so
+    tests and deployments can move the single knob).
+    """
+    limit = MAX_OMEX_BYTES if max_bytes is None else max_bytes
+    limit_mb = max(limit // (1024 * 1024), 1)
+    declared = uploaded_file.size
+    if declared is not None and declared > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Uploaded OMEX archive exceeds the {limit_mb} MiB limit",
+        )
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await uploaded_file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Uploaded OMEX archive exceeds the {limit_mb} MiB limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _visibility_for_owner(owner: str | None) -> Literal["public", "private"]:
@@ -41,7 +85,7 @@ async def get_cached_omex_file_from_upload(
     *,
     owner: str | None = None,
 ) -> OmexFile:
-    contents = await uploaded_file.read()
+    contents = await read_upload_capped(uploaded_file)
     return await get_cached_omex_file_from_raw(
         file_service, omex_database, contents, uploaded_file.filename, owner=owner
     )

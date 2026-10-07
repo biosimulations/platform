@@ -38,7 +38,7 @@ async function submitForgotPassword() {
       },
     })
   } finally {
-    // Always show the same generic message — don't reveal whether the email exists
+    // Always show the same generic message - don't reveal whether the email exists
     forgotStatus.value = 'sent'
   }
 }

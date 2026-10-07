@@ -7,13 +7,17 @@ interface Props {
   accept?: string;
   supportedExtensions?: string[];
   submitLabel?: string;
+  dropLabel?: string;
+  initialUrl?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isLoading: false,
   accept: '*',
   supportedExtensions: () => [],
-  submitLabel: 'Validate'
+  submitLabel: 'Validate',
+  dropLabel: 'Drop file here',
+  initialUrl: ''
 });
 
 const emit = defineEmits<{
@@ -21,9 +25,9 @@ const emit = defineEmits<{
   (e: 'reset'): void;
 }>();
 
-const mode = ref<'file' | 'url'>('file');
+const mode = ref<'file' | 'url'>(props.initialUrl ? 'url' : 'file');
 const selectedFile = ref<File | null>(null);
-const inputUrl = ref('');
+const inputUrl = ref(props.initialUrl || '');
 const urlError = ref<string | null>(null);
 
 const inputModes: TabsItem[] = [
@@ -41,7 +45,7 @@ const canSubmit = computed(() => {
 
 function validateUrl(val: string): boolean {
   if (!val.trim()) {
-    urlError.value = 'Please provide a model URL.';
+    urlError.value = 'Please provide a valid URL.';
     return false;
   }
   try {
@@ -61,6 +65,13 @@ function validateUrl(val: string): boolean {
 watch(inputUrl, (val) => {
   if (urlError.value && val) {
     validateUrl(val);
+  }
+});
+
+watch(() => props.initialUrl, (newVal) => {
+  if (newVal) {
+    inputUrl.value = newVal;
+    mode.value = 'url';
   }
 });
 
@@ -121,7 +132,7 @@ function handleReset() {
           :accept="accept"
           layout="list"
           icon="i-lucide-upload-cloud"
-          label="Drop model file here"
+          :label="dropLabel"
           class="w-full min-h-40"
           :disabled="isLoading"
         >

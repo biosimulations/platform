@@ -45,15 +45,9 @@ const categories: FooterColumnCategory[] = [
         icon: 'i-lucide-lightbulb'
       },
       {
-        label: 'Validate a Simulator',
-        to: '/simulators/validate',
-        icon: 'i-lucide-check-circle'
-      },
-      {
-        label: 'Verify a Model',
-        to: '/utilities/verify-model',
-        icon: 'i-lucide-shield-check',
-        badge: 'New'
+        label: 'Platform Utilities',
+        to: '/utilities',
+        icon: 'i-lucide-wrench'
       }
     ]
   },
@@ -86,22 +80,12 @@ const categories: FooterColumnCategory[] = [
         external: true,
         badge: 'New'
       },
-      /*{
-        label: 'Validate a Model',
-        to: '/utilities/validate-model',
-        icon: 'i-lucide-file-check'
-      },
-      {
-        label: 'Describe Visualizations',
-        to: '/utilities/describe-visualizations',
-        icon: 'i-lucide-pie-chart'
-      },
       {
         label: 'GitHub Code Repository',
         to: 'https://github.com/biosimulations/biosimulations',
         icon: 'i-simple-icons-github',
         external: true
-      }*/
+      }
     ]
   },
   {

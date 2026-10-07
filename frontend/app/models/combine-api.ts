@@ -117,3 +117,98 @@ export const MODEL_LANGUAGE_OPTIONS: ModelLanguageOption[] = [
     docsUrl: 'https://www.math.pitt.edu/~bard/xpp/xpp.html'
   }
 ];
+
+export interface FormatOption {
+  name: string;
+  description: string;
+  extensions: string[];
+  accept: string;
+  docsUrl?: string;
+}
+
+export const SEDML_FORMAT_OPTION: FormatOption = {
+  name: 'SED-ML (Simulation Experiment Description Markup Language)',
+  description: 'Simulation Experiment Description Markup Language (SED-ML) defines models, simulation algorithms, tasks, outputs, and data generators.',
+  extensions: ['.sedml', '.xml'],
+  accept: '.sedml,.xml,text/xml,application/xml',
+  docsUrl: 'https://sed-ml.org/'
+};
+
+export type OmexMetadataInputFormat = 'rdfxml' | 'turtle' | 'ntriples' | 'nquads' | 'rdfa';
+
+export type OmexMetadataSchema = 'BioSimulations' | 'rdf_triples';
+
+export interface OmexMetadataFormatOption {
+  id: OmexMetadataInputFormat;
+  name: string;
+  description: string;
+  extensions: string[];
+  accept: string;
+  docsUrl?: string;
+}
+
+export const OMEX_METADATA_FORMAT_OPTIONS: OmexMetadataFormatOption[] = [
+  {
+    id: 'rdfxml',
+    name: 'RDF/XML',
+    description: 'XML serialization of RDF graphs. Standard format required for publishing project metadata to BioSimulations.',
+    extensions: ['.xml', '.rdf', '.rdfxml'],
+    accept: '.xml,.rdf,.rdfxml,text/xml,application/rdf+xml,application/xml',
+    docsUrl: 'https://www.w3.org/TR/rdf-syntax-grammar/'
+  },
+  {
+    id: 'turtle',
+    name: 'Turtle (Terse RDF Triple Language)',
+    description: 'Compact, human-readable textual syntax for RDF graphs commonly used in semantic web tools.',
+    extensions: ['.ttl'],
+    accept: '.ttl,text/turtle',
+    docsUrl: 'https://www.w3.org/TR/turtle/'
+  },
+  {
+    id: 'ntriples',
+    name: 'N-Triples',
+    description: 'Line-based, plain text serialization format for RDF triples.',
+    extensions: ['.nt'],
+    accept: '.nt,application/n-triples,text/plain',
+    docsUrl: 'https://www.w3.org/TR/n-triples/'
+  },
+  {
+    id: 'nquads',
+    name: 'N-Quads',
+    description: 'Line-based format extending N-Triples to support RDF datasets with named graphs.',
+    extensions: ['.nq'],
+    accept: '.nq,application/n-quads,text/plain',
+    docsUrl: 'https://www.w3.org/TR/n-quads/'
+  },
+  {
+    id: 'rdfa',
+    name: 'RDFa (RDF in Attributes)',
+    description: 'W3C Recommendation for embedding structured metadata attributes within HTML/XML documents.',
+    extensions: ['.html', '.xhtml', '.xml'],
+    accept: '.html,.xhtml,.xml,text/html,application/xhtml+xml',
+    docsUrl: 'https://www.w3.org/TR/rdfa-core/'
+  }
+];
+
+export interface OmexMetadataSchemaOption {
+  id: OmexMetadataSchema;
+  name: string;
+  description: string;
+  docsUrl?: string;
+}
+
+export const OMEX_METADATA_SCHEMA_OPTIONS: OmexMetadataSchemaOption[] = [
+  {
+    id: 'BioSimulations',
+    name: 'BioSimulations Schema (Recommended)',
+    description: 'Enforces BioSimulations metadata conventions and minimal required properties (title, creators, description, license) required for publishing projects.',
+    docsUrl: 'https://docs.biosimulations.org/concepts/conventions/simulation-project-metadata/'
+  },
+  {
+    id: 'rdf_triples',
+    name: 'RDF Triples (General Semantic)',
+    description: 'Validates general RDF syntax and graph structure, allowing arbitrary semantic triples without domain-specific schema restrictions.',
+    docsUrl: 'https://www.w3.org/RDF/'
+  }
+];
+
