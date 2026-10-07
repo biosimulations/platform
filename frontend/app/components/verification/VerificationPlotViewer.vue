@@ -308,16 +308,16 @@ const residualLayout = computed(() => {
 </script>
 
 <template>
-  <div class="w-full bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-5 shadow-sm">
+  <div class="w-full bg-white border border-neutral-200 rounded-xl p-5 shadow-sm">
     <!-- Header with Variable Selection & View Controls -->
-    <div class="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 pb-4 mb-4 border-b border-neutral-100 dark:border-neutral-800">
+    <div class="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 pb-4 mb-4 border-b border-neutral-100">
       <div>
-        <h3 class="text-base font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+        <h3 class="text-base font-semibold text-neutral-900 flex items-center gap-2">
           <UIcon name="i-lucide-activity" class="size-4 text-primary" />
           Multi-Solution Trajectory Viewer
         </h3>
         <p class="text-xs text-neutral-500 mt-0.5">
-          Inspect, overlay, and compute residuals across simulator solutions for dataset <code class="font-mono text-[11px] bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded">{{ datasetName }}</code>.
+          Inspect, overlay, and compute residuals across simulator solutions for dataset <code class="font-mono text-[11px] bg-neutral-100 px-1 py-0.5 rounded">{{ datasetName }}</code>.
         </p>
       </div>
 
@@ -335,7 +335,7 @@ const residualLayout = computed(() => {
         </div>
 
         <!-- View Mode Buttons -->
-        <div class="flex items-center rounded-lg border border-neutral-200 dark:border-neutral-700 p-0.5 bg-neutral-50 dark:bg-neutral-800">
+        <div class="flex items-center rounded-lg border border-neutral-200 p-0.5 bg-neutral-50">
           <UButton
             size="xs"
             :variant="viewMode === 'overlay' ? 'solid' : 'ghost'"
@@ -395,7 +395,7 @@ const residualLayout = computed(() => {
 
     <!-- View Mode 1: Overlay -->
     <div v-else-if="viewMode === 'overlay'" class="w-full">
-      <div class="h-[440px] w-full border border-neutral-100 dark:border-neutral-800 rounded-lg p-2 bg-neutral-50/50 dark:bg-neutral-900/50">
+      <div class="h-[440px] w-full border border-neutral-100 rounded-lg p-2 bg-neutral-50/50">
         <ClientOnly>
           <PlotlyChart
             :data="overlayData"
@@ -412,10 +412,10 @@ const residualLayout = computed(() => {
         <div
           v-for="card in tiledCards"
           :key="card.runId"
-          class="border border-neutral-200 dark:border-neutral-800 rounded-lg p-3 bg-white dark:bg-neutral-900 shadow-xs flex flex-col"
+          class="border border-neutral-200 rounded-lg p-3 bg-white shadow-xs flex flex-col"
         >
-          <div class="flex items-center justify-between pb-2 mb-2 border-b border-neutral-100 dark:border-neutral-800">
-            <span class="text-xs font-semibold text-neutral-800 dark:text-neutral-200 truncate" :title="card.label">
+          <div class="flex items-center justify-between pb-2 mb-2 border-b border-neutral-100">
+            <span class="text-xs font-semibold text-neutral-800 truncate" :title="card.label">
               {{ card.label }}
             </span>
             <span class="size-2.5 rounded-full shrink-0" :style="{ backgroundColor: card.color }" />
@@ -432,10 +432,10 @@ const residualLayout = computed(() => {
           </div>
 
           <!-- Quick Metrics -->
-          <div class="mt-2 pt-2 border-t border-neutral-100 dark:border-neutral-800 grid grid-cols-3 text-[10px] text-neutral-500 font-mono">
-            <div>Min: <span class="font-semibold text-neutral-700 dark:text-neutral-300">{{ card.minVal !== null ? card.minVal.toFixed(3) : '—' }}</span></div>
-            <div>Max: <span class="font-semibold text-neutral-700 dark:text-neutral-300">{{ card.maxVal !== null ? card.maxVal.toFixed(3) : '—' }}</span></div>
-            <div>End: <span class="font-semibold text-neutral-700 dark:text-neutral-300">{{ card.finalVal !== null ? card.finalVal.toFixed(3) : '—' }}</span></div>
+          <div class="mt-2 pt-2 border-t border-neutral-100 grid grid-cols-3 text-[10px] text-neutral-500 font-mono">
+            <div>Min: <span class="font-semibold text-neutral-700">{{ card.minVal !== null ? card.minVal.toFixed(3) : '—' }}</span></div>
+            <div>Max: <span class="font-semibold text-neutral-700">{{ card.maxVal !== null ? card.maxVal.toFixed(3) : '—' }}</span></div>
+            <div>End: <span class="font-semibold text-neutral-700">{{ card.finalVal !== null ? card.finalVal.toFixed(3) : '—' }}</span></div>
           </div>
         </div>
       </div>
@@ -444,7 +444,7 @@ const residualLayout = computed(() => {
     <!-- View Mode 3: Residual / Difference View -->
     <div v-else-if="viewMode === 'residual'" class="w-full">
       <!-- Pair Selector & Difference Type -->
-      <div class="flex flex-wrap items-center justify-between gap-3 mb-4 p-3 bg-neutral-50 dark:bg-neutral-800/60 rounded-lg text-xs">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4 p-3 bg-neutral-50 rounded-lg text-xs">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-neutral-500 font-medium">Compare Pair:</span>
           <div class="w-44">
@@ -487,7 +487,7 @@ const residualLayout = computed(() => {
         </div>
       </div>
 
-      <div class="h-[400px] w-full border border-neutral-100 dark:border-neutral-800 rounded-lg p-2 bg-neutral-50/50 dark:bg-neutral-900/50">
+      <div class="h-[400px] w-full border border-neutral-100 rounded-lg p-2 bg-neutral-50/50">
         <ClientOnly>
           <PlotlyChart
             :data="residualData"
@@ -498,16 +498,16 @@ const residualLayout = computed(() => {
       </div>
 
       <!-- Difference Stats Summary -->
-      <div class="mt-3 p-3 bg-neutral-50 dark:bg-neutral-800 rounded-lg flex items-center justify-around text-xs">
+      <div class="mt-3 p-3 bg-neutral-50 rounded-lg flex items-center justify-around text-xs">
         <div>
           <span class="text-neutral-400 mr-1.5">Max Discrepancy (&Delta;<sub>max</sub>):</span>
-          <span class="font-mono font-bold text-neutral-800 dark:text-neutral-200">
+          <span class="font-mono font-bold text-neutral-800">
             {{ residualStats.maxDiff.toExponential(4) }}
           </span>
         </div>
         <div>
           <span class="text-neutral-400 mr-1.5">Mean Discrepancy:</span>
-          <span class="font-mono font-bold text-neutral-800 dark:text-neutral-200">
+          <span class="font-mono font-bold text-neutral-800">
             {{ residualStats.meanDiff.toExponential(4) }}
           </span>
         </div>

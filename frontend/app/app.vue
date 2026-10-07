@@ -274,7 +274,18 @@ const navigation_items = ref<NavigationMenuItem[][]>([
 const lenisOptions = {
   // autoRaf: false,
   // lenis options (optional)
-  prevent: (node: any) => !!node.closest('.lenis-prevent')
+  allowNestedScroll: true,
+  prevent: (node: Element) => {
+    if (!node || typeof node.closest !== 'function') return false
+    return Boolean(
+      node.closest('.lenis-prevent')
+      || node.closest('[data-lenis-prevent]')
+      || node.closest('[role="dialog"]')
+      || node.closest('[role="alertdialog"]')
+      || node.closest('[data-reka-dialog-content]')
+      || node.closest('[data-reka-portal]')
+    )
+  }
 }
 
 onMounted(() => {

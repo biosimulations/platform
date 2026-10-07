@@ -163,3 +163,15 @@ export interface CompatibilityResponse {
   omex_content: OmexContent
   eligible_simulators: EligibleSimulator[]
 }
+
+export interface VerificationRecord {
+  omex_hash: string
+  run_ids: string[]
+}
+
+export interface VerificationIdsResponse {
+  verification_ids?: string[]
+  verification_records?: VerificationRecord[]
+  records?: VerificationRecord[]
+  next_cursor?: string | null
+}

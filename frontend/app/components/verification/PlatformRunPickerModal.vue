@@ -89,17 +89,61 @@ function onSelectRun(run: any) {
   })
   isOpen.value = false
 }
+
+const isFullscreen = ref(false)
+
+watch(isOpen, (open) => {
+  if (!open) {
+    isFullscreen.value = false
+  }
+})
 </script>
 
 <template>
   <UModal
     v-model:open="isOpen"
-    title="Select OMEX Archive from Platform Runs"
-    description="Choose a completed simulation run to extract and evaluate its COMBINE/OMEX archive."
-    :ui="{ content: 'max-w-3xl' }"
+    :fullscreen="isFullscreen"
+    data-lenis-prevent
+    :ui="{
+      content: isFullscreen
+        ? 'w-screen h-dvh max-w-none max-h-none rounded-none flex flex-col lenis-prevent'
+        : 'max-w-3xl flex flex-col lenis-prevent',
+      body: 'p-4 flex-1 overflow-y-auto min-h-0 overscroll-contain lenis-prevent'
+    }"
   >
+    <template #header>
+      <div class="flex items-center justify-between w-full">
+        <div>
+          <h3 class="text-base font-semibold text-neutral-900">
+            Select OMEX Archive from Platform Runs
+          </h3>
+          <p class="text-xs text-neutral-500 mt-0.5">
+            Choose a completed simulation run to extract and evaluate its COMBINE/OMEX archive.
+          </p>
+        </div>
+        <div class="flex items-center gap-1 shrink-0">
+          <UButton
+            size="sm"
+            variant="ghost"
+            color="neutral"
+            :icon="isFullscreen ? 'i-lucide-minimize-2' : 'i-lucide-maximize-2'"
+            :title="isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'"
+            @click="isFullscreen = !isFullscreen"
+          />
+          <UButton
+            size="sm"
+            variant="ghost"
+            color="neutral"
+            icon="i-lucide-x"
+            title="Close"
+            @click="isOpen = false"
+          />
+        </div>
+      </div>
+    </template>
+
     <template #body>
-      <div class="space-y-4 p-4">
+      <div class="space-y-4" :class="{ 'flex flex-col flex-1 min-h-0': isFullscreen }">
         <!-- Search & Refresh -->
         <div class="flex items-center gap-2">
           <UInput
@@ -121,7 +165,10 @@ function onSelectRun(run: any) {
         </div>
 
         <!-- Runs List -->
-        <div class="border border-neutral-200 rounded-lg max-h-95 overflow-y-auto">
+        <div
+          class="border border-neutral-200 rounded-lg overflow-y-auto"
+          :class="isFullscreen ? 'flex-1 min-h-0' : 'max-h-95'"
+        >
           <UAlert
             v-if="fetchError"
             color="error"

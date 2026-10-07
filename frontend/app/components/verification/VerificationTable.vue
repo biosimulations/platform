@@ -94,14 +94,14 @@ function exportCsv() {
 </script>
 
 <template>
-  <div class="w-full bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-6 sm:p-7 shadow-sm">
+  <div class="w-full bg-white border border-neutral-200 rounded-xl p-6 sm:p-7 shadow-sm">
     <!-- Header with Title & Export -->
-    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-5 mb-5 border-b border-neutral-100 dark:border-neutral-800">
+    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-5 mb-5 border-b border-neutral-100">
       <div>
-        <h3 class="text-lg font-semibold text-neutral-900 dark:text-white flex items-center gap-2.5">
+        <h3 class="text-lg font-semibold text-neutral-900 flex items-center gap-2.5">
           <UIcon name="i-lucide-list-checks" class="size-5 text-primary shrink-0" />
           Observable Variables Concordance
-          <span v-if="pairLabel" class="text-xs font-normal text-neutral-500 bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 rounded-full ml-1">
+          <span v-if="pairLabel" class="text-xs font-normal text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full ml-1">
             {{ pairLabel }}
           </span>
         </h3>
@@ -176,41 +176,41 @@ function exportCsv() {
     </div>
 
     <!-- Table Container with generous spacing -->
-    <div class="overflow-x-auto border border-neutral-200 dark:border-neutral-800 rounded-xl shadow-2xs">
-      <table class="w-full divide-y divide-neutral-200 dark:divide-neutral-800 text-left">
-        <thead class="bg-neutral-50/80 dark:bg-neutral-800/60">
+    <div class="overflow-x-auto border border-neutral-200 rounded-xl shadow-2xs">
+      <table class="w-full divide-y divide-neutral-200 text-left">
+        <thead class="bg-neutral-50/80">
           <tr>
-            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 whitespace-nowrap min-w-[220px]">
+            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 whitespace-nowrap min-w-[220px]">
               Variable Name
             </th>
-            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 whitespace-nowrap min-w-[110px]">
+            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 whitespace-nowrap min-w-[110px]">
               Status
             </th>
-            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 whitespace-nowrap min-w-[160px]">
+            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 whitespace-nowrap min-w-[160px]">
               Max Error (&Delta;<sub>max</sub>)
             </th>
-            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 whitespace-nowrap min-w-[150px]">
+            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 whitespace-nowrap min-w-[150px]">
               Relative Error
             </th>
-            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 whitespace-nowrap min-w-[120px]">
+            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 whitespace-nowrap min-w-[120px]">
               Tolerance Score
             </th>
-            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 whitespace-nowrap min-w-[220px]">
+            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 whitespace-nowrap min-w-[220px]">
               Consensus &amp; Outliers
             </th>
-            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 text-right whitespace-nowrap w-24">
+            <th scope="col" class="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-neutral-500 text-right whitespace-nowrap w-24">
               Action
             </th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-neutral-100 dark:divide-neutral-800 bg-white dark:bg-neutral-900">
+        <tbody class="divide-y divide-neutral-100 bg-white">
           <tr
             v-for="row in paginatedRows"
             :key="row.var_name"
-            class="hover:bg-neutral-50/80 dark:hover:bg-neutral-800/50 transition-colors"
+            class="hover:bg-neutral-50/80 transition-colors"
           >
             <!-- Variable Name -->
-            <td class="py-3.5 px-5 font-mono text-xs sm:text-sm font-medium text-neutral-900 dark:text-white whitespace-nowrap">
+            <td class="py-3.5 px-5 font-mono text-xs sm:text-sm font-medium text-neutral-900 whitespace-nowrap">
               {{ row.var_name }}
             </td>
 
@@ -239,20 +239,20 @@ function exportCsv() {
 
             <!-- Max Error -->
             <td class="py-3.5 px-5 font-mono text-xs sm:text-sm whitespace-nowrap">
-              <span :class="row.maximum_error !== null && row.maximum_error > 0.01 ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-neutral-700 dark:text-neutral-300'">
+              <span :class="row.maximum_error !== null && row.maximum_error > 0.01 ? 'text-amber-600 font-semibold' : 'text-neutral-700'">
                 {{ formatScientific(row.maximum_error) }}
               </span>
             </td>
 
             <!-- Relative Error -->
             <td class="py-3.5 px-5 font-mono text-xs sm:text-sm whitespace-nowrap">
-              <span :class="row.relative_error !== null && row.relative_error > 0.05 ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-neutral-700 dark:text-neutral-300'">
+              <span :class="row.relative_error !== null && row.relative_error > 0.05 ? 'text-amber-600 font-semibold' : 'text-neutral-700'">
                 {{ formatScientific(row.relative_error) }}
               </span>
             </td>
 
             <!-- Score -->
-            <td class="py-3.5 px-5 font-mono text-xs sm:text-sm text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
+            <td class="py-3.5 px-5 font-mono text-xs sm:text-sm text-neutral-700 whitespace-nowrap">
               {{ formatScore(row.score) }}
             </td>
 
@@ -260,21 +260,21 @@ function exportCsv() {
             <td class="py-3.5 px-5 whitespace-nowrap">
               <span
                 v-if="row.outlier_simulators && row.outlier_simulators.length > 0"
-                class="text-xs sm:text-sm text-amber-600 dark:text-amber-400 flex items-center gap-1.5 font-medium whitespace-nowrap"
+                class="text-xs sm:text-sm text-amber-600 flex items-center gap-1.5 font-medium whitespace-nowrap"
               >
                 <UIcon name="i-lucide-alert-triangle" class="size-4 shrink-0" />
                 <span>Outlier: {{ row.outlier_simulators.join(', ') }}</span>
               </span>
               <span
                 v-else-if="row.consensus_status === 'concordant'"
-                class="text-xs sm:text-sm text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 font-medium whitespace-nowrap"
+                class="text-xs sm:text-sm text-emerald-600 flex items-center gap-1.5 font-medium whitespace-nowrap"
               >
                 <UIcon name="i-lucide-check-circle" class="size-4 shrink-0" />
                 <span>Consensus Agreement</span>
               </span>
               <span
                 v-else-if="row.consensus_status === 'discordant'"
-                class="text-xs sm:text-sm text-rose-500 dark:text-rose-400 flex items-center gap-1.5 font-medium whitespace-nowrap"
+                class="text-xs sm:text-sm text-rose-500 flex items-center gap-1.5 font-medium whitespace-nowrap"
               >
                 <UIcon name="i-lucide-x-circle" class="size-4 shrink-0" />
                 <span>Discordant</span>
@@ -315,15 +315,15 @@ function exportCsv() {
     <div class="flex flex-col sm:flex-row items-center justify-between pt-4 mt-1 text-xs text-neutral-500 gap-3">
       <div>
         Showing
-        <span class="font-semibold text-neutral-700 dark:text-neutral-300">
+        <span class="font-semibold text-neutral-700">
           {{ filteredRows.length > 0 ? (currentPage - 1) * perPage + 1 : 0 }}
         </span>
         to
-        <span class="font-semibold text-neutral-700 dark:text-neutral-300">
+        <span class="font-semibold text-neutral-700">
           {{ Math.min(currentPage * perPage, filteredRows.length) }}
         </span>
         of
-        <span class="font-semibold text-neutral-700 dark:text-neutral-300">
+        <span class="font-semibold text-neutral-700">
           {{ filteredRows.length }}
         </span>
         variables

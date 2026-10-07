@@ -115,7 +115,7 @@ const gridCells = computed<CellData[][]>(() => {
           isError: false,
           isExcluded: true,
           errorMessage: reason,
-          colorClass: 'bg-amber-100/90 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700/80 shadow-2xs',
+          colorClass: 'bg-amber-100/90 text-amber-900 border border-amber-300 shadow-2xs',
           isSelected: false,
           excludedI: excI,
           excludedJ: excJ
@@ -129,9 +129,9 @@ const gridCells = computed<CellData[][]>(() => {
       const isSelected = (props.selectedI === i && props.selectedJ === j)
         || (props.selectedI === j && props.selectedJ === i)
 
-      let colorClass = 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500'
+      let colorClass = 'bg-neutral-100 text-neutral-500'
       if (concordance.isError) {
-        colorClass = 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-700'
+        colorClass = 'bg-rose-100 text-rose-800 border border-rose-300'
       } else if (concordance.percentage === 100) {
         colorClass = 'bg-emerald-500 hover:bg-emerald-600 text-white font-semibold'
       } else if (concordance.percentage >= 70) {
@@ -164,6 +164,13 @@ const gridCells = computed<CellData[][]>(() => {
 
 // Error manifest modal state
 const isErrorModalOpen = ref(false)
+const isErrorModalFullscreen = ref(false)
+
+watch(isErrorModalOpen, (open) => {
+  if (!open) {
+    isErrorModalFullscreen.value = false
+  }
+})
 const selectedErrorData = ref<{
   title: string
   description: string
@@ -228,10 +235,10 @@ function openExcludedHeaderDetails(excludedIndex: number) {
 </script>
 
 <template>
-  <div class="w-full bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-5 sm:p-6 shadow-sm">
-    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-4 mb-4 border-b border-neutral-100 dark:border-neutral-800">
+  <div class="w-full bg-white border border-neutral-200 rounded-xl p-5 sm:p-6 shadow-sm">
+    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-4 mb-4 border-b border-neutral-100">
       <div>
-        <h3 class="text-base sm:text-lg font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+        <h3 class="text-base sm:text-lg font-semibold text-neutral-900 flex items-center gap-2">
           <UIcon name="i-lucide-grid" class="size-5 text-primary shrink-0" />
           Concordance Heatmap Matrix
         </h3>
@@ -244,23 +251,23 @@ function openExcludedHeaderDetails(excludedIndex: number) {
       <div class="flex items-center gap-3 text-xs flex-wrap">
         <div class="flex items-center gap-1.5">
           <span class="size-3 rounded bg-emerald-500 shrink-0" />
-          <span class="text-neutral-600 dark:text-neutral-400">100%</span>
+          <span class="text-neutral-600">100%</span>
         </div>
         <div class="flex items-center gap-1.5">
           <span class="size-3 rounded bg-amber-400 shrink-0" />
-          <span class="text-neutral-600 dark:text-neutral-400">70%–99%</span>
+          <span class="text-neutral-600">70%–99%</span>
         </div>
         <div class="flex items-center gap-1.5">
           <span class="size-3 rounded bg-rose-500 shrink-0" />
-          <span class="text-neutral-600 dark:text-neutral-400">&lt;70%</span>
+          <span class="text-neutral-600">&lt;70%</span>
         </div>
         <div class="flex items-center gap-1.5">
-          <span class="size-3 rounded bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 shrink-0" />
-          <span class="text-neutral-600 dark:text-neutral-400">Run failed / Excluded</span>
+          <span class="size-3 rounded bg-amber-100 border border-amber-300 shrink-0" />
+          <span class="text-neutral-600">Run failed / Excluded</span>
         </div>
         <div class="flex items-center gap-1.5">
-          <span class="size-3 rounded bg-neutral-300 dark:bg-neutral-700 shrink-0" />
-          <span class="text-neutral-600 dark:text-neutral-400">Error / Mismatch</span>
+          <span class="size-3 rounded bg-neutral-300 shrink-0" />
+          <span class="text-neutral-600">Error / Mismatch</span>
         </div>
       </div>
     </div>
@@ -285,7 +292,7 @@ function openExcludedHeaderDetails(excludedIndex: number) {
               v-for="(sim, idx) in allSimulators"
               :key="idx"
               scope="col"
-              class="py-2.5 px-2 text-center text-xs font-medium text-neutral-700 dark:text-neutral-300"
+              class="py-2.5 px-2 text-center text-xs font-medium text-neutral-700"
             >
               <div
                 class="truncate w-full px-1 flex flex-col items-center gap-0.5"
@@ -309,7 +316,7 @@ function openExcludedHeaderDetails(excludedIndex: number) {
         </thead>
         <tbody>
           <tr v-for="(row, i) in gridCells" :key="i">
-            <td class="py-2.5 px-3 text-xs font-medium text-neutral-800 dark:text-neutral-200 border-r border-neutral-100 dark:border-neutral-800">
+            <td class="py-2.5 px-3 text-xs font-medium text-neutral-800 border-r border-neutral-100">
               <div
                 class="truncate w-full pr-2 flex items-center justify-between gap-1"
                 :class="i >= numValid ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''"
@@ -343,23 +350,23 @@ function openExcludedHeaderDetails(excludedIndex: number) {
                     : (cell.isError
                       ? 'hover:ring-2 hover:ring-rose-400 hover:scale-[1.02]'
                       : (cell.isSelected
-                        ? 'ring-2 ring-primary ring-offset-2 dark:ring-offset-neutral-900 scale-95 font-bold shadow-md'
+                        ? 'ring-2 ring-primary ring-offset-2 scale-95 font-bold shadow-md'
                         : 'hover:scale-[1.02]'))
                 ]"
                 :title="cell.isExcluded ? `${formatSimLabel(cell.simI)} vs ${formatSimLabel(cell.simJ)}: Run failed. Click to reveal issue manifest.` : (cell.isError ? `Comparison issue: ${cell.errorMessage}. Click to reveal issue manifest.` : `${formatSimLabel(cell.simI)} vs ${formatSimLabel(cell.simJ)}: ${cell.concordantCount}/${cell.totalCount} concordant (${cell.percentage}%)`)"
                 @click="handleCellClick(cell)"
               >
                 <template v-if="cell.isExcluded">
-                  <UIcon name="i-lucide-alert-triangle" class="size-4 text-amber-600 dark:text-amber-400 mb-0.5 shrink-0" />
+                  <UIcon name="i-lucide-alert-triangle" class="size-4 text-amber-600 mb-0.5 shrink-0" />
                   <span class="text-xs font-semibold leading-tight text-center px-1">
                     Run failed
                   </span>
-                  <span class="text-[9px] text-amber-700 dark:text-amber-300 leading-tight mt-0.5 underline decoration-dotted">
+                  <span class="text-[9px] text-amber-700 leading-tight mt-0.5 underline decoration-dotted">
                     Click for issue
                   </span>
                 </template>
                 <template v-else-if="cell.isError">
-                  <UIcon name="i-lucide-alert-circle" class="size-3.5 text-rose-600 dark:text-rose-400 mb-0.5 shrink-0" />
+                  <UIcon name="i-lucide-alert-circle" class="size-3.5 text-rose-600 mb-0.5 shrink-0" />
                   <span class="text-[11px] leading-tight font-semibold">
                     Mismatch
                   </span>
@@ -384,7 +391,7 @@ function openExcludedHeaderDetails(excludedIndex: number) {
 
     <div class="mt-3 text-right text-[11px] text-neutral-400">
       Active inspection pair:
-      <span class="font-semibold text-neutral-700 dark:text-neutral-300">
+      <span class="font-semibold text-neutral-700">
         {{ simulators[selectedI]?.name || 'Sim A' }} vs {{ simulators[selectedJ]?.name || 'Sim B' }}
       </span>
     </div>
@@ -392,22 +399,58 @@ function openExcludedHeaderDetails(excludedIndex: number) {
     <!-- Simulator & Comparison Issue Manifest Modal -->
     <UModal
       v-model:open="isErrorModalOpen"
-      :title="selectedErrorData?.title || 'Simulator Issue Manifest'"
-      :description="selectedErrorData?.description || 'Diagnostic details for this simulation or comparison issue.'"
+      :fullscreen="isErrorModalFullscreen"
+      data-lenis-prevent
+      :ui="{
+        content: isErrorModalFullscreen
+          ? 'w-screen h-dvh max-w-none max-h-none rounded-none flex flex-col lenis-prevent'
+          : 'max-w-lg flex flex-col lenis-prevent',
+        body: 'flex-1 overflow-y-auto min-h-0 overscroll-contain p-4 lenis-prevent'
+      }"
     >
+      <template #header>
+        <div class="flex items-center justify-between w-full">
+          <div>
+            <h3 class="text-base font-semibold text-neutral-900">
+              {{ selectedErrorData?.title || 'Simulator Issue Manifest' }}
+            </h3>
+            <p class="text-xs text-neutral-500 mt-0.5">
+              {{ selectedErrorData?.description || 'Diagnostic details for this simulation or comparison issue.' }}
+            </p>
+          </div>
+          <div class="flex items-center gap-1 shrink-0">
+            <UButton
+              size="sm"
+              variant="ghost"
+              color="neutral"
+              :icon="isErrorModalFullscreen ? 'i-lucide-minimize-2' : 'i-lucide-maximize-2'"
+              :title="isErrorModalFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'"
+              @click="isErrorModalFullscreen = !isErrorModalFullscreen"
+            />
+            <UButton
+              size="sm"
+              variant="ghost"
+              color="neutral"
+              icon="i-lucide-x"
+              title="Close"
+              @click="isErrorModalOpen = false"
+            />
+          </div>
+        </div>
+      </template>
       <template #body>
         <div v-if="selectedErrorData" class="flex flex-col gap-4 p-4 text-xs">
           <!-- Solvers involved -->
-          <div class="grid grid-cols-2 gap-3 p-3 bg-neutral-50 dark:bg-neutral-800/60 rounded-lg">
+          <div class="grid grid-cols-2 gap-3 p-3 bg-neutral-50 rounded-lg">
             <div>
               <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Simulator A</span>
-              <span class="font-semibold text-neutral-800 dark:text-neutral-200">
+              <span class="font-semibold text-neutral-800">
                 {{ formatSimLabel(selectedErrorData.simI) }}
               </span>
             </div>
             <div>
               <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Simulator B</span>
-              <span class="font-semibold text-neutral-800 dark:text-neutral-200">
+              <span class="font-semibold text-neutral-800">
                 {{ formatSimLabel(selectedErrorData.simJ) }}
               </span>
             </div>
@@ -438,17 +481,17 @@ function openExcludedHeaderDetails(excludedIndex: number) {
           <!-- Diagnostic / Error Message Box -->
           <div class="space-y-1">
             <span class="text-neutral-500 font-medium block">Issue Manifest:</span>
-            <div class="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-lg font-mono text-[11px] text-red-800 dark:text-red-200 whitespace-pre-wrap break-words leading-relaxed max-h-48 overflow-y-auto">
+            <div class="p-3 bg-red-50 border border-red-200 rounded-lg font-mono text-[11px] text-red-800 whitespace-pre-wrap break-words leading-relaxed max-h-48 overflow-y-auto">
               {{ selectedErrorData.errorMessage || 'No detailed error message was returned.' }}
             </div>
           </div>
 
           <!-- Guidance / Troubleshooting Info -->
-          <div class="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 rounded-lg text-amber-800 dark:text-amber-200 flex items-start gap-2">
+          <div class="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 flex items-start gap-2">
             <UIcon name="i-lucide-info" class="size-4 shrink-0 mt-0.5 text-amber-600" />
             <div class="space-y-0.5">
               <p class="font-semibold text-[11px]">Why did this occur?</p>
-              <p class="text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+              <p class="text-[11px] leading-relaxed text-amber-700">
                 <span v-if="selectedErrorData.isExcluded">
                   This simulator was matched based on KiSAO algorithm and model format capabilities, but the simulator container failed during execution on the BioSimulations cluster (e.g. unsupported model features, events, or solver timeout).
                 </span>

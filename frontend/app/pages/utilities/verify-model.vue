@@ -1,15 +1,26 @@
 <script setup lang="ts">
-import {computed, nextTick, onMounted, reactive, ref, watch} from 'vue'
-import {useRoute, useRouter} from 'vue-router'
-import type {BreadcrumbItem} from '@nuxt/ui'
-import type {ComparisonStatistics, CompatibilityResponse, RunPrecheckResult, SimulationRunInfo, VerifyWorkflowOutput} from '~/models/verification'
-import {useVerificationAnalytics} from '~/composables/useVerificationAnalytics'
-import type {ExcludedSimulatorInfo, SimulatorInfo} from '~/components/verification/VerificationHeatmap.vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useClipboard } from '@vueuse/core'
+import type { BreadcrumbItem } from '@nuxt/ui'
+import type {
+  ComparisonStatistics,
+  CompatibilityResponse,
+  RunPrecheckResult,
+  SimulationRunInfo,
+  VerificationIdsResponse,
+  VerificationRecord,
+  VerifyWorkflowOutput
+} from '~/models/verification'
+import { useVerificationAnalytics } from '~/composables/useVerificationAnalytics'
+import type { ExcludedSimulatorInfo, SimulatorInfo } from '~/components/verification/VerificationHeatmap.vue'
 import PlatformRunPickerModal from '~/components/verification/PlatformRunPickerModal.vue'
 
 const config = useRuntimeConfig()
 const route = useRoute()
 const router = useRouter()
+const toast = useToast()
+const { copy } = useClipboard()
 const { buildVariableComparisonRows, precheckRunIds } = useVerificationAnalytics()
 
 useSeoMeta({
@@ -302,6 +313,9 @@ async function checkOmexCompatibility() {
 
     // Query platform runs for this archive to populate historical runs tree
     await fetchHistoricalRunsForArchive()
+
+    // Query past platform verification records to detect previous workflows for this archive
+    await fetchPastVerificationIds(true)
   } catch (err: any) {
     compatibilityError.value = err?.data?.detail || err?.message || 'Could not verify archive compatibility.'
     compatibleSimulators.value = []
@@ -409,31 +423,39 @@ const totalHistoricalRunsCount = computed(() => {
 })
 
 // ----------------------------------------------------
-// Past Verification History Helpers
+// Server-Backed Archive Verification Matcher
 // ----------------------------------------------------
-function saveVerificationToHistory(omexId: string, workflowId: string) {
-  try {
-    const key = `verify_history_${omexId}`
-    const existing = JSON.parse(localStorage.getItem(key) || '[]')
-    if (!existing.includes(workflowId)) {
-      existing.unshift(workflowId)
-      localStorage.setItem(key, JSON.stringify(existing.slice(0, 10)))
-    }
-  } catch {
-    // Ignore storage errors
-  }
-}
+const pastVerificationsForHash = computed<string[]>(() => {
+  const hash = compatibilityResponse.value?.omex_id?.toLowerCase()
+  if (!hash || pastVerificationRecords.value.length === 0) return []
 
-const pastVerificationsForHash = computed(() => {
-  const hash = compatibilityResponse.value?.omex_id
-  if (!hash) return []
-  try {
-    const key = `verify_history_${hash}`
-    return JSON.parse(localStorage.getItem(key) || '[]') as string[]
-  } catch {
-    return []
+  // Check server-provided verification records for this archive hash
+  const matchingIds: string[] = []
+  for (const record of pastVerificationRecords.value) {
+    if (record.omex_hash && record.omex_hash.toLowerCase() === hash) {
+      if (Array.isArray(record.run_ids)) {
+        matchingIds.push(...record.run_ids)
+      }
+    }
   }
+
+  return [...new Set(matchingIds)]
 })
+
+function viewPastReportsForCurrentHash() {
+  const hash = compatibilityResponse.value?.omex_id
+  if (!hash) return
+  pastSearchQuery.value = hash
+  pastTypeFilter.value = 'all'
+  activeMode.value = 'lookup'
+  router.push({
+    query: {
+      ...route.query,
+      tab: 'lookup',
+      omex_hash: hash
+    }
+  })
+}
 
 // ----------------------------------------------------
 // Submit Actions
@@ -485,6 +507,9 @@ async function submitOmexVerification() {
     queryParams.set('abs_tol_min', String(toleranceSettings.abs_tol_min))
     queryParams.set('abs_tol_scale', String(toleranceSettings.abs_tol_scale))
     queryParams.set('include_outputs', String(toleranceSettings.include_outputs))
+    if (compatibilityResponse.value?.omex_id) {
+      queryParams.set('omex_hash', compatibilityResponse.value.omex_id)
+    }
 
     selectedSims.forEach((sim) => {
       const spec = sim.selectedVersion ? `${sim.id}:${sim.selectedVersion}` : sim.id
@@ -515,10 +540,25 @@ async function submitOmexVerification() {
       }
 
       if (compatibilityResponse.value?.omex_id) {
-        saveVerificationToHistory(compatibilityResponse.value.omex_id, res.workflow_id)
+        const currentHash = compatibilityResponse.value.omex_id
+        const existingRecord = pastVerificationRecords.value.find(r => r.omex_hash === currentHash)
+        if (existingRecord) {
+          if (!existingRecord.run_ids.includes(res.workflow_id)) {
+            existingRecord.run_ids.unshift(res.workflow_id)
+          }
+        } else {
+          pastVerificationRecords.value.unshift({
+            omex_hash: currentHash,
+            run_ids: [res.workflow_id]
+          })
+        }
       }
 
-      router.push({ query: { ...route.query, workflow_id: res.workflow_id } })
+      // Slide user over to Past Verifications tab and open newly created record in modal
+      activeMode.value = 'lookup'
+      isHistoricalModalOpen.value = true
+      fetchPastVerificationIds(true)
+      router.push({ query: { ...route.query, tab: 'lookup', workflow_id: res.workflow_id } })
     }
   } catch (err: any) {
     submissionError.value = err?.data?.detail || err?.message || 'Failed to submit OMEX verification request.'
@@ -562,6 +602,9 @@ async function submitRunsVerification(customRunIds?: string[]) {
     queryParams.set('abs_tol_min', String(toleranceSettings.abs_tol_min))
     queryParams.set('abs_tol_scale', String(toleranceSettings.abs_tol_scale))
     queryParams.set('include_outputs', String(toleranceSettings.include_outputs))
+    if (compatibilityResponse.value?.omex_id) {
+      queryParams.set('omex_hash', compatibilityResponse.value.omex_id)
+    }
     idsToSubmit.forEach(id => queryParams.append('biosimulations_run_ids', id))
 
     const url = `${config.public.api_url}/verify/runs?${queryParams.toString()}`
@@ -580,9 +623,25 @@ async function submitRunsVerification(customRunIds?: string[]) {
         }
       }
       if (compatibilityResponse.value?.omex_id) {
-        saveVerificationToHistory(compatibilityResponse.value.omex_id, res.workflow_id)
+        const currentHash = compatibilityResponse.value.omex_id
+        const existingRecord = pastVerificationRecords.value.find(r => r.omex_hash === currentHash)
+        if (existingRecord) {
+          if (!existingRecord.run_ids.includes(res.workflow_id)) {
+            existingRecord.run_ids.unshift(res.workflow_id)
+          }
+        } else {
+          pastVerificationRecords.value.unshift({
+            omex_hash: currentHash,
+            run_ids: [res.workflow_id]
+          })
+        }
       }
-      router.push({ query: { ...route.query, workflow_id: res.workflow_id } })
+
+      // Slide user over to Past Verifications tab and open newly created record in modal
+      activeMode.value = 'lookup'
+      isHistoricalModalOpen.value = true
+      fetchPastVerificationIds(true)
+      router.push({ query: { ...route.query, tab: 'lookup', workflow_id: res.workflow_id } })
     }
   } catch (err: any) {
     submissionError.value = err?.data?.detail || err?.message || 'Failed to submit runs verification request.'
@@ -593,14 +652,174 @@ async function submitRunsVerification(customRunIds?: string[]) {
 }
 
 // ----------------------------------------------------
-// Tab 2: Past Report Lookup / Direct Workflow Load
+// Tab 2: Past Report Lookup / Direct Workflow Load & Catalog
 // ----------------------------------------------------
 const lookupIdInput = ref<string>('')
+const dashboardRef = ref<HTMLElement | null>(null)
+const pastVerificationRecords = ref<VerificationRecord[]>([])
+const pastVerificationIds = ref<string[]>([])
+const pastNextCursor = ref<string | null>(null)
+const isLoadingPastIds = ref<boolean>(false)
+const isLoadingMorePastIds = ref<boolean>(false)
+const pastIdsError = ref<string | null>(null)
+const pastSearchQuery = ref<string>('')
+const pastTypeFilter = ref<'all' | 'omex' | 'runs'>('all')
 
-function loadWorkflowById(id: string) {
+const hashByWorkflowId = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {}
+  for (const record of pastVerificationRecords.value) {
+    if (record.omex_hash && Array.isArray(record.run_ids)) {
+      for (const id of record.run_ids) {
+        map[id] = record.omex_hash
+      }
+    }
+  }
+  return map
+})
+
+const filteredPastVerificationIds = computed(() => {
+  const query = pastSearchQuery.value.trim().toLowerCase()
+  return pastVerificationIds.value.filter((id) => {
+    if (pastTypeFilter.value === 'omex' && !id.startsWith('omex-')) return false
+    if (pastTypeFilter.value === 'runs' && !id.startsWith('runs-')) return false
+    if (query.length > 0) {
+      const matchesId = id.toLowerCase().includes(query)
+      const associatedHash = hashByWorkflowId.value[id]?.toLowerCase() || ''
+      const matchesHash = associatedHash.includes(query)
+      return matchesId || matchesHash
+    }
+    return true
+  })
+})
+
+function getVerificationType(id?: string | null): { label: string; icon: string; color: 'primary' | 'secondary' | 'neutral' } {
+  if (!id) {
+    return { label: 'Workflow', icon: 'i-lucide-hash', color: 'neutral' }
+  }
+  if (id.startsWith('omex-')) {
+    return { label: 'OMEX Archive', icon: 'i-lucide-archive', color: 'primary' }
+  }
+  if (id.startsWith('runs-')) {
+    return { label: 'Multi-Run', icon: 'i-lucide-layers', color: 'secondary' }
+  }
+  return { label: 'Workflow', icon: 'i-lucide-hash', color: 'neutral' }
+}
+
+function copyWorkflowId(id?: string | null) {
+  if (!id) return
+  copy(id)
+  toast.add({
+    title: 'ID Copied',
+    description: `Workflow ID ${id} copied to clipboard.`,
+    color: 'success',
+    icon: 'i-lucide-check'
+  })
+}
+
+function copyPermalink(id?: string | null) {
+  if (!id) return
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const url = `${origin}/utilities/verify-model?tab=lookup&workflow_id=${id}`
+  copy(url)
+  toast.add({
+    title: 'Permalink Copied',
+    description: 'Direct link to verification run copied to clipboard.',
+    color: 'success',
+    icon: 'i-lucide-check'
+  })
+}
+
+async function fetchPastVerificationIds(reset = true) {
+  if (reset) {
+    isLoadingPastIds.value = true
+    pastIdsError.value = null
+  } else {
+    isLoadingMorePastIds.value = true
+  }
+
+  try {
+    const params: Record<string, any> = {
+      limit: 50
+    }
+    if (!reset && pastNextCursor.value) {
+      params.cursor = pastNextCursor.value
+    }
+
+    const res = await $fetch<VerificationIdsResponse | VerificationRecord[] | string[]>(`${config.public.api_url}/verification_ids`, {
+      params
+    })
+
+    let incomingRecords: VerificationRecord[] = []
+    let nextCursor: string | null = null
+
+    if (Array.isArray(res)) {
+      if (res.length > 0 && typeof res[0] === 'object' && res[0] !== null && 'omex_hash' in res[0]) {
+        incomingRecords = res as VerificationRecord[]
+      } else if (res.length > 0 && typeof res[0] === 'string') {
+        incomingRecords = [{ omex_hash: '', run_ids: res as string[] }]
+      }
+    } else if (res && typeof res === 'object') {
+      nextCursor = res.next_cursor || null
+      if (Array.isArray(res.records)) {
+        incomingRecords = res.records
+      } else if (Array.isArray(res.verification_records)) {
+        incomingRecords = res.verification_records
+      } else if (Array.isArray(res.verification_ids)) {
+        incomingRecords = [{ omex_hash: '', run_ids: res.verification_ids }]
+      }
+    }
+
+    if (reset) {
+      pastVerificationRecords.value = incomingRecords
+      const allIds: string[] = []
+      const seen = new Set<string>()
+      for (const rec of incomingRecords) {
+        for (const id of rec.run_ids || []) {
+          if (!seen.has(id)) {
+            seen.add(id)
+            allIds.push(id)
+          }
+        }
+      }
+      pastVerificationIds.value = allIds
+    } else {
+      pastVerificationRecords.value.push(...incomingRecords)
+      const existing = new Set(pastVerificationIds.value)
+      for (const rec of incomingRecords) {
+        for (const id of rec.run_ids || []) {
+          if (!existing.has(id)) {
+            existing.add(id)
+            pastVerificationIds.value.push(id)
+          }
+        }
+      }
+    }
+    pastNextCursor.value = nextCursor
+  } catch (err: any) {
+    const msg = err?.data?.detail || err?.message || 'Failed to load past verification IDs from server.'
+    pastIdsError.value = msg
+  } finally {
+    isLoadingPastIds.value = false
+    isLoadingMorePastIds.value = false
+  }
+}
+
+function loadMorePastVerificationIds() {
+  if (!pastNextCursor.value || isLoadingMorePastIds.value) return
+  fetchPastVerificationIds(false)
+}
+
+const isHistoricalModalOpen = ref(false)
+const isHistoricalModalFullscreen = ref(false)
+
+function openHistoricalModal(id: string) {
   if (!id.trim()) return
   const wId = id.trim()
   activeWorkflowId.value = wId
+  lookupIdInput.value = wId
+  activeMode.value = 'lookup'
+  isHistoricalModalOpen.value = true
+
   try {
     const saved = sessionStorage.getItem(`verify_precheck_${wId}`)
     if (saved) {
@@ -609,8 +828,88 @@ function loadWorkflowById(id: string) {
   } catch {
     // Ignore sessionStorage read errors
   }
-  router.push({ query: { ...route.query, workflow_id: wId } })
+
+  router.push({ query: { ...route.query, tab: 'lookup', workflow_id: wId } })
 }
+
+function loadWorkflowById(id: string) {
+  if (!id.trim()) return
+  const wId = id.trim()
+  activeWorkflowId.value = wId
+  lookupIdInput.value = wId
+  try {
+    const saved = sessionStorage.getItem(`verify_precheck_${wId}`)
+    if (saved) {
+      precheckResult.value = JSON.parse(saved)
+    }
+  } catch {
+    // Ignore sessionStorage read errors
+  }
+  activeMode.value = 'lookup'
+  isHistoricalModalOpen.value = true
+  router.push({ query: { ...route.query, tab: 'lookup', workflow_id: wId } })
+}
+
+watch(activeMode, (mode) => {
+  if (mode === 'lookup') {
+    if (pastVerificationIds.value.length === 0 && !isLoadingPastIds.value) {
+      fetchPastVerificationIds(true)
+    }
+  } else {
+    isHistoricalModalOpen.value = false
+    isHistoricalModalFullscreen.value = false
+  }
+
+  // Synchronize activeMode with the tab URL query param
+  const currentTab = route.query.tab
+  const targetTab = mode === 'lookup' ? 'lookup' : undefined
+  if (currentTab !== targetTab) {
+    const q = { ...route.query }
+    if (targetTab) {
+      q.tab = targetTab
+    } else {
+      delete q.tab
+    }
+    router.replace({ query: q })
+  }
+})
+
+watch(isHistoricalModalOpen, (isOpen) => {
+  if (!isOpen) {
+    isHistoricalModalFullscreen.value = false
+    if (activeMode.value === 'lookup' && route.query.workflow_id) {
+      const q = { ...route.query }
+      delete q.workflow_id
+      q.tab = 'lookup'
+      router.push({ query: q })
+    }
+  }
+})
+
+// Watch route.query.workflow_id so any external or router query updates activate Lookup mode & modal
+watch(() => route.query.workflow_id, (newWId) => {
+  if (newWId) {
+    const wId = String(newWId).trim()
+    activeWorkflowId.value = wId
+    lookupIdInput.value = wId
+    activeMode.value = 'lookup'
+    isHistoricalModalOpen.value = true
+    if (pastVerificationIds.value.length === 0 && !isLoadingPastIds.value) {
+      fetchPastVerificationIds(true)
+    }
+  }
+})
+
+// Watch route.query.omex_hash so hash filter URLs switch to Lookup mode and apply the filter
+watch(() => route.query.omex_hash, (newHash) => {
+  if (newHash) {
+    pastSearchQuery.value = String(newHash).trim()
+    activeMode.value = 'lookup'
+    if (pastVerificationRecords.value.length === 0 && !isLoadingPastIds.value) {
+      fetchPastVerificationIds(true)
+    }
+  }
+})
 
 
 // ----------------------------------------------------
@@ -840,21 +1139,31 @@ function onSelectHeatmapPair(i: number, j: number) {
 }
 
 const plotSectionRef = ref<HTMLElement | null>(null)
+const modalPlotSectionRef = ref<HTMLElement | null>(null)
 function onVisualizeVariable(varName: string) {
   activeVariable.value = varName
   nextTick(() => {
-    if (plotSectionRef.value) {
-      plotSectionRef.value.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    const target = isHistoricalModalOpen.value ? modalPlotSectionRef.value : plotSectionRef.value
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   })
 }
 
-// On mount: check URL for workflow_id
+// On mount: check URL for workflow_id and tab
 onMounted(() => {
+  if (route.query.omex_hash) {
+    pastSearchQuery.value = String(route.query.omex_hash).trim()
+    activeMode.value = 'lookup'
+  }
+
   if (route.query.workflow_id) {
-    const wId = String(route.query.workflow_id)
+    // If a workflow_id is provided in the URL, ALWAYS take the user to the "Lookup" cards and activate the modal
+    const wId = String(route.query.workflow_id).trim()
     activeWorkflowId.value = wId
     lookupIdInput.value = wId
+    activeMode.value = 'lookup'
+    isHistoricalModalOpen.value = true
     try {
       const saved = sessionStorage.getItem(`verify_precheck_${wId}`)
       if (saved) {
@@ -863,28 +1172,32 @@ onMounted(() => {
     } catch {
       // Ignore sessionStorage read errors
     }
+    fetchPastVerificationIds(true)
+  } else if (route.query.tab === 'lookup' || route.query.omex_hash) {
+    activeMode.value = 'lookup'
+    fetchPastVerificationIds(true)
   }
 })
 </script>
 
 <template>
-  <div class="min-h-screen bg-neutral-50 dark:bg-neutral-950 py-8 px-4 sm:px-6 lg:px-8">
+  <div class="min-h-screen bg-neutral-50 py-8 px-4 sm:px-6 lg:px-8">
     <div class="max-w-7xl mx-auto space-y-8">
       <!-- Breadcrumbs & Header -->
       <div>
         <UBreadcrumb :items="breadcrumbs" class="mb-3">
           <template #separator>
-            <span class="mx-1 text-neutral-400 dark:text-neutral-600">/</span>
+            <span class="mx-1 text-neutral-400">/</span>
           </template>
         </UBreadcrumb>
 
         <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
-            <h1 class="text-3xl font-bold tracking-tight text-neutral-900 dark:text-white flex items-center gap-3">
+            <h1 class="text-3xl font-bold tracking-tight text-neutral-900 flex items-center gap-3">
               <UIcon name="i-lucide-shield-check" class="size-8 text-primary" />
               Model Verification Hub
             </h1>
-            <p class="mt-1 text-sm text-neutral-600 dark:text-neutral-400 max-w-3xl">
+            <p class="mt-1 text-sm text-neutral-600 max-w-3xl">
               Cross-verify SBML/SED-ML models across multiple independent simulation solvers
               (AMICI, COPASI, PySCeS, Tellurium, VCell). Quantify numerical equivalence, detect solver-specific outliers, and inspect time-series concordance.
             </p>
@@ -899,7 +1212,7 @@ onMounted(() => {
         :content="false"
         color="primary"
         variant="link"
-        class="border-b border-neutral-200 dark:border-neutral-800"
+        class="border-b border-neutral-200"
       />
 
       <!-- Tab 1: Unified Verification Flow -->
@@ -908,7 +1221,7 @@ onMounted(() => {
         <UCard class="shadow-sm">
           <template #header>
             <div>
-              <h2 class="text-base sm:text-lg font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+              <h2 class="text-base sm:text-lg font-semibold text-neutral-900 flex items-center gap-2">
                 <span class="size-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">1</span>
                 Provide COMBINE/OMEX Archive
               </h2>
@@ -922,7 +1235,7 @@ onMounted(() => {
 
           <!-- Input Mode Switcher -->
           <div class="space-y-3">
-            <label class="block text-xs font-semibold text-neutral-600 dark:text-neutral-300 uppercase tracking-wider">
+            <label class="block text-xs font-semibold text-neutral-600 uppercase tracking-wider">
               Input Method
             </label>
             <UTabs
@@ -946,7 +1259,7 @@ onMounted(() => {
             >
               <template #description>
                 <div class="flex flex-col items-center gap-1 mt-1">
-                  <span class="text-xs text-neutral-500 dark:text-neutral-400">or click to browse from your device</span>
+                  <span class="text-xs text-neutral-500">or click to browse from your device</span>
                   <div class="flex flex-wrap items-center justify-center gap-1.5 mt-1.5">
                     <span class="text-xs text-neutral-400">Accepted formats:</span>
                     <UBadge
@@ -967,7 +1280,7 @@ onMounted(() => {
           <!-- Mode 2: Public URL -->
           <div v-else-if="inputSourceMode === 'url'" class="space-y-3 pt-1">
             <div class="space-y-1.5">
-              <label class="block text-sm font-medium text-neutral-700 dark:text-neutral-200">
+              <label class="block text-sm font-medium text-neutral-700">
                 Public Archive URL
               </label>
               <div class="flex gap-2">
@@ -997,7 +1310,7 @@ onMounted(() => {
                   @click="clearUrl"
                 />
               </div>
-              <p class="text-xs text-neutral-500 dark:text-neutral-400">
+              <p class="text-xs text-neutral-500">
                 Ensure the URL points directly to the raw COMBINE/OMEX or SED-ML archive (CORS or direct public download).
               </p>
             </div>
@@ -1006,11 +1319,11 @@ onMounted(() => {
           <!-- Mode 3: Platform Run -->
           <div v-else-if="inputSourceMode === 'run'" class="space-y-3 pt-1">
             <div class="space-y-1.5">
-              <label class="block text-sm font-medium text-neutral-700 dark:text-neutral-200">
+              <label class="block text-sm font-medium text-neutral-700">
                 Platform Run Archive
               </label>
               <div v-if="!selectedPlatformRun" class="flex flex-col items-start gap-2">
-                <p class="text-xs text-neutral-500 dark:text-neutral-400">
+                <p class="text-xs text-neutral-500">
                   Pick a completed run from the platform database to extract and evaluate its archive.
                 </p>
                 <UButton
@@ -1083,16 +1396,16 @@ onMounted(() => {
           <div v-if="compatibilityResponse && !checkingCompatibility" class="space-y-4 pt-2">
             <!-- Archive Compatibility Summary Pill -->
             <div
-              class="p-3.5 bg-neutral-50 dark:bg-neutral-800/60 border border-neutral-200 dark:border-neutral-700 rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs"
+              class="p-3.5 bg-neutral-50 border border-neutral-200 rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs"
             >
-              <div class="flex flex-wrap items-center gap-3 text-neutral-600 dark:text-neutral-400">
-                <span class="inline-flex items-center gap-1 font-mono font-medium text-neutral-900 dark:text-white">
+              <div class="flex flex-wrap items-center gap-3 text-neutral-600">
+                <span class="inline-flex items-center gap-1 font-mono font-medium text-neutral-900">
                   <UIcon name="i-lucide-hash" class="size-3.5 text-primary" />
                   Hash: {{ compatibilityResponse.omex_id.slice(0, 10) }}…
                 </span>
                 <span>•</span>
                 <span v-if="compatibilityResponse.omex_content.simulations && compatibilityResponse.omex_content.simulations.length > 0">
-                  Algorithm: <strong class="text-neutral-800 dark:text-neutral-200">{{ compatibilityResponse.omex_content.simulations[0]?.algorithm.name || 'ODE Solver' }}</strong>
+                  Algorithm: <strong class="text-neutral-800">{{ compatibilityResponse.omex_content.simulations[0]?.algorithm.name || 'ODE Solver' }}</strong>
                   ({{ compatibilityResponse.omex_content.simulations[0]?.algorithm.id }})
                 </span>
                 <span>•</span>
@@ -1113,15 +1426,15 @@ onMounted(() => {
               variant="subtle"
               icon="i-lucide-history"
               title="Previous Verification Workflows Found"
-              :description="`This OMEX file has ${pastVerificationsForHash.length} verification workflow(s) recorded in your session history.`"
+              :description="`This OMEX archive has ${pastVerificationsForHash.length} verification workflow(s) recorded on the platform.`"
               orientation="horizontal"
               :actions="[
                 {
-                  label: 'View Past Report',
+                  label: 'View Past Reports',
                   color: 'primary',
                   variant: 'soft',
                   icon: 'i-lucide-external-link',
-                  onClick: () => loadWorkflowById(pastVerificationsForHash[0]!)
+                  onClick: viewPastReportsForCurrentHash
                 }
               ]"
             />
@@ -1138,7 +1451,7 @@ onMounted(() => {
           >
             <template #header>
               <div>
-                <h2 class="text-base sm:text-lg font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+                <h2 class="text-base sm:text-lg font-semibold text-neutral-900 flex items-center gap-2">
                   <span class="size-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">2</span>
                   Choose Verification Method
                 </h2>
@@ -1149,7 +1462,7 @@ onMounted(() => {
             </template>
 
             <div class="max-w-2xl space-y-2">
-              <label class="block text-xs font-semibold text-neutral-700 dark:text-neutral-300">
+              <label class="block text-xs font-semibold text-neutral-700">
                 Verification Strategy
               </label>
 
@@ -1184,7 +1497,7 @@ onMounted(() => {
               <!-- 3A Header (Solvers) -->
               <div v-if="step2Mode === 'solvers'" class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
-                  <h2 class="text-base sm:text-lg font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+                  <h2 class="text-base sm:text-lg font-semibold text-neutral-900 flex items-center gap-2">
                     <span class="size-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">3</span>
                     Select Solvers &amp; Versions for Cross-Verification
                   </h2>
@@ -1200,7 +1513,7 @@ onMounted(() => {
               <!-- 3B Header (Historical) -->
               <div v-else-if="step2Mode === 'historical'" class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
-                  <h2 class="text-base sm:text-lg font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+                  <h2 class="text-base sm:text-lg font-semibold text-neutral-900 flex items-center gap-2">
                     <span class="size-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold">3</span>
                     Select Historical Platform Runs to Compare
                   </h2>
@@ -1243,7 +1556,7 @@ onMounted(() => {
                   :class="[
                     'transition-all text-xs flex flex-col justify-between',
                     sim.selected
-                      ? 'ring-2 ring-primary bg-primary-50/20 dark:bg-primary-950/20 shadow-xs'
+                      ? 'ring-2 ring-primary bg-primary-50/20 shadow-xs'
                       : 'opacity-70 hover:opacity-100'
                   ]"
                   variant="subtle"
@@ -1255,7 +1568,7 @@ onMounted(() => {
                         v-model="sim.selected"
                         :label="sim.name"
                         color="primary"
-                        :ui="{ label: 'font-semibold text-neutral-900 dark:text-white cursor-pointer select-none text-xs' }"
+                        :ui="{ label: 'font-semibold text-neutral-900 cursor-pointer select-none text-xs' }"
                       />
 
                       <UBadge
@@ -1269,7 +1582,7 @@ onMounted(() => {
                   </div>
 
                   <!-- Version Selector Dropdown -->
-                  <div class="mt-3 pt-2.5 border-t border-neutral-100 dark:border-neutral-800">
+                  <div class="mt-3 pt-2.5 border-t border-neutral-100">
                     <label class="block text-[10px] uppercase font-semibold text-neutral-500 mb-1">
                       Solver Version:
                     </label>
@@ -1284,7 +1597,7 @@ onMounted(() => {
               </div>
 
               <!-- Tolerances & Submit Section (Solvers) -->
-              <div class="pt-4 border-t border-neutral-100 dark:border-neutral-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div class="pt-4 border-t border-neutral-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div class="flex items-center gap-4 text-xs">
                   <UCheckbox
                     v-model="toleranceSettings.include_outputs"
@@ -1314,7 +1627,7 @@ onMounted(() => {
               </div>
 
               <!-- Advanced Tolerances Drawer (Solvers) -->
-              <div v-if="showAdvancedSettings" class="p-4 bg-neutral-50 dark:bg-neutral-800/60 rounded-lg grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+              <div v-if="showAdvancedSettings" class="p-4 bg-neutral-50 rounded-lg grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
                 <div>
                   <label class="block font-medium mb-1">Relative Tol (rtol)</label>
                   <UInput v-model.number="toleranceSettings.rel_tol" type="number" step="0.0001" size="xs" />
@@ -1386,11 +1699,11 @@ onMounted(() => {
                   <div
                     v-for="simGroup in historicalGroups"
                     :key="simGroup.simulatorId"
-                    class="border border-neutral-200 dark:border-neutral-800 rounded-lg overflow-hidden"
+                    class="border border-neutral-200 rounded-lg overflow-hidden"
                   >
                     <!-- Simulator Header -->
                     <div
-                      class="p-2.5 bg-neutral-50 dark:bg-neutral-800/60 flex items-center justify-between text-xs font-semibold cursor-pointer select-none"
+                      class="p-2.5 bg-neutral-50 flex items-center justify-between text-xs font-semibold cursor-pointer select-none"
                       @click="simGroup.collapsed = !simGroup.collapsed"
                     >
                       <div class="flex items-center gap-2">
@@ -1403,7 +1716,7 @@ onMounted(() => {
                     </div>
 
                     <!-- Versions & Runs -->
-                    <div v-if="!simGroup.collapsed" class="divide-y divide-neutral-100 dark:divide-neutral-800">
+                    <div v-if="!simGroup.collapsed" class="divide-y divide-neutral-100">
                       <div
                         v-for="verGroup in simGroup.versions"
                         :key="verGroup.version"
@@ -1421,7 +1734,7 @@ onMounted(() => {
                           <div
                             v-for="run in verGroup.runs"
                             :key="run.id"
-                            class="flex items-center justify-between p-2 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800/40 transition-colors text-xs"
+                            class="flex items-center justify-between p-2 rounded-lg hover:bg-neutral-50 transition-colors text-xs"
                           >
                             <div class="flex items-center gap-2.5">
                               <UCheckbox
@@ -1429,7 +1742,7 @@ onMounted(() => {
                                 color="primary"
                                 size="sm"
                               />
-                              <span class="font-mono font-medium text-neutral-800 dark:text-neutral-200">
+                              <span class="font-mono font-medium text-neutral-800">
                                 {{ run.id.slice(0, 14) }}…
                               </span>
                               <span class="text-neutral-400 text-[11px] truncate max-w-[200px]">
@@ -1457,7 +1770,7 @@ onMounted(() => {
                 </UCard>
 
                 <!-- Tolerances & Submit Section (Historical Runs) -->
-                <div class="pt-4 border-t border-neutral-100 dark:border-neutral-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div class="pt-4 border-t border-neutral-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                   <div class="flex items-center gap-4 text-xs">
                     <UCheckbox
                       v-model="toleranceSettings.include_outputs"
@@ -1487,7 +1800,7 @@ onMounted(() => {
                 </div>
 
                 <!-- Advanced Tolerances Drawer (Historical Runs) -->
-                <div v-if="showAdvancedSettings" class="p-4 bg-neutral-50 dark:bg-neutral-800/60 rounded-lg grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                <div v-if="showAdvancedSettings" class="p-4 bg-neutral-50 rounded-lg grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
                   <div>
                     <label class="block font-medium mb-1">Relative Tol (rtol)</label>
                     <UInput v-model.number="toleranceSettings.rel_tol" type="number" step="0.0001" size="xs" />
@@ -1508,53 +1821,343 @@ onMounted(() => {
         <!-- END ISLAND 3: Step 3 Card -->
       </div>
 
-      <!-- Tab 2: Lookup Past Verifications Placeholder & Direct ID Query -->
-      <UCard v-if="activeMode === 'lookup'" class="shadow-sm">
-        <template #header>
-          <div class="flex items-start gap-4">
-            <div class="size-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0">
-              <UIcon name="i-lucide-database" class="size-5" />
-            </div>
-            <div>
-              <div class="flex items-center gap-2.5">
-                <h2 class="text-base sm:text-lg font-semibold text-neutral-900 dark:text-white">
-                  Lookup Past Verification Report
-                </h2>
-                <UBadge color="neutral" variant="subtle" size="md">Index In Development</UBadge>
+      <!-- Tab 2: Lookup Past Verifications -->
+      <div v-if="activeMode === 'lookup'" class="space-y-6">
+        <!-- Direct ID Query Card -->
+        <UCard class="shadow-sm border border-neutral-200">
+          <template #header>
+            <div class="flex items-start gap-4">
+              <div class="size-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0">
+                <UIcon name="i-lucide-search" class="size-5" />
               </div>
-              <p class="text-xs text-neutral-500 mt-1 max-w-2xl leading-relaxed">
-                We are actively developing a server-side catalog to browse completed verification workflows by OMEX hash, model category, and solver combination. In the meantime, you can directly inspect any completed or in-progress verification workflow using its Workflow ID below.
-              </p>
+              <div>
+                <h2 class="text-base sm:text-lg font-semibold text-neutral-900 flex items-center gap-2">
+                  Direct Workflow Lookup
+                </h2>
+                <p class="text-xs text-neutral-500 mt-1 max-w-2xl leading-relaxed">
+                  Directly inspect any verification workflow using its unique Workflow ID from a previous execution or log.
+                </p>
+              </div>
+            </div>
+          </template>
+
+          <div class="space-y-2">
+            <label class="block text-xs font-semibold uppercase tracking-wider text-neutral-600">
+              Verification Workflow ID
+            </label>
+            <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              <div class="flex-1">
+                <UInput
+                  v-model="lookupIdInput"
+                  placeholder="e.g. omex-verification-b2ac553f... or runs-verification-..."
+                  size="md"
+                  icon="i-lucide-hash"
+                  class="w-full font-mono text-xs"
+                  @keydown.enter="loadWorkflowById(lookupIdInput)"
+                />
+              </div>
+              <div class="flex items-center gap-2">
+                <UButton
+                  v-if="lookupIdInput"
+                  variant="ghost"
+                  color="neutral"
+                  size="md"
+                  icon="i-lucide-x"
+                  label="Clear"
+                  @click="lookupIdInput = ''"
+                />
+                <UButton
+                  color="primary"
+                  size="md"
+                  icon="i-lucide-arrow-right"
+                  label="Load Report"
+                  :disabled="!lookupIdInput.trim()"
+                  @click="loadWorkflowById(lookupIdInput)"
+                />
+              </div>
             </div>
           </div>
-        </template>
+        </UCard>
 
-        <div class="space-y-2">
-          <label class="block text-xs font-semibold uppercase tracking-wider text-neutral-600 dark:text-neutral-400">
-            Verification Workflow ID
-          </label>
-          <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-            <div class="flex-1">
-              <UInput
-                v-model="lookupIdInput"
-                placeholder="e.g. omex-verification-b2ac553f... or runs-verification-..."
-                size="md"
-                icon="i-lucide-hash"
-                class="w-full font-mono text-xs"
-                @keydown.enter="loadWorkflowById(lookupIdInput)"
+        <!-- Prior Verification Runs Catalog Card -->
+        <UCard class="shadow-sm border border-neutral-200">
+          <template #header>
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div class="flex items-start gap-3">
+                <div class="size-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0">
+                  <UIcon name="i-lucide-database" class="size-5" />
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <h2 class="text-base sm:text-lg font-semibold text-neutral-900">
+                      Prior Verification Runs
+                    </h2>
+                    <UBadge
+                      v-if="pastVerificationIds.length > 0"
+                      color="neutral"
+                      variant="subtle"
+                      size="sm"
+                    >
+                      {{ pastVerificationIds.length }} loaded
+                    </UBadge>
+                  </div>
+                  <p class="text-xs text-neutral-500 mt-1">
+                    Browse and inspect previous verification workflows recorded in the platform database.
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-2">
+                <UButton
+                  variant="outline"
+                  color="neutral"
+                  size="xs"
+                  icon="i-lucide-refresh-cw"
+                  :loading="isLoadingPastIds"
+                  label="Refresh"
+                  @click="fetchPastVerificationIds(true)"
+                />
+              </div>
+            </div>
+          </template>
+
+          <div class="space-y-4">
+            <!-- Filter & Search Toolbar -->
+            <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pb-3 border-b border-neutral-100">
+              <div class="flex-1 max-w-md flex items-center gap-1.5">
+                <UInput
+                  v-model="pastSearchQuery"
+                  placeholder="Filter by ID, prefix, or hash..."
+                  size="sm"
+                  icon="i-lucide-search"
+                  class="flex-1 font-mono text-xs"
+                />
+                <UButton
+                  v-if="pastSearchQuery"
+                  variant="ghost"
+                  color="neutral"
+                  size="xs"
+                  icon="i-lucide-x"
+                  title="Clear filter"
+                  @click="pastSearchQuery = ''"
+                />
+              </div>
+
+              <!-- Type Filter Buttons -->
+              <div class="flex items-center gap-1.5 self-start sm:self-auto">
+                <span class="text-xs text-neutral-400 mr-1 hidden sm:inline">Type:</span>
+                <UButton
+                  size="xs"
+                  :variant="pastTypeFilter === 'all' ? 'solid' : 'ghost'"
+                  :color="pastTypeFilter === 'all' ? 'primary' : 'neutral'"
+                  label="All"
+                  @click="pastTypeFilter = 'all'"
+                />
+                <UButton
+                  size="xs"
+                  :variant="pastTypeFilter === 'omex' ? 'solid' : 'ghost'"
+                  :color="pastTypeFilter === 'omex' ? 'primary' : 'neutral'"
+                  label="OMEX Archive"
+                  icon="i-lucide-archive"
+                  @click="pastTypeFilter = 'omex'"
+                />
+                <UButton
+                  size="xs"
+                  :variant="pastTypeFilter === 'runs' ? 'solid' : 'ghost'"
+                  :color="pastTypeFilter === 'runs' ? 'secondary' : 'neutral'"
+                  label="Multi-Run"
+                  icon="i-lucide-layers"
+                  @click="pastTypeFilter = 'runs'"
+                />
+              </div>
+            </div>
+
+            <!-- Error Banner -->
+            <UAlert
+              v-if="pastIdsError"
+              color="error"
+              variant="subtle"
+              icon="i-lucide-alert-circle"
+              title="Failed to Load Past Verifications"
+              :description="pastIdsError"
+            >
+              <template #actions>
+                <UButton
+                  size="xs"
+                  color="error"
+                  variant="outline"
+                  label="Retry"
+                  @click="fetchPastVerificationIds(true)"
+                />
+              </template>
+            </UAlert>
+
+            <!-- Loading Skeleton -->
+            <div v-if="isLoadingPastIds" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 py-2">
+              <div
+                v-for="i in 6"
+                :key="i"
+                class="p-4 rounded-xl border border-neutral-200 bg-neutral-50/50 animate-pulse space-y-3"
+              >
+                <div class="flex items-center justify-between">
+                  <div class="h-5 bg-neutral-200 rounded w-28" />
+                  <div class="size-6 bg-neutral-200 rounded" />
+                </div>
+                <div class="space-y-1.5 py-1">
+                  <div class="h-3 bg-neutral-200 rounded w-16" />
+                  <div class="h-4 bg-neutral-200 rounded w-full" />
+                </div>
+                <div class="pt-3 border-t border-neutral-100 flex justify-between items-center">
+                  <div class="h-3 bg-neutral-200 rounded w-20" />
+                  <div class="h-6 bg-neutral-200 rounded w-20" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty State (No items at all) -->
+            <div
+              v-else-if="pastVerificationIds.length === 0"
+              class="py-12 px-4 text-center border-2 border-dashed border-neutral-200 rounded-xl"
+            >
+              <div class="size-12 rounded-full bg-neutral-100 text-neutral-400 flex items-center justify-center mx-auto mb-3">
+                <UIcon name="i-lucide-inbox" class="size-6" />
+              </div>
+              <h3 class="text-sm font-semibold text-neutral-900">No Past Verifications Found</h3>
+              <p class="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
+                No verification workflow records were found. Run a new verification in the "Verify Biomodel Archive" tab to start generating comparison history.
+              </p>
+              <UButton
+                size="sm"
+                color="primary"
+                variant="subtle"
+                icon="i-lucide-play"
+                label="Run New Verification"
+                class="mt-4"
+                @click="activeMode = 'verify'"
               />
             </div>
-            <UButton
-              color="primary"
-              size="md"
-              icon="i-lucide-arrow-right"
-              label="Load Report"
-              :disabled="!lookupIdInput.trim()"
-              @click="loadWorkflowById(lookupIdInput)"
-            />
+
+            <!-- Empty State (Filtered out) -->
+            <div
+              v-else-if="filteredPastVerificationIds.length === 0"
+              class="py-10 px-4 text-center border border-neutral-100 rounded-xl bg-neutral-50/50"
+            >
+              <div class="size-10 rounded-full bg-neutral-100 text-neutral-400 flex items-center justify-center mx-auto mb-2">
+                <UIcon name="i-lucide-search-x" class="size-5" />
+              </div>
+              <h3 class="text-sm font-semibold text-neutral-900">No Matching Verifications</h3>
+              <p class="text-xs text-neutral-500 mt-1">
+                No runs match the filter "{{ pastSearchQuery }}" or selected type.
+              </p>
+              <UButton
+                size="xs"
+                color="neutral"
+                variant="outline"
+                label="Reset Filters"
+                class="mt-3"
+                @click="pastSearchQuery = ''; pastTypeFilter = 'all'"
+              />
+            </div>
+
+            <!-- Verification Grid of Cards -->
+            <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div
+                v-for="id in filteredPastVerificationIds"
+                :key="id"
+                class="relative flex flex-col justify-between p-4 rounded-xl border border-neutral-200 transition-all duration-200 cursor-pointer group bg-white shadow-xs hover:shadow-md hover:border-primary-400"
+                @click="openHistoricalModal(id)"
+              >
+                <div class="space-y-3">
+                  <!-- Top Row: Workflow ID Label + Action Buttons -->
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <span class="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider">
+                        Workflow ID
+                      </span>
+                      <UBadge
+                        v-if="hashByWorkflowId[id]"
+                        color="neutral"
+                        variant="subtle"
+                        size="xs"
+                        class="font-mono text-[10px] text-neutral-500 truncate max-w-[140px]"
+                        :title="`OMEX Hash: ${hashByWorkflowId[id]}`"
+                      >
+                        <UIcon name="i-lucide-hash" class="size-2.5 mr-0.5 text-neutral-400" />
+                        {{ hashByWorkflowId[id].slice(0, 8) }}…
+                      </UBadge>
+                    </div>
+
+                    <div class="flex items-center gap-0.5 shrink-0">
+                      <UButton
+                        size="xs"
+                        color="neutral"
+                        variant="ghost"
+                        icon="i-lucide-link"
+                        class="opacity-60 group-hover:opacity-100 transition-opacity"
+                        title="Copy Permalink"
+                        @click.stop="copyPermalink(id)"
+                      />
+                      <UButton
+                        size="xs"
+                        color="neutral"
+                        variant="ghost"
+                        icon="i-lucide-copy"
+                        class="opacity-60 group-hover:opacity-100 transition-opacity"
+                        title="Copy Workflow ID"
+                        @click.stop="copyWorkflowId(id)"
+                      />
+                    </div>
+                  </div>
+
+                  <!-- Workflow ID Body -->
+                  <div>
+                    <div class="font-mono text-xs font-semibold text-neutral-800 break-all group-hover:text-primary transition-colors leading-relaxed select-all">
+                      {{ id }}
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Footer: View Report Button -->
+                <div class="pt-3 mt-4 border-t border-neutral-100 flex items-center justify-end text-xs">
+                  <UButton
+                    size="xs"
+                    color="primary"
+                    variant="soft"
+                    icon="i-lucide-arrow-up-right"
+                    label="View Report"
+                    class="group-hover:bg-primary group-hover:text-white transition-colors"
+                    @click.stop="openHistoricalModal(id)"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Pagination / Continuation Controls -->
+            <div
+              v-if="pastNextCursor || (!pastNextCursor && pastVerificationIds.length > 0)"
+              class="pt-3 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-neutral-500"
+            >
+              <span>
+                Showing {{ filteredPastVerificationIds.length }} of {{ pastVerificationIds.length }} runs
+              </span>
+
+              <UButton
+                v-if="pastNextCursor"
+                color="neutral"
+                variant="outline"
+                size="sm"
+                icon="i-lucide-chevron-down"
+                :loading="isLoadingMorePastIds"
+                label="Load More Verifications"
+                @click="loadMorePastVerificationIds"
+              />
+              <span v-else class="text-neutral-400 italic">
+                All visible verification runs loaded
+              </span>
+            </div>
           </div>
-        </div>
-      </UCard>
+        </UCard>
+      </div>
 
       <!-- Global Submission Error Banner -->
       <UAlert
@@ -1569,9 +2172,9 @@ onMounted(() => {
       />
 
       <!-- ---------------------------------------------------- -->
-      <!-- Interactive Verification Dashboard Section           -->
+      <!-- Interactive Verification Dashboard Section (New Run) -->
       <!-- ---------------------------------------------------- -->
-      <div v-if="activeWorkflowId" class="space-y-6 pt-4">
+      <div v-if="activeMode === 'verify' && activeWorkflowId" ref="dashboardRef" class="space-y-6 pt-4">
 
         <!-- Live Polling Status Component (auto-refreshes every 5s) -->
         <VerificationStatus
@@ -1611,9 +2214,9 @@ onMounted(() => {
 
               <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
                 <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Solvers Compared</span>
-                <span class="text-lg font-bold font-mono text-neutral-800 dark:text-neutral-200">
+                <span class="text-lg font-bold font-mono text-neutral-800">
                   {{ simulatorsList.length }}
-                  <span v-if="excludedSimulatorsList.length > 0" class="text-xs font-normal text-amber-600 dark:text-amber-400">
+                  <span v-if="excludedSimulatorsList.length > 0" class="text-xs font-normal text-amber-600">
                     ({{ excludedSimulatorsList.length }} failed)
                   </span>
                 </span>
@@ -1621,7 +2224,7 @@ onMounted(() => {
 
               <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
                 <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Variables</span>
-                <span class="text-lg font-bold font-mono text-neutral-800 dark:text-neutral-200">
+                <span class="text-lg font-bold font-mono text-neutral-800">
                   {{ variableComparisonRows.length }}
                 </span>
               </UCard>
@@ -1670,6 +2273,198 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- Historical Verification Run Modal (Tab 2) -->
+    <UModal
+      v-model:open="isHistoricalModalOpen"
+      :fullscreen="isHistoricalModalFullscreen"
+      data-lenis-prevent
+      :ui="{
+        content: isHistoricalModalFullscreen
+          ? 'w-screen h-dvh max-w-none max-h-none rounded-none flex flex-col lenis-prevent'
+          : 'sm:max-w-6xl max-w-7xl w-full max-h-[92vh] flex flex-col lenis-prevent',
+        body: 'overflow-y-auto min-h-0 overscroll-contain p-4 sm:p-6 space-y-6 flex-1 lenis-prevent'
+      }"
+    >
+      <template #header>
+        <div class="flex items-center justify-between w-full">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="size-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0">
+              <UIcon :name="getVerificationType(activeWorkflowId).icon" class="size-5" />
+            </div>
+            <div class="min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <h3 class="text-base font-semibold text-neutral-900 truncate">
+                  Verification Report
+                </h3>
+                <UBadge
+                  :color="getVerificationType(activeWorkflowId).color"
+                  variant="subtle"
+                  size="xs"
+                >
+                  {{ getVerificationType(activeWorkflowId).label }}
+                </UBadge>
+              </div>
+              <div class="font-mono text-xs text-neutral-500 flex items-center gap-1.5 mt-0.5 truncate select-all">
+                <span class="truncate">{{ activeWorkflowId }}</span>
+                <UButton
+                  size="xs"
+                  variant="ghost"
+                  color="neutral"
+                  icon="i-lucide-link"
+                  class="p-0.5"
+                  title="Copy Permalink"
+                  @click="copyPermalink(activeWorkflowId)"
+                />
+                <UButton
+                  size="xs"
+                  variant="ghost"
+                  color="neutral"
+                  icon="i-lucide-copy"
+                  class="p-0.5"
+                  title="Copy Workflow ID"
+                  @click="copyWorkflowId(activeWorkflowId)"
+                />
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center gap-1 shrink-0">
+            <UButton
+              size="sm"
+              variant="ghost"
+              color="neutral"
+              :icon="isHistoricalModalFullscreen ? 'i-lucide-minimize-2' : 'i-lucide-maximize-2'"
+              :title="isHistoricalModalFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'"
+              @click="isHistoricalModalFullscreen = !isHistoricalModalFullscreen"
+            />
+            <UButton
+              size="sm"
+              variant="ghost"
+              color="neutral"
+              icon="i-lucide-x"
+              title="Close Report"
+              @click="isHistoricalModalOpen = false"
+            />
+          </div>
+        </div>
+      </template>
+
+      <template #body>
+        <div class="space-y-6">
+          <!-- Live Polling Status Component -->
+          <VerificationStatus
+            v-if="activeWorkflowId"
+            v-model="workflowOutput"
+            :workflow-id="activeWorkflowId"
+            :auto-poll="true"
+          />
+
+          <!-- Results Display when COMPLETED -->
+          <div v-if="workflowOutput?.workflow_status === 'COMPLETED'" class="space-y-6">
+            <!-- Dataset Selector & KPI Cards -->
+            <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+              <!-- Dataset Selector -->
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-semibold text-neutral-500 uppercase tracking-wider">Dataset / Report:</span>
+                <div class="w-72">
+                  <USelect
+                    v-model="activeDataset"
+                    :items="availableDatasets"
+                    size="sm"
+                    class="font-mono text-xs"
+                  />
+                </div>
+              </div>
+
+              <!-- KPI Cards -->
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
+                  <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Overall Concordance</span>
+                  <span
+                    class="text-lg font-bold font-mono"
+                    :class="overallConcordance >= 95 ? 'text-emerald-600' : overallConcordance >= 70 ? 'text-amber-500' : 'text-rose-600'"
+                  >
+                    {{ overallConcordance }}%
+                  </span>
+                </UCard>
+
+                <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
+                  <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Solvers Compared</span>
+                  <span class="text-lg font-bold font-mono text-neutral-800">
+                    {{ simulatorsList.length }}
+                    <span v-if="excludedSimulatorsList.length > 0" class="text-xs font-normal text-amber-600">
+                      ({{ excludedSimulatorsList.length }} failed)
+                    </span>
+                  </span>
+                </UCard>
+
+                <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
+                  <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Variables</span>
+                  <span class="text-lg font-bold font-mono text-neutral-800">
+                    {{ variableComparisonRows.length }}
+                  </span>
+                </UCard>
+
+                <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
+                  <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Outliers Flagged</span>
+                  <span
+                    class="text-lg font-bold font-mono"
+                    :class="totalOutlierCount > 0 ? 'text-amber-600 font-bold' : 'text-emerald-600'"
+                  >
+                    {{ totalOutlierCount }}
+                  </span>
+                </UCard>
+              </div>
+            </div>
+
+            <!-- Component 1: Concordance Heatmap Matrix -->
+            <VerificationHeatmap
+              :simulators="simulatorsList"
+              :excluded-simulators="excludedSimulatorsList"
+              :matrix="currentMatrix"
+              :selected-i="selectedI"
+              :selected-j="selectedJ"
+              @select-pair="onSelectHeatmapPair"
+            />
+
+            <!-- Component 2: Concordance & Outlier Table -->
+            <VerificationTable
+              :rows="variableComparisonRows"
+              :pair-label="selectedPairLabel"
+              :has-outputs="Boolean(workflowOutput?.workflow_results?.sim_run_data)"
+              @visualize="onVisualizeVariable"
+            />
+
+            <!-- Component 3: Plotly Multi-Solution Viewer -->
+            <div ref="modalPlotSectionRef">
+              <VerificationPlotViewer
+                :dataset-name="activeDataset"
+                :sim-run-data="workflowOutput?.workflow_results?.sim_run_data"
+                :sims-run-info="workflowOutput?.workflow_results?.sims_run_info"
+                :initial-variable="activeVariable"
+                :initial-sim-i="selectedI"
+                :initial-sim-j="selectedJ"
+              />
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <template #footer>
+        <div class="flex items-center justify-between w-full">
+          <div class="text-xs text-neutral-400 font-mono truncate max-w-sm">
+            Workflow: {{ activeWorkflowId }}
+          </div>
+          <UButton
+            color="neutral"
+            variant="outline"
+            size="sm"
+            label="Close Report"
+            @click="isHistoricalModalOpen = false"
+          />
+        </div>
+      </template>
+    </UModal>
 
     <!-- Platform Run Picker Modal -->
     <PlatformRunPickerModal

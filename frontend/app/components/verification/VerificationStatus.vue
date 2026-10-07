@@ -170,8 +170,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="w-full bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-5 shadow-sm">
-    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-neutral-100 dark:border-neutral-800">
+  <div class="w-full bg-white border border-neutral-200 rounded-xl p-5 shadow-sm">
+    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-neutral-100">
       <div class="flex items-center gap-3">
         <UBadge
           :color="statusBadgeColor"
@@ -183,21 +183,21 @@ onUnmounted(() => {
           <span>{{ status }}</span>
         </UBadge>
         <div>
-          <h3 class="text-base font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+          <h3 class="text-base font-semibold text-neutral-900 flex items-center gap-2">
             Verification Workflow
             <span v-if="!isDone" class="text-xs font-normal text-neutral-500">
               ({{ secondsElapsed }}s elapsed)
             </span>
             <span
               v-if="!isDone"
-              class="inline-flex items-center gap-1 text-[11px] font-normal px-2 py-0.5 rounded-full bg-primary-50 dark:bg-primary-950/40 text-primary border border-primary-200 dark:border-primary-800"
+              class="inline-flex items-center gap-1 text-[11px] font-normal px-2 py-0.5 rounded-full bg-primary-50 text-primary border border-primary-200"
             >
               <UIcon :name="polling ? 'i-svg-spinners:ring-resize' : 'i-lucide-refresh-cw'" class="size-3" :class="{ 'animate-spin': polling }" />
               <span>{{ polling ? 'Refreshing...' : `Auto-refresh in ${nextRefreshCountdown}s` }}</span>
             </span>
           </h3>
           <p class="text-xs text-neutral-500 flex items-center gap-1.5 mt-0.5">
-            ID: <code class="font-mono bg-neutral-100 dark:bg-neutral-800 px-1 py-0.5 rounded text-[11px]">{{ workflowId }}</code>
+            ID: <code class="font-mono bg-neutral-100 px-1 py-0.5 rounded text-[11px]">{{ workflowId }}</code>
             <UButton
               icon="i-lucide-copy"
               size="xs"
@@ -233,10 +233,10 @@ onUnmounted(() => {
     </div>
 
     <!-- Details Section -->
-    <div class="pt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs text-neutral-600 dark:text-neutral-400">
+    <div class="pt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs text-neutral-600">
       <div>
         <span class="block text-neutral-400 uppercase tracking-wider text-[10px] font-semibold">Description</span>
-        <span class="font-medium text-neutral-800 dark:text-neutral-200">
+        <span class="font-medium text-neutral-800">
           {{ workflowData?.compare_settings?.user_description || 'N/A' }}
         </span>
       </div>
