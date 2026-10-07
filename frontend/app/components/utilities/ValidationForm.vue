@@ -8,6 +8,7 @@ interface Props {
   supportedExtensions?: string[];
   submitLabel?: string;
   dropLabel?: string;
+  initialUrl?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -15,7 +16,8 @@ const props = withDefaults(defineProps<Props>(), {
   accept: '*',
   supportedExtensions: () => [],
   submitLabel: 'Validate',
-  dropLabel: 'Drop file here'
+  dropLabel: 'Drop file here',
+  initialUrl: ''
 });
 
 const emit = defineEmits<{
@@ -23,9 +25,9 @@ const emit = defineEmits<{
   (e: 'reset'): void;
 }>();
 
-const mode = ref<'file' | 'url'>('file');
+const mode = ref<'file' | 'url'>(props.initialUrl ? 'url' : 'file');
 const selectedFile = ref<File | null>(null);
-const inputUrl = ref('');
+const inputUrl = ref(props.initialUrl || '');
 const urlError = ref<string | null>(null);
 
 const inputModes: TabsItem[] = [
@@ -63,6 +65,13 @@ function validateUrl(val: string): boolean {
 watch(inputUrl, (val) => {
   if (urlError.value && val) {
     validateUrl(val);
+  }
+});
+
+watch(() => props.initialUrl, (newVal) => {
+  if (newVal) {
+    inputUrl.value = newVal;
+    mode.value = 'url';
   }
 });
 
