@@ -1,5 +1,7 @@
 import type {
   ModelLanguage,
+  OmexMetadataInputFormat,
+  OmexMetadataSchema,
   ValidationMessage,
   ValidationReport,
   ValidationStatus
@@ -93,6 +95,7 @@ export function useCombineApi() {
   // apply. See backend/biosim_server/validation/router.py.
   const platformApiUrl = (config.public.api_url as string | undefined) ?? '';
   const baseUrl = `${platformApiUrl.replace(/\/+$/, '')}/validation`;
+  const combineApiUrl = ((config.public.combine_api_url as string | undefined) || 'https://combine.api.biosimulations.org').replace(/\/+$/, '');
 
   /**
    * Validate a model file or public URL against the COMBINE API.
@@ -193,9 +196,64 @@ export function useCombineApi() {
     }
   }
 
+  /**
+   * Validate an OMEX metadata document file or public URL against the COMBINE API.
+   *
+   * @param fileOrUrl - Either a File object or a string URL to the metadata file.
+   * @param format - Format of the metadata document (rdfxml, turtle, ntriples, nquads, rdfa).
+   * @param schema - Schema specification ('BioSimulations' or 'rdf_triples').
+   */
+  async function validateOmexMetadata(
+    fileOrUrl: File | string,
+    format: OmexMetadataInputFormat,
+    schema: OmexMetadataSchema
+  ): Promise<ValidationReport> {
+    const formData = new FormData();
+    formData.append('format', format);
+    formData.append('schema', schema);
+
+    if (typeof fileOrUrl === 'string') {
+      formData.append('url', fileOrUrl.trim());
+    } else {
+      formData.append('file', fileOrUrl, fileOrUrl.name);
+    }
+
+    try {
+      const response = await $fetch<any>(`${combineApiUrl}/omex-metadata/validate`, {
+        method: 'POST',
+        body: formData
+      });
+
+      return normalizeValidationReport(response);
+    } catch (err: any) {
+      // Check for structured HTTPError payload from COMBINE API (e.g. 400 Bad Request)
+      const errorData = err?.data;
+      if (errorData && (errorData.title || errorData.detail)) {
+        return {
+          _type: 'ValidationReport',
+          status: 'invalid',
+          errors: [
+            {
+              _type: 'ValidationMessage',
+              summary: errorData.title || 'Metadata validation error',
+              details: errorData.detail
+                ? [{ _type: 'ValidationMessage', summary: errorData.detail }]
+                : undefined
+            }
+          ],
+          warnings: []
+        };
+      }
+
+      // Re-throw unexpected connection or server errors
+      throw err;
+    }
+  }
+
   return {
     baseUrl,
     validateModel,
-    validateSedml
+    validateSedml,
+    validateOmexMetadata
   };
 }
