@@ -23,7 +23,7 @@ from biosim_server.biosim_verify.models import (
     MAX_WORKFLOW_ID_BYTES,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
     WORKFLOW_ID_PREFIX_MAX_LENGTH,
-    VerificationRecord,
+    VerificationLedgerRecord,
     VerificationType,
 )
 
@@ -32,8 +32,8 @@ def _utc(year: int, month: int, day: int, hour: int = 0) -> datetime:
     return datetime(year, month, day, hour, tzinfo=timezone.utc)
 
 
-def _omex_record(workflow_id: str, owner: str | None, created: datetime) -> VerificationRecord:
-    return VerificationRecord(
+def _omex_record(workflow_id: str, owner: str | None, created: datetime) -> VerificationLedgerRecord:
+    return VerificationLedgerRecord(
         workflow_id=workflow_id,
         verify_type=VerificationType.OMEX,
         owner_sub=owner,
@@ -74,7 +74,7 @@ async def test_list_public_returns_newest_first(svc: VerificationDatabaseService
     """3 ownerless records inserted out of order → returned newest-first."""
     await svc.insert_verification(_omex_record("wf-a", None, _utc(2025, 1, 1)))
     await svc.insert_verification(_omex_record("wf-b", None, _utc(2025, 1, 3)))
-    await svc.insert_verification(VerificationRecord(
+    await svc.insert_verification(VerificationLedgerRecord(
         workflow_id="wf-c", verify_type=VerificationType.RUNS, owner_sub=None, created=_utc(2025, 1, 2),
     ))
 
@@ -250,7 +250,7 @@ async def test_page_read_is_bounded(owner: str | None, after: VerificationCursor
                         {"$nor": [{"created": after.created,
                                    "workflow_id": {"$lte": after.workflow_id}}]}])
     assert collection.find_calls == [(({"$and": clauses},), {
-        "projection": {"workflow_id": 1, "created": 1, "_id": 0},
+        "projection": {"workflow_id": 1, "created": 1, "omex_hash": 1, "status": 1, "_id": 0},
     })]
 
     assert cursor.limits == [5]
