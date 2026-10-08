@@ -212,3 +212,22 @@ export const OMEX_METADATA_SCHEMA_OPTIONS: OmexMetadataSchemaOption[] = [
   }
 ];
 
+export const COMBINE_PROJECT_FORMAT_OPTION: FormatOption = {
+  name: 'COMBINE / OMEX Archive',
+  description: 'Open Modeling EXchange format (OMEX) archive bundling computational models, SED-ML simulation experiments, metadata annotations, and digital assets into a standard container.',
+  extensions: ['.omex', '.zip'],
+  accept: '.omex,.zip,application/zip,application/x-zip-compressed',
+  docsUrl: 'https://combinearchive.org/'
+};
+
+export interface ValidateProjectOptions {
+  omexMetadataFormat?: OmexMetadataInputFormat;
+  omexMetadataSchema?: OmexMetadataSchema;
+  validateOmexManifest?: boolean;
+  validateSedml?: boolean;
+  validateSedmlModels?: boolean;
+  validateOmexMetadata?: boolean;
+  validateImages?: boolean;
+}
+
+
