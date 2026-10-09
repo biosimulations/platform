@@ -24,7 +24,15 @@ const loading = ref(true)
 const error_encountered = ref<string | undefined>(undefined)
 const simulator = ref<SimulatorDetail | undefined>(undefined)
 const selectedVersion = ref<string>('')
-const breadcrumbs = ref<BreadcrumbItem[]>([])
+const breadcrumbs = computed<BreadcrumbItem[]>(() => [
+  { label: 'Home', to: '/', icon: 'i-lucide-home' },
+  { label: 'Simulators', to: '/simulators' },
+  {
+    label: simulator.value
+      ? `${simulator.value.name} (v${simulator.value.version})`
+      : (route.params.id as string || 'Simulator Details')
+  }
+])
 
 // Description expand/collapse
 const isDescriptionExpanded = ref(false)
@@ -129,12 +137,6 @@ async function loadSimulator() {
       selectedExecutionTab.value = 'python'
     }
 
-    breadcrumbs.value = [
-      { label: 'Home', to: '/', icon: 'i-lucide-home' },
-      { label: 'Simulators', to: '/simulators' },
-      { label: `${data.name} (v${data.version})`, to: '' },
-    ]
-
     nextTick(() => {
       if (route.hash) {
         const el = document.querySelector(route.hash)
@@ -158,11 +160,6 @@ watch(
 )
 
 onMounted(() => {
-  breadcrumbs.value = [
-    { label: 'Home', to: '/', icon: 'i-lucide-home' },
-    { label: 'Simulators', to: '/simulators' },
-    { label: 'Simulator Details', to: '' },
-  ]
   loadSimulator()
 })
 </script>

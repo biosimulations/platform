@@ -7,7 +7,6 @@ import type { SimulationRuns, SimulationRun } from '~/models/simulators'
 import Loading from '~/components/Loading.vue'
 import type { TableFilterConfig, TableSort, TablePagination } from '~/models/filtering'
 import type { BreadcrumbItem } from '#ui/components/Breadcrumb.vue'
-import { normalize_text } from '~/functions/functions'
 import type { CoreRow } from '@tanstack/table-core'
 import { useAuth0 } from '@auth0/auth0-vue'
 
@@ -16,21 +15,12 @@ const { user, isAuthenticated } = useAuth0()
 const toast = useToast()
 const { copy } = useClipboard()
 const runtimeConfig = useRuntimeConfig()
-const route = useRoute()
-const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
-const breadcrumbs = ref<BreadcrumbItem[]>([])
+const breadcrumbs: BreadcrumbItem[] = [
+  { label: 'Home', to: '/', icon: 'i-lucide-home' },
+  { label: 'Simulations' }
+]
 
 onMounted(async () => {
-  breadcrumbs.value = [{ label: 'Home', to: '/', icon: 'i-lucide-home' }]
-  routes.forEach((route) => {
-    const breadcrumb = {
-      label: normalize_text(route),
-      to: `/${route}`
-    }
-
-    breadcrumbs.value.push(breadcrumb)
-  })
-
   await fetch_runs()
 })
 

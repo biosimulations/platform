@@ -672,11 +672,7 @@ function selectAlgorithmAndScroll(id: string) {
     <div class="max-w-7xl mx-auto space-y-8">
       <!-- Breadcrumb & Header -->
       <div class="space-y-4">
-        <UBreadcrumb :items="breadcrumbs" class="mb-2">
-          <template #separator>
-            <span class="mx-1 text-neutral-400">/</span>
-          </template>
-        </UBreadcrumb>
+        <UBreadcrumb :items="breadcrumbs" class="mb-2" />
 
         <div class="flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
