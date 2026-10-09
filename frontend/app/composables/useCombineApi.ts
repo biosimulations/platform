@@ -1,13 +1,4 @@
-import type {
-  AlgorithmSubstitution,
-  ModelLanguage,
-  OmexMetadataInputFormat,
-  OmexMetadataSchema,
-  ValidateProjectOptions,
-  ValidationMessage,
-  ValidationReport,
-  ValidationStatus
-} from '~/models/combine-api';
+import type {AlgorithmSubstitution, CombineArchive, ModelLanguage, OmexMetadataInputFormat, OmexMetadataSchema, SedDocument, ValidateProjectOptions, ValidationMessage, ValidationReport, ValidationStatus} from '~/models/combine-api';
 
 /**
  * Recursively normalizes raw error or warning payloads from the COMBINE API
@@ -372,12 +363,66 @@ export function useCombineApi() {
     }
   }
 
+  /**
+   * Introspect a model file or public URL to extract simulation variables, parameters, and defaults.
+   *
+   * @param formData - FormData with modelFile/modelUrl, modelLanguage, modelingFramework, simulationType, simulationAlgorithm.
+   */
+  async function introspectModel(formData: FormData): Promise<SedDocument> {
+    const directEndpoint = `${combineApiUrl}/sed-ml/get-parameters-variables-for-simulation`;
+
+    try {
+      return await $fetch<SedDocument>(directEndpoint, {
+        method: 'POST',
+        body: formData,
+        credentials: 'omit'
+      });
+    } catch (err: any) {
+      const errorData = err?.data;
+      const detail = errorData?.detail || errorData?.title || err?.message || 'Model introspection failed.';
+      throw new Error(detail);
+    }
+  }
+
+  /**
+   * Create a COMBINE / OMEX archive blob from archive specifications and optional files.
+   *
+   * @param specs - CombineArchive specification object.
+   * @param file - Optional model File to include in the multipart upload.
+   */
+  async function createCombineArchive(specs: CombineArchive, file?: File): Promise<Blob> {
+    const formData = new FormData();
+    formData.append('specs', JSON.stringify(specs));
+    formData.append('download', 'true');
+
+    if (file) {
+      formData.append('files', file, file.name);
+    }
+
+    const directEndpoint = `${combineApiUrl}/combine/create`;
+
+    try {
+      return await $fetch<Blob>(directEndpoint, {
+        method: 'POST',
+        body: formData,
+        responseType: 'blob',
+        credentials: 'omit'
+      });
+    } catch (err: any) {
+      const errorData = err?.data;
+      const detail = errorData?.detail || errorData?.title || err?.message || 'COMBINE archive creation failed.';
+      throw new Error(detail);
+    }
+  }
+
   return {
     baseUrl,
     validateModel,
     validateSedml,
     validateOmexMetadata,
     validateProject,
-    getSimilarAlgorithms
+    getSimilarAlgorithms,
+    introspectModel,
+    createCombineArchive
   };
 }
