@@ -122,7 +122,7 @@ const POLICY_INFO: Record<string, { label: string; description: string; badgeCol
   },
   SIMILAR_APPROXIMATIONS: {
     label: 'Similar Approximations (Level 3)',
-    description: 'Employs numerical approximations of comparable mathematical order and error bounds.',
+    description: 'Uses numerical approximations of comparable mathematical order and error bounds.',
     badgeColor: 'primary'
   },
   DISTINCT_APPROXIMATIONS: {
@@ -169,7 +169,9 @@ function getKisaoUrl(id: string): string {
 // State
 // =============================================================================
 
-const loading = ref(true);
+const page_fetch = ref(true);
+const algorithm_fetch = ref(false);
+const fetchedAlgorithms = ref<Set<string>>(new Set());
 const error = ref<string | null>(null);
 
 const simulatorsMap = ref<Map<string, SimulatorItem>>(new Map());
@@ -205,7 +207,7 @@ const popularAlgorithms = [
 // =============================================================================
 
 async function loadData() {
-  loading.value = true;
+  page_fetch.value = true;
   error.value = null;
 
   try {
@@ -282,9 +284,8 @@ async function loadData() {
     algorithmNames.value = algNames;
     algorithmDirectSims.value = algSims;
 
-    // 3. Build fast lookup index for all algorithms
+    // 2. Build baseline lookup index for all direct algorithms
     const lookup = new Map<string, PrecomputedAlgData>();
-
     for (const algId of uniqueKisaoIds) {
       lookup.set(algId, {
         directSimIds: new Set(algSims.get(algId) || []),
@@ -292,94 +293,114 @@ async function loadData() {
         altAlgs: new Map()
       });
     }
-
-    // Process substitutions
-    for (const sub of substitutions) {
-      if (!sub.algorithms || sub.algorithms.length < 2) continue;
-      const mainAlg = sub.algorithms[0];
-      const altAlg = sub.algorithms[1];
-      if (!mainAlg || !altAlg || !mainAlg.id || !altAlg.id) continue;
-      const mainId = mainAlg.id;
-      const altId = altAlg.id;
-      const policy = sub.minPolicy;
-
-      // Ensure both algorithms have lookup entries
-      if (!lookup.has(mainId)) {
-        lookup.set(mainId, {
-          directSimIds: new Set(algSims.get(mainId) || []),
-          altSims: new Map(),
-          altAlgs: new Map()
-        });
-      }
-      if (!lookup.has(altId)) {
-        lookup.set(altId, {
-          directSimIds: new Set(algSims.get(altId) || []),
-          altSims: new Map(),
-          altAlgs: new Map()
-        });
-      }
-
-      const mainData = lookup.get(mainId)!;
-      const altData = lookup.get(altId)!;
-
-      // Alt algorithms index (only policy levels > 1)
-      if (policy.level > AlgorithmSubstitutionPolicyLevels.SAME_METHOD) {
-        if (!mainData.altAlgs.has(policy.level)) {
-          mainData.altAlgs.set(policy.level, { minPolicy: policy, algIds: new Set() });
-        }
-        mainData.altAlgs.get(policy.level)!.algIds.add(altId);
-
-        if (!altData.altAlgs.has(policy.level)) {
-          altData.altAlgs.set(policy.level, { minPolicy: policy, algIds: new Set() });
-        }
-        altData.altAlgs.get(policy.level)!.algIds.add(mainId);
-      }
-
-      // Simulator substitutions:
-      // Simulators that implement mainAlg -> alternative match for altAlg
-      const mainSims = algSims.get(mainId) || new Set<string>();
-      for (const simId of mainSims) {
-        // If this simulator already directly implements altAlg, it stays as direct (Level 1)
-        if (altData.directSimIds.has(simId)) continue;
-
-        const existing = altData.altSims.get(simId);
-        if (!existing) {
-          altData.altSims.set(simId, { minPolicy: policy, algIds: new Set([mainId]) });
-        } else if (policy.level < existing.minPolicy.level) {
-          altData.altSims.set(simId, { minPolicy: policy, algIds: new Set([mainId]) });
-        } else if (policy.level === existing.minPolicy.level) {
-          existing.algIds.add(mainId);
-        }
-      }
-
-      // Simulators that implement altAlg -> alternative match for mainAlg
-      const altSims = algSims.get(altId) || new Set<string>();
-      for (const simId of altSims) {
-        if (mainData.directSimIds.has(simId)) continue;
-
-        const existing = mainData.altSims.get(simId);
-        if (!existing) {
-          mainData.altSims.set(simId, { minPolicy: policy, algIds: new Set([altId]) });
-        } else if (policy.level < existing.minPolicy.level) {
-          mainData.altSims.set(simId, { minPolicy: policy, algIds: new Set([altId]) });
-        } else if (policy.level === existing.minPolicy.level) {
-          existing.algIds.add(altId);
-        }
-      }
-    }
-
     suggestionLookup.value = lookup;
 
-    // 4. Check query params for initial selection
+    // 3. Check query params for initial selection
     const queryAlg = (route.query.algorithm || route.query.simulationAlgorithm || route.query.kisaoId) as string | undefined;
-    if (queryAlg && lookup.has(queryAlg)) {
+    if (queryAlg) {
       selectedAlgorithmId.value = queryAlg;
     }
   } catch (err: any) {
     console.error('Failed to load simulator suggestion data:', err);
     error.value = err?.message || 'Failed to load simulator and KiSAO ontology data. Please try again.';
   } finally {
-    loading.value = false;
+    page_fetch.value = false;
+    if (selectedAlgorithmId.value) {
+      fetchAlgorithmData(selectedAlgorithmId.value);
+    }
+  }
+}
+
+async function fetchAlgorithmData(algId: string) {
+  if (!algId || page_fetch.value) return;
+
+  // Ensure lookup has a baseline entry
+  if (!suggestionLookup.value.has(algId)) {
+    suggestionLookup.value.set(algId, {
+      directSimIds: new Set(algorithmDirectSims.value.get(algId) || []),
+      altSims: new Map(),
+      altAlgs: new Map()
+    });
+  }
+
+  // If already fetched similar algorithms for this ID, no need to refetch
+  if (fetchedAlgorithms.value.has(algId)) {
+    updateDefaultAccordionSections();
+    return;
+  }
+
+  algorithm_fetch.value = true;
+
+  try {
+    const substitutions = await combineApi.getSimilarAlgorithms([algId]);
+
+    // Register any new algorithm names returned from COMBINE API
+    for (const sub of substitutions) {
+      for (const alg of sub.algorithms || []) {
+        if (alg.name && (!algorithmNames.value.has(alg.id) || algorithmNames.value.get(alg.id) === alg.id)) {
+          algorithmNames.value.set(alg.id, alg.name);
+        }
+      }
+    }
+
+    // Process substitutions for algId
+    const currentData = suggestionLookup.value.get(algId)!;
+
+    for (const sub of substitutions) {
+      if (!sub.algorithms || sub.algorithms.length < 2) continue;
+      const mainAlg = sub.algorithms[0];
+      const altAlg = sub.algorithms[1];
+      if (!mainAlg || !altAlg || !mainAlg.id || !altAlg.id) continue;
+      const policy = sub.minPolicy;
+
+      let otherAlg: typeof altAlg | null = null;
+      if (mainAlg.id === algId) {
+        otherAlg = altAlg;
+      } else if (altAlg.id === algId) {
+        otherAlg = mainAlg;
+      } else {
+        continue;
+      }
+
+      const otherId = otherAlg.id;
+
+      if (otherAlg.name && !algorithmNames.value.has(otherId)) {
+        algorithmNames.value.set(otherId, otherAlg.name);
+      }
+
+      // Record related algorithms for policy levels > 1
+      if (policy.level > AlgorithmSubstitutionPolicyLevels.SAME_METHOD) {
+        if (!currentData.altAlgs.has(policy.level)) {
+          currentData.altAlgs.set(policy.level, { minPolicy: policy, algIds: new Set() });
+        }
+        currentData.altAlgs.get(policy.level)!.algIds.add(otherId);
+      }
+
+      // Simulators that implement otherId are alternative matches for algId
+      const substituteSims = algorithmDirectSims.value.get(otherId) || new Set<string>();
+      for (const simId of substituteSims) {
+        if (currentData.directSimIds.has(simId)) continue;
+
+        const existing = currentData.altSims.get(simId);
+        if (!existing) {
+          currentData.altSims.set(simId, { minPolicy: policy, algIds: new Set([otherId]) });
+        } else if (policy.level < existing.minPolicy.level) {
+          currentData.altSims.set(simId, { minPolicy: policy, algIds: new Set([otherId]) });
+        } else if (policy.level === existing.minPolicy.level) {
+          existing.algIds.add(otherId);
+        }
+      }
+    }
+
+    fetchedAlgorithms.value.add(algId);
+    suggestionLookup.value = new Map(suggestionLookup.value);
+  } catch (err) {
+    console.warn(`Failed to fetch algorithm substitutions for ${algId}:`, err);
+  } finally {
+    algorithm_fetch.value = false;
+    nextTick(() => {
+      updateDefaultAccordionSections();
+    });
   }
 }
 
@@ -387,7 +408,7 @@ onMounted(() => {
   loadData();
 });
 
-// Sync selection to query param
+// Sync selection to query param and trigger algorithm_fetch
 watch(selectedAlgorithmId, (newId) => {
   if (newId) {
     router.replace({
@@ -396,6 +417,9 @@ watch(selectedAlgorithmId, (newId) => {
         algorithm: newId
       }
     });
+    if (!page_fetch.value) {
+      fetchAlgorithmData(newId);
+    }
   } else {
     const q = { ...route.query };
     delete q.algorithm;
@@ -408,9 +432,7 @@ watch(selectedAlgorithmId, (newId) => {
 // Watch query param changes (e.g. back button)
 watch(() => route.query.algorithm, (newVal) => {
   if (typeof newVal === 'string' && newVal !== selectedAlgorithmId.value) {
-    if (suggestionLookup.value.has(newVal)) {
-      selectedAlgorithmId.value = newVal;
-    }
+    selectedAlgorithmId.value = newVal;
   }
 });
 
@@ -643,10 +665,6 @@ function selectAlgorithmAndScroll(id: string) {
     });
   }
 }
-
-function clearSelection() {
-  selectedAlgorithmId.value = null;
-}
 </script>
 
 <template>
@@ -709,23 +727,52 @@ function clearSelection() {
         </div>
       </div>
 
-      <!-- Loading State -->
-      <div v-if="loading" class="space-y-6">
-        <UCard class="p-6">
+      <!-- Initial Page Hydration Loading State: page_fetch -->
+      <div v-if="page_fetch" class="space-y-8">
+        <!-- Selector Card Skeleton -->
+        <UCard class="shadow-sm border border-neutral-200">
+          <template #header>
+            <div class="flex items-center justify-between gap-3">
+              <div class="space-y-1.5">
+                <div class="flex items-center gap-2">
+                  <USkeleton class="size-5 rounded" />
+                  <USkeleton class="h-5 w-56" />
+                </div>
+                <USkeleton class="h-3.5 w-80 max-w-full" />
+              </div>
+              <USkeleton class="h-6 w-36 rounded-full" />
+            </div>
+          </template>
           <div class="space-y-4">
-            <USkeleton class="h-6 w-1/3" />
-            <USkeleton class="h-10 w-full" />
-            <div class="flex gap-2 pt-2">
-              <USkeleton class="h-8 w-24" />
-              <USkeleton class="h-8 w-32" />
-              <USkeleton class="h-8 w-28" />
+            <div class="space-y-1.5">
+              <USkeleton class="h-3.5 w-44" />
+              <USkeleton class="h-10 w-full rounded-md" />
+            </div>
+            <div class="pt-2 border-t border-neutral-100 flex flex-wrap items-center gap-2">
+              <USkeleton class="h-4 w-32" />
+              <USkeleton class="h-6 w-28 rounded-md" />
+              <USkeleton class="h-6 w-36 rounded-md" />
+              <USkeleton class="h-6 w-32 rounded-md" />
+              <USkeleton class="h-6 w-24 rounded-md" />
             </div>
           </div>
         </UCard>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <USkeleton class="h-44 w-full" />
-          <USkeleton class="h-44 w-full" />
-          <USkeleton class="h-44 w-full" />
+
+        <!-- Bottom Area Skeleton (Initial Guide Bento Grid Skeleton) -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <UCard
+            v-for="i in 3"
+            :key="'guide-skel-' + i"
+            class="border border-neutral-200 shadow-sm p-5 space-y-3"
+          >
+            <div class="flex items-center gap-2.5">
+              <USkeleton class="size-9 rounded-lg" />
+              <USkeleton class="h-5 w-44" />
+            </div>
+            <USkeleton class="h-3.5 w-full" />
+            <USkeleton class="h-3.5 w-5/6" />
+            <USkeleton class="h-3.5 w-4/6" />
+          </UCard>
         </div>
       </div>
 
@@ -842,7 +889,7 @@ function clearSelection() {
 
         <!-- Active Selection View: Combined Selection Overview & Results Accordion Card -->
         <UCard
-          v-if="selectedAlgorithmData"
+          v-if="selectedAlgorithmId"
           class="border border-neutral-200 shadow-sm overflow-hidden"
           :ui="{
             root: 'rounded-xl border border-neutral-200 bg-white shadow-sm overflow-hidden divide-y divide-neutral-200 ring-0',
@@ -852,7 +899,39 @@ function clearSelection() {
         >
           <!-- Selection Overview Header -->
           <template #header>
-            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+            <!-- Skeleton Header Block when algorithm_fetch is active -->
+            <div v-if="algorithm_fetch" class="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+              <div class="space-y-2.5 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <USkeleton class="h-7 w-60 rounded-md" />
+                  <USkeleton class="h-6 w-28 rounded-md" />
+                </div>
+                <div class="space-y-1.5 max-w-2xl">
+                  <USkeleton class="h-4 w-full" />
+                  <USkeleton class="h-4 w-4/5" />
+                </div>
+              </div>
+
+              <!-- Quick Stats Skeletons -->
+              <div class="flex flex-wrap items-center gap-3 shrink-0">
+                <div class="px-4 py-2 rounded-lg bg-neutral-50 border border-neutral-200 text-center min-w-26">
+                  <USkeleton class="h-6 w-8 mx-auto mb-1" />
+                  <USkeleton class="h-3 w-20 mx-auto" />
+                </div>
+                <div class="px-4 py-2 rounded-lg bg-emerald-50/60 border border-emerald-200/70 text-center min-w-26">
+                  <USkeleton class="h-6 w-8 mx-auto mb-1" />
+                  <USkeleton class="h-3 w-16 mx-auto" />
+                </div>
+                <div class="px-4 py-2 rounded-lg bg-blue-50/60 border border-blue-200/70 text-center min-w-26">
+                  <USkeleton class="h-6 w-8 mx-auto mb-1" />
+                  <USkeleton class="h-3 w-20 mx-auto" />
+                </div>
+                <USkeleton class="h-8 w-16 rounded-md" />
+              </div>
+            </div>
+
+            <!-- Real Header Block when algorithm_fetch is false -->
+            <div v-else-if="selectedAlgorithmData" class="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
               <div class="space-y-2">
                 <div class="flex flex-wrap items-center gap-2">
                   <h2 class="text-xl sm:text-2xl font-bold text-neutral-900">
@@ -902,23 +981,98 @@ function clearSelection() {
                     Alternative Solvers
                   </div>
                 </div>
-
-                <UButton
-                  color="neutral"
-                  variant="ghost"
-                  icon="i-lucide-x"
-                  size="sm"
-                  aria-label="Clear algorithm selection"
-                  @click="clearSelection"
-                >
-                  Clear
-                </UButton>
               </div>
             </div>
           </template>
 
+          <!-- Skeleton Body Block when algorithm_fetch is active -->
+          <div v-if="algorithm_fetch" class="divide-y divide-neutral-200 bg-white">
+            <!-- Section 1 Trigger & Simulator Cards Grid Skeleton -->
+            <div class="p-0">
+              <div class="flex items-center justify-between p-4 sm:p-5 bg-neutral-50/40">
+                <div class="space-y-1.5 flex-1">
+                  <div class="flex items-center gap-2">
+                    <USkeleton class="h-5 w-56" />
+                    <USkeleton class="h-5 w-24 rounded-full" />
+                  </div>
+                  <USkeleton class="h-3.5 w-96 max-w-full" />
+                </div>
+                <USkeleton class="size-4 rounded shrink-0" />
+              </div>
+
+              <!-- Section 1 Content Skeleton: Grid of Direct Simulator Cards -->
+              <div class="border-t border-neutral-100 bg-neutral-50/25 p-4 sm:p-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  <div
+                    v-for="i in 3"
+                    :key="'sim-skel-' + i"
+                    class="flex flex-col h-full rounded-xl border border-neutral-200 bg-white shadow-sm overflow-hidden"
+                  >
+                    <!-- Card Header: Row 1 Name + Version, Row 2 ID + Status -->
+                    <div class="p-4 sm:p-5 pb-3 space-y-2 border-b border-neutral-100">
+                      <div class="flex items-start justify-between gap-2">
+                        <USkeleton class="h-5 w-32" />
+                        <USkeleton class="h-5 w-14 rounded-full shrink-0" />
+                      </div>
+                      <div class="flex items-center justify-between gap-2">
+                        <USkeleton class="h-3.5 w-20" />
+                        <USkeleton class="h-5 w-16 rounded-full shrink-0" />
+                      </div>
+                    </div>
+
+                    <!-- Card Body -->
+                    <div class="p-4 sm:p-5 pt-3 flex-1 flex flex-col justify-between space-y-3">
+                      <div class="space-y-1.5">
+                        <USkeleton class="h-3.5 w-full" />
+                        <USkeleton class="h-3.5 w-4/5" />
+                      </div>
+                      <div class="space-y-1.5 pt-3 mt-auto border-t border-neutral-100/70">
+                        <USkeleton class="h-3 w-28" />
+                        <div class="flex flex-wrap gap-1.5">
+                          <USkeleton class="h-5 w-16 rounded-full" />
+                          <USkeleton class="h-5 w-14 rounded-full" />
+                          <USkeleton class="h-5 w-12 rounded-full" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Card Footer: View Details Skeleton -->
+                    <div class="p-4 sm:p-5 pt-3 mt-auto border-t border-neutral-100">
+                      <USkeleton class="h-8 w-full rounded-md" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Section 2 Trigger Skeleton (Alternative Compatible Simulators) -->
+            <div class="flex items-center justify-between p-4 sm:p-5 hover:bg-neutral-50/80">
+              <div class="space-y-1.5 flex-1">
+                <div class="flex items-center gap-2">
+                  <USkeleton class="h-5 w-64" />
+                  <USkeleton class="h-5 w-28 rounded-full" />
+                </div>
+                <USkeleton class="h-3.5 w-80 max-w-full" />
+              </div>
+              <USkeleton class="size-4 rounded shrink-0" />
+            </div>
+
+            <!-- Section 3 Trigger Skeleton (Related KiSAO Algorithms) -->
+            <div class="flex items-center justify-between p-4 sm:p-5 hover:bg-neutral-50/80">
+              <div class="space-y-1.5 flex-1">
+                <div class="flex items-center gap-2">
+                  <USkeleton class="h-5 w-52" />
+                  <USkeleton class="h-5 w-20 rounded-full" />
+                </div>
+                <USkeleton class="h-3.5 w-72 max-w-full" />
+              </div>
+              <USkeleton class="size-4 rounded shrink-0" />
+            </div>
+          </div>
+
           <!-- Comprehensive Accordion for Direct Matches, Alternative Simulators, and Related Algorithms -->
           <UAccordion
+            v-else
             v-model="activeAccordionSections"
             type="multiple"
             :items="accordionItems"
@@ -969,7 +1123,7 @@ function clearSelection() {
                     :ui="{
                       root: 'flex flex-col h-full',
                       header: 'p-4 sm:p-5 pb-3',
-                      body: 'p-4 sm:p-5 pt-0 flex-1 flex flex-col justify-start',
+                      body: 'p-4 sm:p-5 pt-0 flex-1 flex flex-col justify-between',
                       footer: 'p-4 sm:p-5 pt-3 mt-auto border-t border-neutral-100 flex items-center justify-between gap-2'
                     }"
                   >
@@ -1003,12 +1157,15 @@ function clearSelection() {
                       </div>
                     </template>
 
-                    <div class="space-y-3 text-xs flex-1">
-                      <p class="text-neutral-600 leading-relaxed">
-                        {{ sim.description }}
-                      </p>
+                    <div class="flex-1 flex flex-col justify-between text-xs space-y-3">
+                      <div>
+                        <p class="text-neutral-600 leading-relaxed">
+                          {{ sim.description }}
+                        </p>
+                      </div>
 
-                      <div v-if="sim.modelFormats.length > 0" class="space-y-1 pt-1">
+                      <!-- Supported Formats: pinned to bottom above card footer -->
+                      <div v-if="sim.modelFormats.length > 0" class="space-y-1 pt-3 mt-auto border-t border-neutral-100/70">
                         <span class="text-xs uppercase font-semibold text-neutral-400">Supported Formats:</span>
                         <div class="flex flex-wrap gap-1">
                           <UBadge
@@ -1033,26 +1190,16 @@ function clearSelection() {
                     </div>
 
                     <template #footer>
-                      <div class="flex items-center justify-between gap-2 w-full">
-                        <UButton
-                          :to="sim.url"
-                          color="neutral"
-                          variant="outline"
-                          size="sm"
-                          icon="i-lucide-info"
-                          label="View Details"
-                          :aria-label="'View details for ' + sim.name"
-                        />
-                        <UButton
-                          :to="`/simulations/run?simulator=${sim.id}`"
-                          color="primary"
-                          variant="solid"
-                          size="sm"
-                          icon="i-fluent-sparkle-20-filled"
-                          label="Run Simulation"
-                          :aria-label="'Run simulation with ' + sim.name"
-                        />
-                      </div>
+                      <UButton
+                        :to="sim.url"
+                        color="primary"
+                        variant="solid"
+                        size="sm"
+                        icon="i-lucide-info"
+                        label="View Details"
+                        :aria-label="'View details for ' + sim.name"
+                        block
+                      />
                     </template>
                   </UCard>
                 </div>
@@ -1111,7 +1258,7 @@ function clearSelection() {
                         :ui="{
                           root: 'flex flex-col h-full',
                           header: 'p-4 sm:p-5 pb-3',
-                          body: 'p-4 sm:p-5 pt-0 flex-1 flex flex-col justify-start',
+                          body: 'p-4 sm:p-5 pt-0 flex-1 flex flex-col justify-between',
                           footer: 'p-4 sm:p-5 pt-3 mt-auto border-t border-neutral-100 flex items-center justify-between gap-2'
                         }"
                       >
@@ -1145,14 +1292,42 @@ function clearSelection() {
                           </div>
                         </template>
 
-                        <div class="space-y-3 text-xs flex-1">
-                          <!-- Full description without truncation -->
-                          <p class="text-neutral-600 leading-relaxed">
-                            {{ item.simulator.description }}
-                          </p>
+                        <div class="flex-1 flex flex-col justify-between text-xs space-y-3">
+                          <div class="space-y-3">
+                            <!-- Full description without truncation -->
+                            <p class="text-neutral-600 leading-relaxed">
+                              {{ item.simulator.description }}
+                            </p>
 
-                          <!-- Supported Formats -->
-                          <div v-if="item.simulator.modelFormats.length > 0" class="space-y-1 pt-1">
+                            <!-- Substituted / Compatible Algorithms Executed by this Simulator (swapped above Supported Formats) -->
+                            <div v-if="item.implementedMatchingAlgorithms.length > 0" class="p-3 rounded-lg bg-neutral-50 border border-neutral-200/60 space-y-2">
+                              <div class="text-xs uppercase font-semibold text-neutral-500 flex items-center gap-1.5">
+                                <UIcon name="i-lucide-arrow-right-left" class="size-3.5 text-primary" />
+                                Substituted Algorithm(s):
+                              </div>
+                              <div class="space-y-1.5">
+                                <div
+                                  v-for="subAlg in item.implementedMatchingAlgorithms"
+                                  :key="subAlg.id"
+                                  class="flex items-center justify-between gap-2 text-xs"
+                                >
+                                  <span class="font-medium text-neutral-800 truncate">{{ subAlg.name }}</span>
+                                  <a
+                                    :href="subAlg.url"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    class="font-mono text-xs text-primary hover:underline shrink-0"
+                                    :aria-label="'View ' + subAlg.name + ' (' + subAlg.id + ') on EBI OLS4 (opens in new tab)'"
+                                  >
+                                    {{ subAlg.id }}
+                                  </a>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <!-- Supported Formats: pinned to bottom above card footer -->
+                          <div v-if="item.simulator.modelFormats.length > 0" class="space-y-1 pt-3 mt-auto border-t border-neutral-100/70">
                             <span class="text-xs uppercase font-semibold text-neutral-400">Supported Formats:</span>
                             <div class="flex flex-wrap gap-1">
                               <UBadge
@@ -1174,55 +1349,19 @@ function clearSelection() {
                               </UBadge>
                             </div>
                           </div>
-
-                          <!-- Substituted / Compatible Algorithms Executed by this Simulator -->
-                          <div v-if="item.implementedMatchingAlgorithms.length > 0" class="p-3 rounded-lg bg-neutral-50 border border-neutral-200/60 space-y-2">
-                            <div class="text-xs uppercase font-semibold text-neutral-500 flex items-center gap-1.5">
-                              <UIcon name="i-lucide-arrow-right-left" class="size-3.5 text-primary" />
-                              Substituted Algorithm(s):
-                            </div>
-                            <div class="space-y-1.5">
-                              <div
-                                v-for="subAlg in item.implementedMatchingAlgorithms"
-                                :key="subAlg.id"
-                                class="flex items-center justify-between gap-2 text-xs"
-                              >
-                                <span class="font-medium text-neutral-800 truncate">{{ subAlg.name }}</span>
-                                <a
-                                  :href="subAlg.url"
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  class="font-mono text-xs text-primary hover:underline shrink-0"
-                                  :aria-label="'View ' + subAlg.name + ' (' + subAlg.id + ') on EBI OLS4 (opens in new tab)'"
-                                >
-                                  {{ subAlg.id }}
-                                </a>
-                              </div>
-                            </div>
-                          </div>
                         </div>
 
                         <template #footer>
-                          <div class="flex items-center justify-between gap-2 w-full">
-                            <UButton
-                              :to="item.simulator.url"
-                              color="neutral"
-                              variant="outline"
-                              size="sm"
-                              icon="i-lucide-info"
-                              label="View Details"
-                              :aria-label="'View details for ' + item.simulator.name"
-                            />
-                            <UButton
-                              :to="`/simulations/run?simulator=${item.simulator.id}`"
-                              color="primary"
-                              variant="solid"
-                              size="sm"
-                              icon="i-fluent-sparkle-20-filled"
-                              label="Run Simulation"
-                              :aria-label="'Run simulation with ' + item.simulator.name"
-                            />
-                          </div>
+                          <UButton
+                            :to="item.simulator.url"
+                            color="primary"
+                            variant="solid"
+                            size="sm"
+                            icon="i-lucide-info"
+                            label="View Details"
+                            :aria-label="'View details for ' + item.simulator.name"
+                            block
+                          />
                         </template>
                       </UCard>
                     </div>
@@ -1240,68 +1379,87 @@ function clearSelection() {
               </div>
             </template>
 
-            <!-- Section 3 Content: Related KiSAO Algorithms (Grid of Cards) -->
+            <!-- Section 3 Content: Related KiSAO Algorithms (Table) -->
             <template #related-algorithms>
               <div id="related-algorithms-section">
-                <!-- Grid of Cards for Related Algorithms: Requirement 3 -->
-                <div v-if="allRelatedAlgorithms.length > 0" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  <UCard
-                    v-for="relAlg in allRelatedAlgorithms"
-                    :key="relAlg.id"
-                    as="article"
-                    class="flex flex-col h-full border border-neutral-200 hover:border-primary/50 hover:shadow-md transition-all cursor-pointer group"
-                    :ui="{
-                      root: 'flex flex-col h-full',
-                      header: 'p-4 pb-2.5',
-                      body: 'p-4 pt-0 flex-1 flex flex-col justify-start',
-                      footer: 'p-4 pt-3 mt-auto border-t border-neutral-100 flex items-center justify-between gap-2'
-                    }"
-                    @click="selectAlgorithmAndScroll(relAlg.id)"
-                  >
-                    <template #header>
-                      <div class="flex items-start justify-between gap-2">
-                        <UBadge
-                          :color="getPolicyInfo(relAlg.minPolicy.id).badgeColor"
-                          variant="subtle"
-                          size="sm"
-                        >
-                          Level {{ relAlg.minPolicy.level }}: {{ relAlg.minPolicy.name }}
-                        </UBadge>
-                      </div>
-                    </template>
-
-                    <div class="space-y-1.5 flex-1">
-                      <h5 class="font-bold text-sm text-neutral-900 group-hover:text-primary transition-colors leading-snug">
-                        {{ relAlg.name }}
-                      </h5>
-                      <a
-                        :href="relAlg.url"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="inline-flex items-center gap-1 font-mono text-xs text-neutral-500 hover:text-primary"
-                        :aria-label="'View ' + relAlg.name + ' (' + relAlg.id + ') on EBI OLS4 (opens in new tab)'"
-                        @click.stop
+                <!-- High-density Table for Related KiSAO Algorithms -->
+                <div v-if="allRelatedAlgorithms.length > 0" class="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
+                  <table class="w-full text-xs text-left">
+                    <thead class="bg-neutral-50 border-b border-neutral-200 text-neutral-700 font-semibold text-xs whitespace-nowrap">
+                      <tr>
+                        <th scope="col" class="py-3 px-4 whitespace-nowrap">Algorithm Name</th>
+                        <th scope="col" class="py-3 px-4 whitespace-nowrap">KiSAO ID</th>
+                        <th scope="col" class="py-3 px-4 whitespace-nowrap">Substitution Policy</th>
+                        <th scope="col" class="py-3 px-4 whitespace-nowrap">Direct Simulators</th>
+                        <th scope="col" class="py-3 px-4 text-right whitespace-nowrap">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-neutral-100 text-neutral-600">
+                      <tr
+                        v-for="relAlg in allRelatedAlgorithms"
+                        :key="relAlg.id"
+                        class="hover:bg-neutral-50/80 transition-colors cursor-pointer group"
+                        @click="selectAlgorithmAndScroll(relAlg.id)"
                       >
-                        <span>{{ relAlg.id }}</span>
-                        <UIcon name="i-lucide-external-link" class="size-3" />
-                      </a>
-                    </div>
+                        <!-- Algorithm Name -->
+                        <td class="py-3 px-4 font-semibold text-neutral-900 group-hover:text-primary transition-colors">
+                          {{ relAlg.name }}
+                        </td>
 
-                    <template #footer>
-                      <div class="flex items-center justify-between w-full">
-                        <span class="text-xs text-neutral-400">Click to select</span>
-                        <UButton
-                          size="xs"
-                          color="primary"
-                          variant="soft"
-                          icon="i-lucide-arrow-up"
-                          label="Select"
-                          :aria-label="'Select algorithm ' + relAlg.name + ' and scroll to top'"
-                          @click.stop="selectAlgorithmAndScroll(relAlg.id)"
-                        />
-                      </div>
-                    </template>
-                  </UCard>
+                        <!-- KiSAO ID Link -->
+                        <td class="py-3 px-4 whitespace-nowrap">
+                          <a
+                            :href="relAlg.url"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="inline-flex items-center gap-1 font-mono text-xs text-neutral-500 hover:text-primary transition-colors"
+                            :aria-label="'View ' + relAlg.name + ' (' + relAlg.id + ') on EBI OLS4 (opens in new tab)'"
+                            @click.stop
+                          >
+                            <span>{{ relAlg.id }}</span>
+                            <UIcon name="i-lucide-external-link" class="size-3 text-neutral-400" />
+                          </a>
+                        </td>
+
+                        <!-- Substitution Policy Level Badge -->
+                        <td class="py-3 px-4 whitespace-nowrap">
+                          <UBadge
+                            :color="getPolicyInfo(relAlg.minPolicy.id).badgeColor"
+                            variant="subtle"
+                            size="sm"
+                          >
+                            Level {{ relAlg.minPolicy.level }}: {{ relAlg.minPolicy.name }}
+                          </UBadge>
+                        </td>
+
+                        <!-- Direct Simulators Count -->
+                        <td class="py-3 px-4 whitespace-nowrap">
+                          <UBadge
+                            v-if="(algorithmDirectSims.get(relAlg.id)?.size || 0) > 0"
+                            color="neutral"
+                            variant="subtle"
+                            size="sm"
+                          >
+                            {{ algorithmDirectSims.get(relAlg.id)?.size }} {{ algorithmDirectSims.get(relAlg.id)?.size === 1 ? 'Simulator' : 'Simulators' }}
+                          </UBadge>
+                          <span v-else class="text-neutral-400 font-mono text-xs">None</span>
+                        </td>
+
+                        <!-- Action Button -->
+                        <td class="py-3 px-4 text-right whitespace-nowrap">
+                          <UButton
+                            size="xs"
+                            color="primary"
+                            variant="soft"
+                            icon="i-lucide-arrow-up"
+                            label="Select"
+                            :aria-label="'Select algorithm ' + relAlg.name + ' and scroll to top'"
+                            @click.stop="selectAlgorithmAndScroll(relAlg.id)"
+                          />
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
 
                 <UAlert
@@ -1400,23 +1558,23 @@ function clearSelection() {
               <template #header>
                 <div class="flex items-center gap-2.5">
                   <div class="size-9 rounded-lg bg-indigo-500/10 text-indigo-600 flex items-center justify-center shrink-0">
-                    <UIcon name="i-fluent-sparkle-20-filled" class="size-5" />
+                    <UIcon name="i-lucide-info" class="size-5" />
                   </div>
                   <h3 class="font-bold text-base text-neutral-900">
-                    Instant Simulation Execution
+                    Simulator Specifications
                   </h3>
                 </div>
               </template>
               <div class="text-xs text-neutral-600 leading-relaxed space-y-2 flex-1">
                 <p>
-                  Click "Run Simulation" on any suggested engine to immediately preload your chosen solver in the BioSimulations execution platform.
+                  Inspect supported model formats, algorithm parameters, and curation status on each simulator's dedicated details page.
                 </p>
                 <p>
-                  Upload your COMBINE/OMEX archive or public URL to execute with reproducible results.
+                  Verify your COMBINE/OMEX archive compatibility with the execution pipeline before dispatching a simulation run.
                 </p>
               </div>
               <template #footer>
-                <span class="text-xs font-mono text-neutral-400">One-Click Handoff</span>
+                <span class="text-xs font-mono text-neutral-400">Detailed Specs &amp; APIs</span>
               </template>
             </UCard>
           </div>
@@ -1442,11 +1600,11 @@ function clearSelection() {
 
             <div class="overflow-x-auto">
               <table class="w-full text-xs text-left">
-                <thead class="bg-neutral-50 border-b border-neutral-200 text-neutral-700 font-semibold uppercase text-xs tracking-wider">
+                <thead class="bg-neutral-50 border-b border-neutral-200 text-neutral-700 font-semibold text-xs whitespace-nowrap">
                   <tr>
-                    <th class="py-3 px-4">Level</th>
-                    <th class="py-3 px-4">Policy</th>
-                    <th class="py-3 px-4">Meaning &amp; Simulation Guarantees</th>
+                    <th scope="col" class="py-3 px-4 whitespace-nowrap">Level</th>
+                    <th scope="col" class="py-3 px-4 whitespace-nowrap">Policy</th>
+                    <th scope="col" class="py-3 px-4 whitespace-nowrap">Meaning &amp; Simulation Guarantees</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-neutral-100 text-neutral-600">
