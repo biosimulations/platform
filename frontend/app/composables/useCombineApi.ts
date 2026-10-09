@@ -1,4 +1,5 @@
 import type {
+  AlgorithmSubstitution,
   ModelLanguage,
   OmexMetadataInputFormat,
   OmexMetadataSchema,
@@ -344,11 +345,39 @@ export function useCombineApi() {
     }
   }
 
+  /**
+   * Fetch similar algorithms and substitution policies from the COMBINE API.
+   *
+   * @param algorithms - Array of KiSAO algorithm IDs (e.g. ['KISAO_0000029']).
+   */
+  async function getSimilarAlgorithms(
+    algorithms: string[]
+  ): Promise<AlgorithmSubstitution[]> {
+    if (!algorithms || algorithms.length === 0) return [];
+    const params = new URLSearchParams();
+    for (const alg of algorithms) {
+      if (alg) params.append('algorithms', alg);
+    }
+    try {
+      const response = await $fetch<AlgorithmSubstitution[]>(
+        `${combineApiUrl}/kisao/get-similar-algorithms?${params.toString()}`,
+        {
+          credentials: 'omit'
+        }
+      );
+      return response || [];
+    } catch (err) {
+      console.warn('Failed to fetch similar algorithms from COMBINE API:', err);
+      return [];
+    }
+  }
+
   return {
     baseUrl,
     validateModel,
     validateSedml,
     validateOmexMetadata,
-    validateProject
+    validateProject,
+    getSimilarAlgorithms
   };
 }
