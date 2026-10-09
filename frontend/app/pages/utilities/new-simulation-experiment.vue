@@ -1093,7 +1093,7 @@ onMounted(() => {
               <label for="model-language-select" class="block text-sm font-medium text-neutral-700">
                 Model Language
               </label>
-              <USelect
+              <USelectMenu
                 id="model-language-select"
                 v-model="selectedLanguage"
                 data-lenis-prevent
