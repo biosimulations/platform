@@ -25,7 +25,9 @@ from biosim_server.biosim_verify.database import (
 from biosim_server.biosim_verify.models import (
     VERIFICATION_IDS_DEFAULT_PAGE_SIZE,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
+    VerificationLedgerRecord,
     VerificationRecord,
+    VerificationRun,
     VerificationType,
     VerifyWorkflowOutput,
     VerifyWorkflowStatus,
@@ -932,7 +934,7 @@ async def test_get_verify_expired_id_ledger_row_404_with_distinct_detail() -> No
     temporal = MagicMock()
     temporal.get_workflow_handle.return_value = handle
 
-    row = VerificationRecord(
+    row = VerificationLedgerRecord(
         workflow_id="omex-verification-expired",
         verify_type=VerificationType.OMEX,
         owner_sub="auth0|owner",
@@ -959,7 +961,7 @@ async def test_get_verify_expired_id_ledger_row_404_with_distinct_detail() -> No
 async def test_get_verify_expired_id_other_owners_row_generic_404() -> None:
     """NOT_FOUND + ledger row belonging to someone else → generic 404 (no existence leak)."""
     from temporalio.service import RPCError, RPCStatusCode
-    from biosim_server.biosim_verify.models import VerificationRecord, VerificationType
+    from biosim_server.biosim_verify.models import VerificationLedgerRecord, VerificationType
     from datetime import datetime, timezone
 
     not_found_err = RPCError("nf", RPCStatusCode.NOT_FOUND, b"")
@@ -968,7 +970,7 @@ async def test_get_verify_expired_id_other_owners_row_generic_404() -> None:
     temporal = MagicMock()
     temporal.get_workflow_handle.return_value = handle
 
-    row = VerificationRecord(
+    row = VerificationLedgerRecord(
         workflow_id="omex-verification-other",
         verify_type=VerificationType.OMEX,
         owner_sub="auth0|other-person",
@@ -1098,9 +1100,9 @@ async def test_list_verification_ids_anonymous_gets_the_first_bounded_page(ids: 
     ledger = _ledger_returning(ids)
     resp = await _get_verification_ids(ledger)
     assert resp.status_code == 200
-    assert resp.json() == {"verification_ids": ids, "next_cursor": None}
+    assert resp.json() == {"verification_ids": ids, "records": [], "next_cursor": None}
     ledger.list_verification_ids.assert_awaited_once_with(
-        None, limit=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, after=None
+        None, limit=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, after=None, omex_hash=None
     )
 
 
@@ -1116,7 +1118,30 @@ async def test_list_verification_ids_returns_and_accepts_an_opaque_cursor() -> N
     ledger = _ledger_returning([])
     resp = await _get_verification_ids(ledger, {"limit": 2, "cursor": token})
     assert resp.status_code == 200
-    ledger.list_verification_ids.assert_awaited_once_with(None, limit=2, after=last)
+    ledger.list_verification_ids.assert_awaited_once_with(None, limit=2, after=last, omex_hash=None)
+
+
+@pytest.mark.asyncio
+async def test_list_verification_ids_with_omex_hash_filter() -> None:
+    rec = VerificationRecord(
+        omex_hash="hash123",
+        run_ids=[VerificationRun(id="wf-1", created=datetime(2025, 1, 1, tzinfo=UTC), status="COMPLETED")],
+    )
+    ledger = AsyncMock()
+    ledger.list_verification_ids = AsyncMock(
+        return_value=VerificationIdPage(verification_ids=["wf-1"], records=[rec], next_cursor=None)
+    )
+    resp = await _get_verification_ids(ledger, {"omex_hash": "hash123"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["verification_ids"] == ["wf-1"]
+    assert len(data["records"]) == 1
+    assert data["records"][0]["omex_hash"] == "hash123"
+    assert data["records"][0]["run_ids"][0]["id"] == "wf-1"
+    assert data["records"][0]["run_ids"][0]["status"] == "COMPLETED"
+    ledger.list_verification_ids.assert_awaited_once_with(
+        None, limit=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, after=None, omex_hash="hash123"
+    )
 
 
 @pytest.mark.asyncio
@@ -1194,7 +1219,7 @@ async def test_list_verification_ids_follows_cursor_end_to_end(
         ("wf-e", datetime(2025, 9, 3, tzinfo=UTC)), ("wf-c", tie), ("wf-b", tie),
         ("wf-d", datetime(2025, 9, 2, tzinfo=UTC)), ("wf-a", datetime(2025, 8, 1, tzinfo=UTC)),
     ]:
-        await verification_database_service_mongo.insert_verification(VerificationRecord(
+        await verification_database_service_mongo.insert_verification(VerificationLedgerRecord(
             workflow_id=workflow_id, verify_type=VerificationType.RUNS, owner_sub=None, created=created,
         ))
 

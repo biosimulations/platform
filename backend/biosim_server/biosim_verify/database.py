@@ -10,7 +10,7 @@ import base64
 import binascii
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final
 
@@ -20,7 +20,9 @@ from pymongo import ASCENDING, DESCENDING
 from biosim_server.biosim_verify.models import (
     MAX_WORKFLOW_ID_BYTES,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
+    VerificationLedgerRecord,
     VerificationRecord,
+    VerificationRun,
 )
 from biosim_server.config import get_settings
 
@@ -47,7 +49,8 @@ class VerificationCursor:
 @dataclass(frozen=True)
 class VerificationIdPage:
     verification_ids: list[str]
-    next_cursor: VerificationCursor | None
+    records: list[VerificationRecord] = field(default_factory=list)
+    next_cursor: VerificationCursor | None = None
 
 
 class InvalidVerificationCursor(ValueError):
@@ -104,13 +107,13 @@ class VerificationDatabaseService(ABC):
     """Abstract interface for the verification ledger."""
 
     @abstractmethod
-    async def insert_verification(self, record: VerificationRecord) -> VerificationRecord:
+    async def insert_verification(self, record: VerificationLedgerRecord) -> VerificationLedgerRecord:
         """Insert a new record.  Raises on duplicate workflow_id."""
         ...
 
     @abstractmethod
     async def list_verification_ids(
-        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None
+        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None, omex_hash: str | None = None
     ) -> VerificationIdPage:
         """Return one page of workflow_id values, newest-first.
 
@@ -123,8 +126,13 @@ class VerificationDatabaseService(ABC):
         ...
 
     @abstractmethod
-    async def get_verification(self, workflow_id: str) -> VerificationRecord | None:
+    async def get_verification(self, workflow_id: str) -> VerificationLedgerRecord | None:
         """Return the record for *workflow_id*, or None if absent."""
+        ...
+
+    @abstractmethod
+    async def update_verification_status(self, workflow_id: str, status: str) -> None:
+        """Update status for *workflow_id*."""
         ...
 
     @abstractmethod
@@ -159,14 +167,15 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         # Both serve the listing sort and its (created, workflow_id) range predicate.
         await self._collection.create_index([("owner_sub", ASCENDING), *_LISTING_SORT])
         await self._collection.create_index(_LISTING_SORT)
+        await self._collection.create_index("omex_hash")
 
-    async def insert_verification(self, record: VerificationRecord) -> VerificationRecord:
+    async def insert_verification(self, record: VerificationLedgerRecord) -> VerificationLedgerRecord:
         doc = record.model_dump()
         await self._collection.insert_one(doc)
         return record
 
     async def list_verification_ids(
-        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None
+        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None, omex_hash: str | None = None
     ) -> VerificationIdPage:
         if not 1 <= limit <= VERIFICATION_IDS_MAX_PAGE_SIZE:
             raise ValueError(f"limit must be between 1 and {VERIFICATION_IDS_MAX_PAGE_SIZE}")
@@ -177,6 +186,8 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
             else {"owner_sub": {"$in": [None, owner_sub]}}
         )
         clauses: list[dict[str, object]] = [visibility]
+        if omex_hash:
+            clauses.append({"omex_hash": omex_hash})
         if after is not None:
             # Equivalent to the lexicographic continuation predicate for
             # (created DESC, workflow_id ASC), expressed as one bounded range
@@ -192,7 +203,7 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         # One extra row tells us whether another page exists; the read is bounded
         # however large the ledger grows.
         cursor = self._collection.find(
-            query, projection={"workflow_id": 1, "created": 1, "_id": 0}
+            query, projection={"workflow_id": 1, "created": 1, "omex_hash": 1, "status": 1, "_id": 0}
         ).sort(_LISTING_SORT).limit(limit + 1)
         docs = await cursor.to_list(length=limit + 1)
         page = docs[:limit]
@@ -201,17 +212,42 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
             if len(docs) > limit
             else None
         )
+
+        records_by_hash: dict[str, list[VerificationRun]] = {}
+        for doc in page:
+            w_id = doc["workflow_id"]
+            created = doc["created"]
+            status = doc.get("status") or "PENDING"
+            hash_val = doc.get("omex_hash") or ""
+            run = VerificationRun(id=w_id, created=created, status=status)
+            if hash_val not in records_by_hash:
+                records_by_hash[hash_val] = []
+            records_by_hash[hash_val].append(run)
+
+        records = [
+            VerificationRecord(omex_hash=h, run_ids=runs)
+            for h, runs in records_by_hash.items()
+        ]
+
         return VerificationIdPage(
-            verification_ids=[doc["workflow_id"] for doc in page], next_cursor=next_cursor
+            verification_ids=[doc["workflow_id"] for doc in page],
+            records=records,
+            next_cursor=next_cursor,
         )
 
-    async def get_verification(self, workflow_id: str) -> VerificationRecord | None:
+    async def get_verification(self, workflow_id: str) -> VerificationLedgerRecord | None:
         doc = await self._collection.find_one(
             {"workflow_id": workflow_id}, projection={"_id": 0}
         )
         if doc is None:
             return None
-        return VerificationRecord.model_validate(doc)
+        return VerificationLedgerRecord.model_validate(doc)
+
+    async def update_verification_status(self, workflow_id: str, status: str) -> None:
+        await self._collection.update_one(
+            {"workflow_id": workflow_id},
+            {"$set": {"status": status}}
+        )
 
     async def delete_verification(self, workflow_id: str) -> None:
         await self._collection.delete_one({"workflow_id": workflow_id})

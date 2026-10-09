@@ -52,7 +52,9 @@ from biosim_server.biosim_verify.models import (
     VERIFICATION_IDS_MAX_PAGE_SIZE,
     WORKFLOW_ID_PREFIX_MAX_LENGTH,
     VerificationIdsResponse,
+    VerificationLedgerRecord,
     VerificationRecord,
+    VerificationRun,
     VerificationType,
     VerifyWorkflowOutput,
     VerifyWorkflowStatus,
@@ -397,6 +399,7 @@ async def verify_omex(
         owner_sub=owner_sub,
         temporal_client=temporal_client,
         workflow_input=omex_verify_workflow_input,
+        omex_hash=omex_file.file_hash_md5,
         start_workflow=lambda: temporal_client.start_workflow(
             OmexVerifyWorkflow.run,
             args=[omex_verify_workflow_input],
@@ -511,6 +514,7 @@ async def _persist_and_start_verify(
     temporal_client: Client,
     workflow_input: OmexVerifyWorkflowInput | RunsVerifyWorkflowInput,
     start_workflow: Callable[[], Awaitable[WorkflowHandle[Any, VerifyWorkflowOutput]]],
+    omex_hash: str | None = None,
 ) -> WorkflowHandle[Any, VerifyWorkflowOutput]:
     """Write the ledger row, then start the workflow (mirrors simulations/router.py).
 
@@ -521,11 +525,13 @@ async def _persist_and_start_verify(
     """
     try:
         await ledger.insert_verification(
-            VerificationRecord(
+            VerificationLedgerRecord(
                 workflow_id=workflow_id,
                 verify_type=verify_type,
                 owner_sub=owner_sub,
                 created=datetime.now(UTC),
+                omex_hash=omex_hash,
+                status="PENDING",
             )
         )
     except Exception as e:
@@ -735,6 +741,18 @@ async def get_verify_output(
     # Step 4: D1 fix — reconcile a stuck IN_PROGRESS against Temporal's execution status.
     workflow_output = _reconcile_terminal_status(workflow_output, desc.status)
 
+    ledger = get_verification_database_service()
+    if ledger is not None:
+        try:
+            status_str = (
+                workflow_output.workflow_status.value
+                if hasattr(workflow_output.workflow_status, "value")
+                else str(workflow_output.workflow_status)
+            )
+            await ledger.update_verification_status(workflow_id, status_str)
+        except Exception as e:
+            logger.warning("Could not update verification status in ledger for %s: %s", workflow_id, e)
+
     return workflow_output
 
 
@@ -799,7 +817,9 @@ async def verify_runs(
                                                  description="SED-ML data set labels of interest. Validated only: "
                                                              "the request is rejected with 400 if none appear in the "
                                                              "runs' common dataset labels. Not yet used to filter the "
-                                                             "returned comparison.")
+                                                             "returned comparison."),
+        omex_hash: Optional[str] = Query(default=None,
+                                         description="Optional OMEX archive MD5 hash associated with these simulation runs.")
 ) -> VerifyWorkflowOutput:
     # Validation first: a duplicate run id is rejected before any service work.
     _reject_duplicate_selections(biosimulations_run_ids, label="run IDs")
@@ -854,6 +874,7 @@ async def verify_runs(
         owner_sub=owner_sub,
         temporal_client=temporal_client,
         workflow_input=runs_verify_workflow_input,
+        omex_hash=omex_hash,
         start_workflow=lambda: temporal_client.start_workflow(
             RunsVerifyWorkflow.run,
             args=[runs_verify_workflow_input],
@@ -944,6 +965,8 @@ async def list_verification_ids(
                            description=f"Page size (1-{VERIFICATION_IDS_MAX_PAGE_SIZE})."),
         cursor: Optional[str] = Query(default=None, max_length=VERIFICATION_CURSOR_MAX_LENGTH,
                                       description="Opaque `next_cursor` from a previous page."),
+        omex_hash: Optional[str] = Query(default=None,
+                                         description="Optional OMEX archive MD5 hash to filter verification records."),
 ) -> VerificationIdsResponse:
     # IDs can contain private caller text. Always scope the database read,
     # including anonymous requests and continuation pages.
@@ -958,7 +981,9 @@ async def list_verification_ids(
         raise HTTPException(status_code=503, detail="Verification database service not available")
 
     try:
-        page = await ledger.list_verification_ids(user.sub if user is not None else None, limit=limit, after=after)
+        page = await ledger.list_verification_ids(
+            user.sub if user is not None else None, limit=limit, after=after, omex_hash=omex_hash
+        )
     except Exception:
         # Driver errors can include the scoped query (subjects/cursor IDs).
         logger.error("Failed to list verification IDs")
@@ -971,6 +996,7 @@ async def list_verification_ids(
     response.headers["Cache-Control"] = "private, no-store"
     return VerificationIdsResponse(
         verification_ids=page.verification_ids,
+        records=page.records,
         next_cursor=encode_verification_cursor(page.next_cursor) if page.next_cursor else None,
     )
 
