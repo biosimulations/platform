@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type { BreadcrumbItem } from '#ui/components/Breadcrumb.vue';
 import type { AccordionItem } from '#ui/components/Accordion.vue';
+import type { TableColumn } from '@nuxt/ui';
 import {
   type RawSimulator,
   type SimulatorCurationStatus,
@@ -575,6 +576,138 @@ const allRelatedAlgorithms = computed<FlatRelatedAlgorithm[]>(() => {
 const totalRelatedAlgorithmsCount = computed(() => {
   return allRelatedAlgorithms.value.length;
 });
+
+const relatedAlgorithmColumns: TableColumn<FlatRelatedAlgorithm>[] = [
+  {
+    accessorKey: 'name',
+    header: 'Algorithm Name',
+    meta: {
+      class: {
+        th: 'whitespace-nowrap',
+        td: 'font-semibold whitespace-normal text-neutral-900 group-hover:text-primary transition-colors'
+      }
+    }
+  },
+  {
+    accessorKey: 'id',
+    header: 'KiSAO ID',
+    meta: {
+      class: {
+        th: 'whitespace-nowrap',
+        td: 'whitespace-nowrap'
+      }
+    }
+  },
+  {
+    id: 'policy',
+    header: 'Substitution Policy',
+    meta: {
+      class: {
+        th: 'whitespace-nowrap',
+        td: 'whitespace-nowrap'
+      }
+    }
+  },
+  {
+    id: 'simulators',
+    header: 'Direct Simulators',
+    meta: {
+      class: {
+        th: 'whitespace-nowrap',
+        td: 'whitespace-nowrap'
+      }
+    }
+  },
+  {
+    id: 'action',
+    header: 'Action',
+    meta: {
+      class: {
+        th: 'text-right whitespace-nowrap',
+        td: 'text-right whitespace-nowrap'
+      }
+    }
+  }
+];
+
+interface HierarchyPolicyLevel {
+  level: string;
+  levelColor: string;
+  policy: string;
+  guarantees: string;
+}
+
+const hierarchyPolicyLevels: HierarchyPolicyLevel[] = [
+  {
+    level: 'Level 1',
+    levelColor: 'text-emerald-700',
+    policy: 'Same Method',
+    guarantees: 'Exact identical algorithm (e.g. CVODE executed by CVODE). Full numerical parity expected.'
+  },
+  {
+    level: 'Level 2',
+    levelColor: 'text-sky-700',
+    policy: 'Same Math',
+    guarantees: 'Analytically equivalent formulation of identical equations (e.g. Gillespie direct vs Gibson-Bruck next reaction method).'
+  },
+  {
+    level: 'Level 3',
+    levelColor: 'text-indigo-700',
+    policy: 'Similar Approximations',
+    guarantees: 'Comparable numerical order and approximation bounds (e.g. Runge-Kutta 4th order vs Cash-Karp).'
+  },
+  {
+    level: 'Level 4',
+    levelColor: 'text-purple-700',
+    policy: 'Distinct Approximations',
+    guarantees: 'Alternative approximation strategy (e.g. tau-leaping approximations vs exact stochastic simulation).'
+  },
+  {
+    level: 'Level 5',
+    levelColor: 'text-amber-700',
+    policy: 'Distinct Scales',
+    guarantees: 'Operates across different multi-scale spatial or temporal discretization levels.'
+  },
+  {
+    level: 'Level 8',
+    levelColor: 'text-neutral-600',
+    policy: 'Same Framework',
+    guarantees: 'Belongs to the same broad biological modeling framework (e.g. discrete stochastic or continuous deterministic).'
+  }
+];
+
+const hierarchyColumns: TableColumn<HierarchyPolicyLevel>[] = [
+  {
+    accessorKey: 'level',
+    header: 'Level',
+    meta: {
+      class: {
+        th: 'whitespace-nowrap',
+        td: 'whitespace-nowrap font-mono font-semibold'
+      }
+    }
+  },
+  {
+    accessorKey: 'policy',
+    header: 'Policy',
+    meta: {
+      class: {
+        th: 'whitespace-nowrap',
+        td: 'whitespace-nowrap font-semibold text-neutral-900'
+      }
+    }
+  },
+  {
+    accessorKey: 'guarantees',
+    header: 'Meaning & Simulation Guarantees',
+    meta: {
+      class: {
+        th: 'whitespace-nowrap',
+        td: 'leading-relaxed text-neutral-600'
+      }
+    }
+  }
+];
 
 const totalCompatibleSimulatorsCount = computed(() => {
   if (!selectedAlgorithmData.value) return 0;
@@ -1379,83 +1512,73 @@ function selectAlgorithmAndScroll(id: string) {
             <template #related-algorithms>
               <div id="related-algorithms-section">
                 <!-- High-density Table for Related KiSAO Algorithms -->
-                <div v-if="allRelatedAlgorithms.length > 0" class="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
-                  <table class="w-full text-xs text-left">
-                    <thead class="bg-neutral-50 border-b border-neutral-200 text-neutral-700 font-semibold text-xs whitespace-nowrap">
-                      <tr>
-                        <th scope="col" class="py-3 px-4 whitespace-nowrap">Algorithm Name</th>
-                        <th scope="col" class="py-3 px-4 whitespace-nowrap">KiSAO ID</th>
-                        <th scope="col" class="py-3 px-4 whitespace-nowrap">Substitution Policy</th>
-                        <th scope="col" class="py-3 px-4 whitespace-nowrap">Direct Simulators</th>
-                        <th scope="col" class="py-3 px-4 text-right whitespace-nowrap">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody class="divide-y divide-neutral-100 text-neutral-600">
-                      <tr
-                        v-for="relAlg in allRelatedAlgorithms"
-                        :key="relAlg.id"
-                        class="hover:bg-neutral-50/80 transition-colors cursor-pointer group"
-                        @click="selectAlgorithmAndScroll(relAlg.id)"
+                <div v-if="allRelatedAlgorithms.length > 0" class="rounded-lg border border-neutral-200 bg-white overflow-hidden">
+                  <UTable
+                    :data="allRelatedAlgorithms"
+                    :columns="relatedAlgorithmColumns"
+                    :ui="{
+                      th: 'py-3 px-4 text-xs font-semibold text-neutral-700 bg-neutral-50 border-b border-neutral-200 whitespace-nowrap',
+                      td: 'py-3 px-4 text-xs text-neutral-600'
+                    }"
+                    class="w-full lenis-prevent cursor-pointer"
+                    data-lenis-prevent
+                    empty="No related algorithms found matching current substitution criteria."
+                    @select="(_e: Event, row: any) => selectAlgorithmAndScroll(row.original.id)"
+                  >
+                    <template #name-cell="{ row }">
+                      <span class="font-semibold text-neutral-900 group-hover:text-primary transition-colors">
+                        {{ row.original.name }}
+                      </span>
+                    </template>
+
+                    <template #id-cell="{ row }">
+                      <a
+                        :href="row.original.url"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="inline-flex items-center gap-1 font-mono text-xs text-neutral-500 hover:text-primary transition-colors"
+                        :aria-label="'View ' + row.original.name + ' (' + row.original.id + ') on EBI OLS4 (opens in new tab)'"
+                        @click.stop
                       >
-                        <!-- Algorithm Name -->
-                        <td class="py-3 px-4 font-semibold text-neutral-900 group-hover:text-primary transition-colors">
-                          {{ relAlg.name }}
-                        </td>
+                        <span>{{ row.original.id }}</span>
+                        <UIcon name="i-lucide-external-link" class="size-3 text-neutral-400" />
+                      </a>
+                    </template>
 
-                        <!-- KiSAO ID Link -->
-                        <td class="py-3 px-4 whitespace-nowrap">
-                          <a
-                            :href="relAlg.url"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="inline-flex items-center gap-1 font-mono text-xs text-neutral-500 hover:text-primary transition-colors"
-                            :aria-label="'View ' + relAlg.name + ' (' + relAlg.id + ') on EBI OLS4 (opens in new tab)'"
-                            @click.stop
-                          >
-                            <span>{{ relAlg.id }}</span>
-                            <UIcon name="i-lucide-external-link" class="size-3 text-neutral-400" />
-                          </a>
-                        </td>
+                    <template #policy-cell="{ row }">
+                      <UBadge
+                        :color="getPolicyInfo(row.original.minPolicy.id).badgeColor"
+                        variant="subtle"
+                        size="sm"
+                      >
+                        Level {{ row.original.minPolicy.level }}: {{ row.original.minPolicy.name }}
+                      </UBadge>
+                    </template>
 
-                        <!-- Substitution Policy Level Badge -->
-                        <td class="py-3 px-4 whitespace-nowrap">
-                          <UBadge
-                            :color="getPolicyInfo(relAlg.minPolicy.id).badgeColor"
-                            variant="subtle"
-                            size="sm"
-                          >
-                            Level {{ relAlg.minPolicy.level }}: {{ relAlg.minPolicy.name }}
-                          </UBadge>
-                        </td>
+                    <template #simulators-cell="{ row }">
+                      <UBadge
+                        v-if="(algorithmDirectSims.get(row.original.id)?.size || 0) > 0"
+                        color="neutral"
+                        variant="subtle"
+                        size="sm"
+                      >
+                        {{ algorithmDirectSims.get(row.original.id)?.size }} {{ algorithmDirectSims.get(row.original.id)?.size === 1 ? 'Simulator' : 'Simulators' }}
+                      </UBadge>
+                      <span v-else class="text-neutral-400 font-mono text-xs">None</span>
+                    </template>
 
-                        <!-- Direct Simulators Count -->
-                        <td class="py-3 px-4 whitespace-nowrap">
-                          <UBadge
-                            v-if="(algorithmDirectSims.get(relAlg.id)?.size || 0) > 0"
-                            color="neutral"
-                            variant="subtle"
-                            size="sm"
-                          >
-                            {{ algorithmDirectSims.get(relAlg.id)?.size }} {{ algorithmDirectSims.get(relAlg.id)?.size === 1 ? 'Simulator' : 'Simulators' }}
-                          </UBadge>
-                          <span v-else class="text-neutral-400 font-mono text-xs">None</span>
-                        </td>
-
-                        <!-- Action Button -->
-                        <td class="py-3 px-4 text-right whitespace-nowrap">
-                          <UButton
-                            size="xs"
-                            color="primary"
-                            variant="soft"
-                            icon="i-lucide-arrow-up"
-                            label="Select"
-                            :aria-label="'Select algorithm ' + relAlg.name + ' and scroll to top'"
-                            @click.stop="selectAlgorithmAndScroll(relAlg.id)"
-                          />
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
+                    <template #action-cell="{ row }">
+                      <UButton
+                        size="xs"
+                        color="primary"
+                        variant="soft"
+                        icon="i-lucide-arrow-up"
+                        label="Select"
+                        :aria-label="'Select algorithm ' + row.original.name + ' and scroll to top'"
+                        @click.stop="selectAlgorithmAndScroll(row.original.id)"
+                      />
+                    </template>
+                  </UTable>
                 </div>
 
                 <UAlert
@@ -1594,48 +1717,29 @@ function selectAlgorithmAndScroll(id: string) {
               </div>
             </template>
 
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs text-left">
-                <thead class="bg-neutral-50 border-b border-neutral-200 text-neutral-700 font-semibold text-xs whitespace-nowrap">
-                  <tr>
-                    <th scope="col" class="py-3 px-4 whitespace-nowrap">Level</th>
-                    <th scope="col" class="py-3 px-4 whitespace-nowrap">Policy</th>
-                    <th scope="col" class="py-3 px-4 whitespace-nowrap">Meaning &amp; Simulation Guarantees</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-neutral-100 text-neutral-600">
-                  <tr class="hover:bg-neutral-50/50">
-                    <td class="py-3 px-4 font-mono font-semibold text-emerald-700">Level 1</td>
-                    <td class="py-3 px-4 font-semibold text-neutral-900">Same Method</td>
-                    <td class="py-3 px-4 leading-relaxed">Exact identical algorithm (e.g. CVODE executed by CVODE). Full numerical parity expected.</td>
-                  </tr>
-                  <tr class="hover:bg-neutral-50/50">
-                    <td class="py-3 px-4 font-mono font-semibold text-sky-700">Level 2</td>
-                    <td class="py-3 px-4 font-semibold text-neutral-900">Same Math</td>
-                    <td class="py-3 px-4 leading-relaxed">Analytically equivalent formulation of identical equations (e.g. Gillespie direct vs Gibson-Bruck next reaction method).</td>
-                  </tr>
-                  <tr class="hover:bg-neutral-50/50">
-                    <td class="py-3 px-4 font-mono font-semibold text-indigo-700">Level 3</td>
-                    <td class="py-3 px-4 font-semibold text-neutral-900">Similar Approximations</td>
-                    <td class="py-3 px-4 leading-relaxed">Comparable numerical order and approximation bounds (e.g. Runge-Kutta 4th order vs Cash-Karp).</td>
-                  </tr>
-                  <tr class="hover:bg-neutral-50/50">
-                    <td class="py-3 px-4 font-mono font-semibold text-purple-700">Level 4</td>
-                    <td class="py-3 px-4 font-semibold text-neutral-900">Distinct Approximations</td>
-                    <td class="py-3 px-4 leading-relaxed">Alternative approximation strategy (e.g. tau-leaping approximations vs exact stochastic simulation).</td>
-                  </tr>
-                  <tr class="hover:bg-neutral-50/50">
-                    <td class="py-3 px-4 font-mono font-semibold text-amber-700">Level 5</td>
-                    <td class="py-3 px-4 font-semibold text-neutral-900">Distinct Scales</td>
-                    <td class="py-3 px-4 leading-relaxed">Operates across different multi-scale spatial or temporal discretization levels.</td>
-                  </tr>
-                  <tr class="hover:bg-neutral-50/50">
-                    <td class="py-3 px-4 font-mono font-semibold text-neutral-600">Level 8</td>
-                    <td class="py-3 px-4 font-semibold text-neutral-900">Same Framework</td>
-                    <td class="py-3 px-4 leading-relaxed">Belongs to the same broad biological modeling framework (e.g. discrete stochastic or continuous deterministic).</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="rounded-lg border border-neutral-200 bg-white overflow-hidden">
+              <UTable
+                :data="hierarchyPolicyLevels"
+                :columns="hierarchyColumns"
+                :ui="{
+                  th: 'py-3 px-4 text-xs font-semibold text-neutral-700 bg-neutral-50 border-b border-neutral-200 whitespace-nowrap',
+                  td: 'py-3 px-4 text-xs text-neutral-600'
+                }"
+                class="w-full lenis-prevent"
+                data-lenis-prevent
+              >
+                <template #level-cell="{ row }">
+                  <span :class="row.original.levelColor" class="font-mono font-semibold">{{ row.original.level }}</span>
+                </template>
+
+                <template #policy-cell="{ row }">
+                  <span class="font-semibold text-neutral-900">{{ row.original.policy }}</span>
+                </template>
+
+                <template #guarantees-cell="{ row }">
+                  <span class="leading-relaxed">{{ row.original.guarantees }}</span>
+                </template>
+              </UTable>
             </div>
           </UCard>
         </div>
