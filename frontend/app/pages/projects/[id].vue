@@ -8,11 +8,18 @@ import type { VisualizationList } from "~/models/visualizations";
 
 const runtimeConfig = useRuntimeConfig()
 const route = useRoute()
-const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
 
 const all_data_fetched = ref(false)
 const error_encountered = ref<string | undefined>(undefined)
-const breadcrumbs = ref<BreadcrumbItem[]>([])
+const breadcrumbs = computed<BreadcrumbItem[]>(() => [
+  { label: 'Home', to: '/', icon: 'i-lucide-home' },
+  { label: 'BioSim DB', to: '/biosim-db' },
+  {
+    label: run_summary.value?.name
+      ? normalize_text(run_summary.value.name)
+      : (route.params.id as string || 'Project Details')
+  }
+])
 
 const project_overview = ref<PageProjectOverview | undefined>(undefined)
 const run_summary = ref<PageProjectSimulationRun | undefined>(undefined)
@@ -99,21 +106,7 @@ async function fetch_run() {
 }
 
 onMounted(async () => {
-  breadcrumbs.value = [{label: 'Home', to: '/', icon: 'i-lucide-home'}]
-  routes.splice(0, 1).forEach((route, _index) => {
-    const breadcrumb = {
-      label: normalize_text(route),
-      to: `/${route}`
-    }
-    breadcrumbs.value.push(breadcrumb)
-  })
-  breadcrumbs.value.push({label: 'Project Details', to: ''})
-
   await fetch_run()
-
-  if (run_summary.value) {
-    breadcrumbs.value[breadcrumbs.value.length - 1] = {label: run_summary.value.name, to: ''}
-  }
 })
 
 interface MetadataValue {
@@ -198,7 +191,7 @@ const detailedInfoSections = computed(() => getMetadataSections())
         <Loading class="mx-auto" v-if="!all_data_fetched && !error_encountered" message="Fetching project details..." />
       </template>
       <template v-else>
-        <UBreadcrumb class="mx-auto" :items="breadcrumbs"></UBreadcrumb>
+        <UBreadcrumb class="mx-auto" :items="breadcrumbs" />
 
         <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
           <h1 class="text-xl font-bold">{{normalize_text(run_summary!.name)}}</h1>

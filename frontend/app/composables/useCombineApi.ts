@@ -1,7 +1,9 @@
 import type {
+  AlgorithmSubstitution,
   ModelLanguage,
   OmexMetadataInputFormat,
   OmexMetadataSchema,
+  ValidateProjectOptions,
   ValidationMessage,
   ValidationReport,
   ValidationStatus
@@ -250,10 +252,132 @@ export function useCombineApi() {
     }
   }
 
+  /**
+   * Validate a COMBINE / OMEX archive file or public URL against the COMBINE API.
+   *
+   * @param fileOrUrl - Either a File object or a string URL to the archive.
+   * @param options - Granular validation options and metadata settings.
+   */
+  async function validateProject(
+    fileOrUrl: File | string,
+    options?: ValidateProjectOptions
+  ): Promise<ValidationReport> {
+    const formData = new FormData();
+
+    formData.append('omexMetadataFormat', options?.omexMetadataFormat || 'rdfxml');
+    formData.append('omexMetadataSchema', options?.omexMetadataSchema || 'BioSimulations');
+
+    if (options?.validateOmexManifest !== undefined) {
+      formData.append('validateOmexManifest', String(options.validateOmexManifest));
+    }
+    if (options?.validateSedml !== undefined) {
+      formData.append('validateSedml', String(options.validateSedml));
+    }
+    if (options?.validateSedmlModels !== undefined) {
+      formData.append('validateSedmlModels', String(options.validateSedmlModels));
+    }
+    if (options?.validateOmexMetadata !== undefined) {
+      formData.append('validateOmexMetadata', String(options.validateOmexMetadata));
+    }
+    if (options?.validateImages !== undefined) {
+      formData.append('validateImages', String(options.validateImages));
+    }
+
+    if (typeof fileOrUrl === 'string') {
+      formData.append('url', fileOrUrl.trim());
+    } else {
+      formData.append('file', fileOrUrl, fileOrUrl.name);
+    }
+
+    const relayEndpoint = baseUrl ? `${baseUrl}/project` : null;
+    const directEndpoint = `${combineApiUrl}/combine/validate`;
+
+    async function sendRequest(url: string) {
+      return await $fetch<any>(url, {
+        method: 'POST',
+        body: formData
+      });
+    }
+
+    try {
+      let response: any;
+      if (relayEndpoint) {
+        try {
+          response = await sendRequest(relayEndpoint);
+        } catch (relayErr: any) {
+          // If the relay is unavailable (404/503), fall back to the direct COMBINE API
+          if (relayErr?.status === 404 || relayErr?.status === 503) {
+            response = await sendRequest(directEndpoint);
+          } else {
+            throw relayErr;
+          }
+        }
+      } else {
+        response = await sendRequest(directEndpoint);
+      }
+
+      return normalizeValidationReport(response);
+    } catch (err: any) {
+      // Check for structured HTTPError payload from COMBINE API (e.g. 400 Bad Request)
+      const errorData = err?.data;
+      if (errorData && (errorData.title || errorData.detail || errorData.validationReport)) {
+        if (errorData.validationReport) {
+          return normalizeValidationReport(errorData.validationReport);
+        }
+        return {
+          _type: 'ValidationReport',
+          status: 'invalid',
+          errors: [
+            {
+              _type: 'ValidationMessage',
+              summary: errorData.title || 'Project validation error',
+              details: errorData.detail
+                ? [{ _type: 'ValidationMessage', summary: errorData.detail }]
+                : undefined
+            }
+          ],
+          warnings: []
+        };
+      }
+
+      // Re-throw unexpected connection or server errors
+      throw err;
+    }
+  }
+
+  /**
+   * Fetch similar algorithms and substitution policies from the COMBINE API.
+   *
+   * @param algorithms - Array of KiSAO algorithm IDs (e.g. ['KISAO_0000029']).
+   */
+  async function getSimilarAlgorithms(
+    algorithms: string[]
+  ): Promise<AlgorithmSubstitution[]> {
+    if (!algorithms || algorithms.length === 0) return [];
+    const params = new URLSearchParams();
+    for (const alg of algorithms) {
+      if (alg) params.append('algorithms', alg);
+    }
+    try {
+      const response = await $fetch<AlgorithmSubstitution[]>(
+        `${combineApiUrl}/kisao/get-similar-algorithms?${params.toString()}`,
+        {
+          credentials: 'omit'
+        }
+      );
+      return response || [];
+    } catch (err) {
+      console.warn('Failed to fetch similar algorithms from COMBINE API:', err);
+      return [];
+    }
+  }
+
   return {
     baseUrl,
     validateModel,
     validateSedml,
-    validateOmexMetadata
+    validateOmexMetadata,
+    validateProject,
+    getSimilarAlgorithms
   };
 }

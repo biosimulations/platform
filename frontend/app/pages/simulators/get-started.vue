@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import type {PageFeatureProps} from "#ui/components/PageFeature.vue";
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
-import {normalize_text} from "~/functions/functions";
 
 const features = ref<PageFeatureProps[]>([
   {
@@ -21,18 +20,11 @@ const features = ref<PageFeatureProps[]>([
   }
 ])
 
-const route = useRoute()
-const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
-const breadcrumbs = ref<BreadcrumbItem[]>([])
-
-routes.forEach((route, _index) => {
-  const breadcrumb = {
-    label: normalize_text(route),
-    to: `/${route}`
-  }
-
-  breadcrumbs.value.push(breadcrumb)
-})
+const breadcrumbs: BreadcrumbItem[] = [
+  { label: 'Home', to: '/', icon: 'i-lucide-home' },
+  { label: 'Simulators', to: '/simulators' },
+  { label: 'Get Started' }
+]
 
 const tabs = [
   {
@@ -60,7 +52,7 @@ const tabs = [
 <template>
   <div class="w-full max-w-[1200px] px-6 mx-auto">
     <div class="flex items-center justify-center px-4 py-2 bg-gray-50 rounded-lg mt-3">
-      <UBreadcrumb :items="breadcrumbs"></UBreadcrumb>
+      <UBreadcrumb :items="breadcrumbs" />
     </div>
     <UPageSection
       headline="Get Started"

@@ -75,11 +75,7 @@ function copyCode(text: string) {
     <div class="max-w-7xl mx-auto space-y-8">
       <!-- Breadcrumbs & Header -->
       <div>
-        <UBreadcrumb :items="breadcrumbs" class="mb-3">
-          <template #separator>
-            <span class="mx-1 text-neutral-400 dark:text-neutral-600">/</span>
-          </template>
-        </UBreadcrumb>
+        <UBreadcrumb :items="breadcrumbs" class="mb-3" />
 
         <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>

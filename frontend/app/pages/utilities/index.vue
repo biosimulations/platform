@@ -150,15 +150,11 @@ const filteredUtilities = computed(() => {
     <div class="max-w-7xl mx-auto space-y-8">
       <!-- Breadcrumbs & Hero Header -->
       <div class="space-y-4">
-        <UBreadcrumb :items="breadcrumbs" class="mb-2">
-          <template #separator>
-            <span class="mx-1 text-neutral-400 dark:text-neutral-600">/</span>
-          </template>
-        </UBreadcrumb>
+        <UBreadcrumb :items="breadcrumbs" class="mb-2" />
 
         <div class="flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
-            <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight text-neutral-900 dark:text-neutral-100">
+            <h1 class="text-3xl font-bold tracking-tight text-neutral-900 dark:text-neutral-100">
               Utilities
             </h1>
             <p class="mt-2 text-sm sm:text-base text-neutral-600 dark:text-neutral-400 max-w-3xl leading-relaxed">

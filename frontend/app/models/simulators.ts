@@ -39,9 +39,7 @@ export interface RunSimulationPayloadInterface {
   omex_id?: string // sha hash or something
   name?: string // No uniqueness constraint
   simulators: SimulatorSelection[]
-  email_address?: string
   is_commercial: boolean // Default to false
-  newsletter_consent: boolean
 
   _simulators: Simulator[]
 }
@@ -51,9 +49,7 @@ export class RunSimulationPayload implements RunSimulationPayloadInterface {
     public omex_id: string | undefined = undefined,
     public name: string | undefined = undefined,
     public simulators: SimulatorSelection[] = [],
-    public email_address: string | undefined = undefined,
     public is_commercial: boolean = false,
-    public newsletter_consent: boolean = false,
     public _simulators: Simulator[] = []
   ) {}
 }

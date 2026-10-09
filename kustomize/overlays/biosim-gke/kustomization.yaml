@@ -9,7 +9,7 @@ images:
 - name: ghcr.io/biosimulations/platform-worker
   newTag: backend-0.10.1
 - name: ghcr.io/biosimulations/platform-frontend
-  newTag: frontend-0.3.3
+  newTag: frontend-0.3.5
 - name: docker.io/library/mongo
   newTag: 8.0.4
 
