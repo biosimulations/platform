@@ -8,11 +8,18 @@ import type { VisualizationList, Visualization } from "~/models/visualizations";
 
 const runtimeConfig = useRuntimeConfig()
 const route = useRoute()
-const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
 
 const all_data_fetched = ref(false)
 const error_encountered = ref<string | undefined>(undefined)
-const breadcrumbs = ref<BreadcrumbItem[]>([])
+const breadcrumbs = computed<BreadcrumbItem[]>(() => [
+  { label: 'Home', to: '/', icon: 'i-lucide-home' },
+  { label: 'Simulations', to: '/simulations' },
+  {
+    label: run_info.value?.name
+      ? normalize_text(run_info.value.name)
+      : (route.params.id as string || 'Simulation Details')
+  }
+])
 
 const run_info = ref<PageSimulationRun | undefined>(undefined)
 const run_summary = ref<PageSimulationRunSummary | undefined>(undefined)
@@ -154,22 +161,7 @@ async function fetch_run() {
 }
 
 onMounted(async () => {
-  breadcrumbs.value = [{label: 'Home', to: '/', icon: 'i-lucide-home'}]
-  routes.splice(0, 1).forEach((route, _index) => {
-    const breadcrumb = {
-      label: normalize_text(route),
-      to: `/${route}`
-    }
-
-    breadcrumbs.value.push(breadcrumb)
-  })
-  breadcrumbs.value.push({label: 'Simulation Details', to: ''})
-
   await fetch_run()
-
-  if (run_info.value) {
-    breadcrumbs.value[breadcrumbs.value.length - 1] = {label: run_info.value.name, to: ''}
-  }
 })
 </script>
 
@@ -183,7 +175,7 @@ onMounted(async () => {
         <Loading class="mx-auto" v-if="!all_data_fetched && !error_encountered" message="Fetching simulation details..." />
       </template>
       <template v-else>
-        <UBreadcrumb class="mx-auto" :items="breadcrumbs"></UBreadcrumb>
+        <UBreadcrumb class="mx-auto" :items="breadcrumbs" />
 
         <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
           <h1 class="text-xl font-bold">{{normalize_text(run_info!.name)}}</h1>

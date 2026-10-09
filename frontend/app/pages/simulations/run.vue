@@ -3,7 +3,6 @@
   import type {StepperItem} from "#ui/components/Stepper.vue";
   import type {RadioGroupItem} from "#ui/components/RadioGroup.vue";
   import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
-  import {normalize_text} from "~/functions/functions";
   import {type ArchiveCompatibilityResponse, type ConglomerateStatus, RunSimulationPayload, type Simulator, type SimulatorSelection} from "~/models/simulators";
   import { z } from 'zod'
   import { randomName } from '@scaleway/random-name'
@@ -12,25 +11,17 @@
 
   const config = useRuntimeConfig()
 
-  //<editor-fold desc="Breadcrumbs"
   const route = useRoute()
   const _lenis = useLenis()
-  const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
-  const breadcrumbs = ref<BreadcrumbItem[]>([])
+  const breadcrumbs: BreadcrumbItem[] = [
+    { label: 'Home', to: '/', icon: 'i-lucide-home' },
+    { label: 'Simulations', to: '/simulations' },
+    { label: 'Run Simulation' }
+  ]
 
   const { isAuthenticated, checkSession } = useAuth0()
 
   onMounted(() => {
-    breadcrumbs.value = [{label: 'Home', to: '/', icon: 'i-lucide-home'}]
-    routes.forEach((route, _index) => {
-      const breadcrumb = {
-        label: normalize_text(route),
-        to: `/${route}`
-      }
-
-      breadcrumbs.value.push(breadcrumb)
-    })
-
     if (route.query.runName) {
       submission_payload.name = String(route.query.runName)
     }
@@ -253,7 +244,7 @@
 
 <template>
   <section class="w-full relative px-6 max-w-300 mx-auto my-auto flex flex-col gap-4 items-center justify-center text-center md:text-left pt-5">
-    <UBreadcrumb :items="breadcrumbs"></UBreadcrumb>
+    <UBreadcrumb class="mx-auto" :items="breadcrumbs" />
 
     <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
       <div class="background zig-zag w-full h-full"></div>

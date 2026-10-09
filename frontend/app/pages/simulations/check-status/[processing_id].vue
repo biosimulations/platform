@@ -1,17 +1,19 @@
 <script setup lang="ts">
   import type {ConglomerateStatus} from "~/models/simulators";
-  import {normalize_text} from "~/functions/functions";
   import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
   import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 
   const config = useRuntimeConfig()
   const route = useRoute()
-  const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
-  const breadcrumbs = ref<BreadcrumbItem[]>([])
+  const breadcrumbs: BreadcrumbItem[] = [
+    { label: 'Home', to: '/', icon: 'i-lucide-home' },
+    { label: 'Simulations', to: '/simulations' },
+    { label: 'Simulation Status' }
+  ]
   const processing_status = ref<ConglomerateStatus | null>(null)
   const seconds_remaining = ref<number>(0)
   const interval = 5
-  const processing_id = routes[routes.length - 1]
+  const processing_id = (route.params.processing_id as string) || ''
 
   const finished = ref(false)
 
@@ -58,22 +60,13 @@
   }
 
   onMounted(() => {
-    routes.forEach((route, _index) => {
-      const breadcrumb = {
-        label: normalize_text(route),
-        to: `/${route}`
-      }
-
-      breadcrumbs.value.push(breadcrumb)
-    })
-
     check_status()
   })
 </script>
 
 <template>
   <section class="w-full min-h-[calc(100vh-var(--ui-header-height))] px-6 max-w-300 mx-auto flex flex-col gap-4 items-center justify-center text-center md:text-left">
-    <!--<UBreadcrumb :items="breadcrumbs"></UBreadcrumb>-->
+    <UBreadcrumb class="mx-auto" :items="breadcrumbs" />
 
     <div v-if="processing_status == null" class="flex items-center gap-2">
       <Icon name="i-svg-spinners:ring-resize" size="20" />

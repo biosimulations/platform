@@ -18,10 +18,10 @@ const { copy } = useClipboard()
 const runtimeConfig = useRuntimeConfig()
 const { fetchSimulators } = useSimulators()
 
-const breadcrumbs = ref<BreadcrumbItem[]>([
+const breadcrumbs: BreadcrumbItem[] = [
   { label: 'Home', to: '/', icon: 'i-lucide-home' },
-  { label: 'Simulators', to: '/simulators' }
-])
+  { label: 'Simulators' }
+]
 
 const loading = ref(true)
 const error_encountered = ref<string | undefined>(undefined)
