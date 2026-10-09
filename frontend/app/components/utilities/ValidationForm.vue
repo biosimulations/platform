@@ -94,15 +94,15 @@ function handleReset() {
 </script>
 
 <template>
-  <UCard class="w-full shadow-sm border border-neutral-200 dark:border-neutral-800">
+  <UCard class="w-full shadow-sm border border-neutral-200">
     <template #header>
       <div class="flex items-center justify-between gap-4">
         <div>
-          <h2 class="text-base font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+          <h2 class="text-base font-semibold text-neutral-900 flex items-center gap-2">
             <UIcon name="i-lucide-file-input" class="size-5 text-primary" />
             Input Source & Settings
           </h2>
-          <p class="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
+          <p class="text-xs text-neutral-500 mt-0.5">
             Select a local file or provide a public URL to validate.
           </p>
         </div>
@@ -115,7 +115,7 @@ function handleReset() {
 
       <!-- Input Mode Switcher -->
       <div class="space-y-3">
-        <label class="block text-xs font-semibold text-neutral-600 dark:text-neutral-300 uppercase tracking-wider">
+        <label class="block text-xs font-semibold text-neutral-600 uppercase tracking-wider">
           Input Method
         </label>
         <UTabs
@@ -125,7 +125,7 @@ function handleReset() {
         />
       </div>
 
-      <!-- File Mode using canonical UFileUpload -->
+      <!-- File Mode -->
       <div v-if="mode === 'file'" class="pt-1">
         <UFileUpload
           v-model="selectedFile"
@@ -138,7 +138,7 @@ function handleReset() {
         >
           <template #description>
             <div class="flex flex-col items-center gap-1 mt-1">
-              <span class="text-xs text-neutral-500 dark:text-neutral-400">or click to browse from your device</span>
+              <span class="text-xs text-neutral-500">or click to browse from your device</span>
               <div v-if="supportedExtensions.length > 0" class="flex flex-wrap items-center justify-center gap-1.5 mt-1.5">
                 <span class="text-xs text-neutral-400">Accepted formats:</span>
                 <UBadge
@@ -159,7 +159,7 @@ function handleReset() {
       <!-- URL Mode -->
       <div v-else class="space-y-3 pt-1">
         <div class="space-y-1.5">
-          <label class="block text-sm font-medium text-neutral-700 dark:text-neutral-200">
+          <label class="block text-sm font-medium text-neutral-700">
             Public File URL
           </label>
           <div class="flex gap-2">
@@ -184,7 +184,7 @@ function handleReset() {
             <UIcon name="i-lucide-alert-circle" class="size-3.5" />
             {{ urlError }}
           </p>
-          <p v-else class="text-xs text-neutral-500 dark:text-neutral-400">
+          <p v-else class="text-xs text-neutral-500">
             Ensure the URL points directly to the raw model file (CORS or direct public download).
           </p>
         </div>
