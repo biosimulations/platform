@@ -326,6 +326,7 @@ const detailedInfoSections = computed(() => getMetadataSections())
                   <template v-else>
                     <div v-if="vis.renderer === 'Vega'" class="relative w-full max-h-[400px] overflow-hidden flex justify-center items-center">
                       <VegaVisualization
+                        :key="vis.id"
                         :spec="vis.vegaSpec"
                         :name="vis.name"
                       />
