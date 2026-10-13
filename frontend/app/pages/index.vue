@@ -16,43 +16,50 @@
   const links = ref([
     {
       label: 'Run a Simulation',
-      class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
+      class: 'cursor-pointer gap-2 text-base font-normal rounded-lg shadow-sm',
       to: '/simulations/run' as const,
       size: 'md' as const,
-      color: 'info' as const,
-      leadingIcon: 'i-gravity-ui-play-fill' // w-4
-    },
-    {
-      label: 'Compare Simulators',
-      class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
-      size: 'md' as const,
-      color: 'warning' as const,
-      leadingIcon: 'i-lucide-cpu' // w-4
+      color: 'primary' as const,
+      variant: 'solid' as const,
+      icon: 'i-gravity-ui-play-fill'
     },
     {
       label: 'Browse Simulations',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
       to: '/simulations' as const,
       size: 'md' as const,
-      color: 'neutral' as const,
+      color: 'primary' as const,
       variant: 'outline' as const,
-      leadingIcon: 'i-lucide-search' // w-4
+      icon: 'i-lucide-search'
+    },
+    {
+      label: 'Browse Simulators',
+      class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
+      to: '/simulators' as const,
+      size: 'md' as const,
+      color: 'primary' as const,
+      variant: 'outline' as const,
+      icon: 'i-lucide-cpu'
     },
     {
       label: 'Submit a Simulation',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
+      to: '/simulations/run' as const,
       size: 'md' as const,
-      color: 'neutral' as const,
+      color: 'primary' as const,
       variant: 'outline' as const,
-      leadingIcon: 'i-mynaui-send-solid' // w-4
+      icon: 'i-mynaui-send-solid'
     },
     {
       label: 'Visit the Docs',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
+      to: 'https://docs.biosimulations.org',
+      target: '_blank' as const,
       size: 'md' as const,
-      color: 'neutral' as const,
+      color: 'primary' as const,
       variant: 'outline' as const,
-      leadingIcon: 'i-lucide-book-open' // w-4
+      icon: 'i-lucide-book-open',
+      trailingIcon: 'i-lucide-external-link'
     }
   ])
 
