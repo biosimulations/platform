@@ -336,6 +336,7 @@ onMounted(async () => {
                 <template v-else>
                   <VegaVisualization
                     v-if="selectedVisualization.renderer === 'Vega'"
+                    :key="selectedVisualization.id"
                     :spec="selectedVisualization.vegaSpec"
                     :name="selectedVisualization.name"
                   />
