@@ -1364,6 +1364,18 @@ paths:
         description: 'SED-ML data set labels of interest. Validated only: the request
           is rejected with 400 if none appear in the runs'' common dataset labels.
           Not yet used to filter the returned comparison.'
+      - name: omex_hash
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Optional OMEX archive MD5 hash associated with these simulation
+            runs.
+          title: Omex Hash
+        description: Optional OMEX archive MD5 hash associated with these simulation
+          runs.
       responses:
         '200':
           description: Successful Response
@@ -1421,6 +1433,16 @@ paths:
           description: Opaque `next_cursor` from a previous page.
           title: Cursor
         description: Opaque `next_cursor` from a previous page.
+      - name: omex_hash
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Optional OMEX archive MD5 hash to filter verification records.
+          title: Omex Hash
+        description: Optional OMEX archive MD5 hash to filter verification records.
       responses:
         '200':
           description: One page visible to the current caller.
@@ -3430,6 +3452,13 @@ components:
             callers see ownerless verifications; authenticated callers see ownerless
             plus their own. Follow `next_cursor` with the same identity for older
             visible IDs.
+        records:
+          items:
+            $ref: '#/components/schemas/VerificationRecord'
+          type: array
+          title: Records
+          description: Verification records grouped by OMEX archive hash with run
+            metadata.
         next_cursor:
           anyOf:
           - type: string
@@ -3438,9 +3467,40 @@ components:
           description: 'Opaque continuation token: pass it as `cursor` to get the
             next (older) page. null when this is the last page.'
       type: object
-      required:
-      - verification_ids
       title: VerificationIdsResponse
+    VerificationRecord:
+      properties:
+        omex_hash:
+          type: string
+          title: Omex Hash
+        run_ids:
+          items:
+            $ref: '#/components/schemas/VerificationRun'
+          type: array
+          title: Run Ids
+      type: object
+      required:
+      - omex_hash
+      - run_ids
+      title: VerificationRecord
+    VerificationRun:
+      properties:
+        id:
+          type: string
+          title: Id
+        created:
+          type: string
+          format: date-time
+          title: Created
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - id
+      - created
+      - status
+      title: VerificationRun
     VerifyWorkflowOutput:
       properties:
         workflow_id:

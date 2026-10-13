@@ -22,6 +22,7 @@ from biosim_server.biosim_verify.database import (
 from biosim_server.biosim_verify.models import (
     MAX_WORKFLOW_ID_BYTES,
     WORKFLOW_ID_PREFIX_MAX_LENGTH,
+    VerificationLedgerRecord,
     VerificationRecord,
     VerificationType,
     VerifyWorkflowStatus,
@@ -94,7 +95,7 @@ async def test_expired_workflow_admin_can_see_retention_detail(client: AsyncClie
     temporal = _temporal_with_describe()
     temporal.get_workflow_handle.return_value.describe.side_effect = RPCError("private", RPCStatusCode.NOT_FOUND, b"")
     ledger = AsyncMock()
-    ledger.get_verification.return_value = VerificationRecord(workflow_id="wf", verify_type=VerificationType.RUNS,
+    ledger.get_verification.return_value = VerificationLedgerRecord(workflow_id="wf", verify_type=VerificationType.RUNS,
                                                              owner_sub="someone-else", created=datetime.now(UTC))
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
@@ -114,7 +115,7 @@ async def test_history_purged_between_describe_and_query_is_404(
     """describe succeeds, then query hits NOT_FOUND: same ledger fallback as a describe miss, not 503."""
     temporal = _temporal_with_describe(query_side_effect=RPCError("private failure", RPCStatusCode.NOT_FOUND, b""))
     ledger = AsyncMock()
-    ledger.get_verification.return_value = VerificationRecord(workflow_id="wf", verify_type=VerificationType.OMEX,
+    ledger.get_verification.return_value = VerificationLedgerRecord(workflow_id="wf", verify_type=VerificationType.OMEX,
                                                              owner_sub=row_owner, created=datetime.now(UTC))
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
@@ -491,25 +492,28 @@ class _OnePageLedger:
     """
 
     def __init__(self) -> None:
-        self.records: list[VerificationRecord] = []
+        self.records: list[VerificationLedgerRecord] = []
         self.afters: list[VerificationCursor | None] = []
 
-    async def insert_verification(self, record: VerificationRecord) -> VerificationRecord:
+    async def insert_verification(self, record: VerificationLedgerRecord) -> VerificationLedgerRecord:
         self.records.append(record)
         return record
 
     async def list_verification_ids(
-        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None
+        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None, omex_hash: str | None = None
     ) -> VerificationIdPage:
         self.afters.append(after)
         if after is not None:
-            return VerificationIdPage(verification_ids=[], next_cursor=None)
+            return VerificationIdPage(verification_ids=[], records=[], next_cursor=None)
         visible = [r for r in self.records if r.owner_sub is None or r.owner_sub == owner_sub]
+        if omex_hash is not None:
+            visible = [r for r in visible if r.omex_hash == omex_hash]
         if not visible:
-            return VerificationIdPage(verification_ids=[], next_cursor=None)
+            return VerificationIdPage(verification_ids=[], records=[], next_cursor=None)
         last = visible[-1]
         return VerificationIdPage(
             verification_ids=[r.workflow_id for r in visible[:limit]],
+            records=[],
             next_cursor=VerificationCursor(created=last.created.replace(tzinfo=None), workflow_id=last.workflow_id),
         )
 
@@ -523,7 +527,7 @@ async def _follow_listing(client: AsyncClient, ledger: _OnePageLedger) -> None:
         assert token is not None
         second = await client.get("/verification_ids", params={"cursor": token})
     assert second.status_code == 200, second.text
-    assert second.json() == {"verification_ids": [], "next_cursor": None}
+    assert second.json() == {"verification_ids": [], "records": [], "next_cursor": None}
     last = ledger.records[-1]
     assert ledger.afters == [None, VerificationCursor(created=last.created.replace(tzinfo=None),
                                                       workflow_id=last.workflow_id)]
@@ -555,7 +559,7 @@ async def test_longest_accepted_prefix_yields_a_followable_cursor(client: AsyncC
 async def test_stored_id_at_temporal_limit_yields_a_followable_cursor(client: AsyncClient, workflow_id: str) -> None:
     """Rows written before the prefix bound can carry any ID Temporal accepted."""
     ledger = _OnePageLedger()
-    ledger.records.append(VerificationRecord(workflow_id=workflow_id, verify_type=VerificationType.RUNS,
+    ledger.records.append(VerificationLedgerRecord(workflow_id=workflow_id, verify_type=VerificationType.RUNS,
                                              owner_sub=None, created=datetime(9999, 12, 31, 23, 59, 59, 999000)))
     await _follow_listing(client, ledger)
 

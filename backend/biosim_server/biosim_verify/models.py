@@ -100,13 +100,26 @@ class VerificationType(StrEnum):
     RUNS = "runs"
 
 
+class VerificationRun(BaseModel):
+    id: str
+    created: datetime
+    status: str
+
+
 class VerificationRecord(BaseModel):
+    omex_hash: str
+    run_ids: list[VerificationRun]
+
+
+class VerificationLedgerRecord(BaseModel):
     workflow_id: str
     verify_type: VerificationType
     # Caller's verified sub, or None for an anonymous (legacy API) submission,
     # which makes the verification publicly readable.
     owner_sub: Optional[str] = None
     created: datetime
+    omex_hash: Optional[str] = None
+    status: Optional[str] = "PENDING"
 
 
 # GET /verification_ids page sizes (PR #120, B3). IDs are ~40-70 bytes, so a full
@@ -127,12 +140,17 @@ WORKFLOW_ID_PREFIX_MAX_LENGTH: Final = 200
 
 class VerificationIdsResponse(BaseModel):
     verification_ids: list[str] = Field(
+        default_factory=list,
         description=(
             "One page of workflow IDs that can be passed to GET /verify/{workflow_id}, "
             "newest first (created descending, then workflow_id ascending). Anonymous callers "
             "see ownerless verifications; authenticated callers see ownerless plus their own. "
             "Follow `next_cursor` with the same identity for older visible IDs."
-        )
+        ),
+    )
+    records: list[VerificationRecord] = Field(
+        default_factory=list,
+        description="Verification records grouped by OMEX archive hash with run metadata.",
     )
     next_cursor: Optional[str] = Field(
         default=None,
