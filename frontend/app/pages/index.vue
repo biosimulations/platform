@@ -16,43 +16,50 @@
   const links = ref([
     {
       label: 'Run a Simulation',
-      class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
+      class: 'cursor-pointer gap-2 text-base font-normal rounded-lg shadow-sm',
       to: '/simulations/run' as const,
       size: 'md' as const,
-      color: 'info' as const,
-      leadingIcon: 'i-gravity-ui-play-fill' // w-4
-    },
-    {
-      label: 'Compare Simulators',
-      class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
-      size: 'md' as const,
-      color: 'warning' as const,
-      leadingIcon: 'i-lucide-cpu' // w-4
+      color: 'primary' as const,
+      variant: 'solid' as const,
+      icon: 'i-gravity-ui-play-fill'
     },
     {
       label: 'Browse Simulations',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
       to: '/simulations' as const,
       size: 'md' as const,
-      color: 'neutral' as const,
+      color: 'primary' as const,
       variant: 'outline' as const,
-      leadingIcon: 'i-lucide-search' // w-4
+      icon: 'i-lucide-search'
+    },
+    {
+      label: 'Browse Simulators',
+      class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
+      to: '/simulators' as const,
+      size: 'md' as const,
+      color: 'primary' as const,
+      variant: 'outline' as const,
+      icon: 'i-lucide-cpu'
     },
     {
       label: 'Submit a Simulation',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
+      to: '/simulations/run' as const,
       size: 'md' as const,
-      color: 'neutral' as const,
+      color: 'primary' as const,
       variant: 'outline' as const,
-      leadingIcon: 'i-mynaui-send-solid' // w-4
+      icon: 'i-mynaui-send-solid'
     },
     {
       label: 'Visit the Docs',
       class: 'cursor-pointer gap-2 text-base font-normal rounded-lg',
+      to: 'https://docs.biosimulations.org',
+      target: '_blank' as const,
       size: 'md' as const,
-      color: 'neutral' as const,
+      color: 'primary' as const,
       variant: 'outline' as const,
-      leadingIcon: 'i-lucide-book-open' // w-4
+      icon: 'i-lucide-book-open',
+      trailingIcon: 'i-lucide-external-link'
     }
   ])
 
@@ -575,7 +582,7 @@
   });
 </script>
 <template>
-  <div class="flex flex-col gap-[125px]">
+  <div class="flex flex-col">
     <div class="relative overflow-hidden">
       <UPageHero
         class="z-2"
@@ -592,27 +599,17 @@
         }"
       >
         <template #headline>
-          <UAlert
-            class="w-full p-2 flex flex-col lg:flex-row items-center gap-[16px] justify-center lg:justify-between"
-            title="Meet our new Reproducibility Portal: a more user-friendly way to interact with the BioSim database!"
-            icon="i-mage-star-fill"
-            orientation="horizontal"
+          <UBadge
             variant="subtle"
+            size="lg"
             color="secondary"
-            :ui="{
-              title: 'text-sm text-center md:text-left font-normal',
-              icon: 'size-5'
-            }"
-            :actions="[
-              {
-                label: 'Let\'s Go!',
-                size: 'sm',
-                class: 'cursor-pointer',
-                icon: 'i-lucide-external-link',
-                color: 'secondary',
-              }
-            ]">
-          </UAlert>
+            class="rounded-full gap-2 px-3 py-1.5 cursor-pointer text-sm font-normal"
+            to="/biosim-db"
+          >
+            <UIcon name="i-mage-star-fill" class="size-4 text-secondary-500" />
+            <span>Meet our new Reproducibility Portal: a more user-friendly way to interact with the BioSim database!</span>
+            <UIcon name="i-lucide-arrow-right" class="size-4" />
+          </UBadge>
         </template>
         <template #title>
           <h1 class="text-4xl font-bold m-0 tracking-normal">Powerful biomodel simulations and tools <span class="text-blue-500">at your fingertips</span></h1>
@@ -620,12 +617,9 @@
         <template #description>
           <p class="text-lg">Generate, share, and re-use biomodels, simulations, results, and visualizations like never before with our free registry of biosimulation tools.</p>
         </template>
-        <div class="placeholder w-full h-[500px] bg-black rounded-lg"></div>
-  <!--      <img
-          src="/blocks/image4.png"
-          alt="App screenshot"
-          class="rounded-lg shadow-2xl ring ring-default"
-        />-->
+        <UPageCard class="w-full h-[500px] rounded-lg" variant="subtle">
+          <div class="placeholder w-full h-full bg-black rounded-lg" />
+        </UPageCard>
       </UPageHero>
 <!--      <canvas ref="canvas" id="hero_bg" class="absolute top-0 left-0 z-1 w-full h-full" />-->
       <div id="bottom_fade_gradient" class="absolute top-0 left-0 w-full h-full -z-1"></div>
@@ -635,97 +629,184 @@
       />
     </div>
 
-    <section id="marquees" class="w-full max-w-[1200px] px-6 mx-auto flex flex-col gap-[125px]">
+    <section id="marquees" class="w-full max-w-[1200px] px-6 mx-auto flex flex-col mt-[100px] gap-[125px]">
       <div class="w-full flex flex-col items-center gap-6">
-        <p class="text-lg text-center"><strong>In Collaboration With</strong></p>
-        <UMarquee class="w-full overflow-hidden" pause-on-hover :overlay="false" orientation="horizontal">
+        <UPageLogos
+          class="w-full"
+          title="In Collaboration With"
+          :marquee="{ pauseOnHover: true, overlay: false, orientation: 'horizontal' }"
+          :ui="{ title: 'text-lg text-center font-bold text-highlighted', logos: 'mt-6' }"
+        >
           <NuxtLink v-for="partner of partners" :key="partner.id" :to="partner.url" target="_blank" rel="noopener noreferrer">
             <img class="max-h-[40px] max-w-[250px] w-full h-full" :alt="partner.alt" :src="partner.src"/>
           </NuxtLink>
-        </UMarquee>
+        </UPageLogos>
         <p class="text-sm opacity-50 text-center leading-7">BioSimulations was developed by the Center for Reproducible Biomedical Modeling , the Karr Lab at the Icahn School of Medicine at Mount Sinai , and the Center for Cell Analysis & Modeling at the University of Connecticut Health Center  with support from the National Institutes of Health and the National Science Foundation.</p>
       </div>
 
       <div class="w-full flex flex-col items-center gap-6">
-        <p class="text-lg text-center"><strong>Built Using These Awesome Projects & Platforms</strong></p>
-        <UMarquee class="w-full overflow-hidden" pause-on-hover reverse :overlay="false" orientation="horizontal">
+        <UPageLogos
+          class="w-full"
+          title="Built Using These Awesome Projects & Platforms"
+          :marquee="{ pauseOnHover: true, reverse: true, overlay: false, orientation: 'horizontal' }"
+          :ui="{ title: 'text-lg text-center font-bold text-highlighted', logos: 'mt-6' }"
+        >
           <NuxtLink v-for="built_item of built_using" :key="built_item.id" :to="built_item.url" target="_blank" rel="noopener noreferrer">
             <img class="max-h-[40px] max-w-[250px] w-full h-full" :alt="built_item.alt" :src="built_item.src"/>
           </NuxtLink>
-        </UMarquee>
+        </UPageLogos>
         <p class="text-sm opacity-50 text-center leading-7">BioSimulations is implemented using several open-source tools and cloud platforms. The models, simulations, and visualizations are available under the licenses specified for each resource. The code is openly available under the MIT license. The simulation tools provided are available under the licenses specified for each simulation tool at BioSimulators.</p>
       </div>
     </section>
-    <section id="revolutionary_platform" class="w-full relative px-6 py-[150px] text-white flex items-center text-center md:text-left justify-center">
-      <div id="revolutionary_content" class="w-full max-w-[1200px] mx-auto flex flex-col gap-2 z-4">
-        <small class="uppercase tracking-widest text-[0.8rem] font-semibold">what is biosimulations?</small>
-        <h2 class="font-bold text-3xl">A Revolutionary Platform</h2>
-        <p class="leading-7 text-lg">BioSimulations is <em>the</em> free platform for discovering and comparing simulators, sharing and re-using biomodels, running simulations, and browsing/sharing/visualizing simulation results. With simulators and simulations on one platform, researchers have access to streamlined workflows to accelerate their discoveries.</p>
-        <br>
-        <small class="uppercase tracking-widest text-[0.8rem] font-semibold">Simulators</small>
-        <p>Access a registry of biosimulation tools encompassing diverse frameworks, algorithms, and model format curated to streamline the simulation process. The registry, powered by conventions like SED-ML, offers readily available Python packages, command-line programs, and Docker images for consistent execution.</p>
-        <div class="flex items-center gap-4 mt-3">
-          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-rocket" to="/simulators/get-started">Get Started</UButton>
-          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulators">Browse Simulators</UButton>
-        </div>
-        <br>
-        <small class="uppercase tracking-widest text-[0.8rem] font-semibold">Simulations</small>
-        <p>Access a wide range of frameworks (e.g., logical, Flux-Balance Analysis (FBA), continuous kinetic, discrete kinetic), simulation algorithms (e.g., FBA, SSA), model formats (e.g., SBML), and tools (e.g., COBRApy, COPASI, tellurium) and connect with a community of others supercharging their bio-data processing.</p>
-        <div class="flex items-center gap-4 mt-3">
-          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-sparkles" to="/simulations/run">Run a Simulation</UButton>
-          <UButton class="w-max bg-transparent border hover:bg-white/10 border-white text-white" variant="outline" color="neutral" icon="i-lucide-search" to="/simulations">Browse Simulation Runs</UButton>
-        </div>
-      </div>
 
-      <div id="color_gradient" class="absolute top-0 left-0 w-full h-full z-2"></div>
-      <div id="top_fade_gradient" class="absolute top-0 left-0 w-full h-full z-3"></div>
-    </section>
-    <section id="workflow" class="w-full px-6 text-center md:text-left mb-[125px]">
-      <div id="workflow_content" class="w-full max-w-[1200px] mx-auto flex flex-col gap-8">
-        <div class="w-full flex flex-col gap-2">
-          <h1 class="text-3xl font-bold">Your Workflow, Your Way</h1>
-          <p class="text-lg">Starting from scratch? BioSimulations offers a nuts-to-bolts pipeline. Ready to import and upgrade some data? BioSimulations has extensive documentation to make supercharging your bio data easy.</p>
-        </div>
+    <UPageSection
+      id="revolutionary_platform"
+      class="w-full max-w-[1200px] px-6 mx-auto py-12 mt-24"
+      :ui="{
+        root: 'relative isolate',
+        container: 'relative overflow-hidden max-w-[1200px]! rounded-3xl border border-blue-200/60 dark:border-blue-900/40 bg-linear-to-r from-blue-500/10 via-cyan-500/5 to-amber-500/10 !p-8 sm:!p-10 lg:!p-12 shadow-xs backdrop-blur-sm flex flex-col gap-8!',
+        wrapper: 'text-center',
+        headline: 'mb-3 text-center',
+        title: 'text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight text-slate-900 dark:text-white text-center',
+        description: 'text-base sm:text-lg text-slate-600 dark:text-slate-300 leading-relaxed text-center'
+      }"
+    >
+      <template #headline>
+        <UBadge color="primary" variant="subtle" size="lg" class="rounded-full px-2.5">
+          <UIcon name="i-fluent-sparkle-20-filled" class="size-3.5 mr-1" />
+          What is BioSimulations?
+        </UBadge>
+      </template>
 
-        <div class="w-full flex flex-col md:flex-col-reverse lg:flex-row items-center lg:items-stretch justify-center lg:justify-between gap-6" ref="workflow_container">
-          <TransitionGroup class="w-full flex flex-col gap-4" name="workflow_features" tag="div">
-            <div tabindex="0" role="button" :aria-label="workflow_feature.title" :id="`workflow_feature_${index}`" :class="`workflow_feature py-1 cursor-pointer rounded-xl group flex flex-col gap-4 w-full ${workflow_feature.selected ? 'bg-gray-50 p-4!' : 'bg-transparent'}`" v-for="(workflow_feature, index) of workflow_features" :key="workflow_feature.title" @keydown.enter.prevent="switch_workflow_feature(index)" @keydown.space.prevent="switch_workflow_feature(index)" @click="switch_workflow_feature(index)">
-              <div class="w-full flex flex-col">
-                <p class="text-lg" :class="workflow_feature.selected ? 'text-black' : 'opacity-50 group-hover:opacity-100'"><strong>{{workflow_feature.title}}</strong></p>
-                <p v-if="workflow_feature.selected">{{workflow_feature.description}}</p>
-              </div>
-              <!-- Static multimedia slot for mobile; renders the `associated_multimedia` of the current active WorkflowFeature -->
-              <div v-if="workflow_feature.selected" id="mobile_multimedia_wrapper" class="w-full min-h-[100px] shadow-2xl overflow-hidden rounded-xl block md:hidden">
-                <img class="object-cover" v-if="current_workflow_feature && current_workflow_feature.associated_multimedia.type == 'image'" :src="current_workflow_feature.associated_multimedia.src" :alt="current_workflow_feature.associated_multimedia.alt">
-              </div>
-              <div class="progress_wrapper w-full bg-gray-100 h-[6px] rounded-2xl relative overflow-hidden" v-if="workflow_feature.selected">
-                <div class="progress_bar bg-blue-500 absolute w-0 h-full top-0 left-0 rounded-2xl group-hover:[--play-state:paused]" :style="{'--duration': `${workflow_feature.duration}ms`}" @animationend="switch_workflow_feature()"></div>
-              </div>
+      <template #title>
+        A Revolutionary Platform
+      </template>
+
+      <template #description>
+        BioSimulations is <em>the</em> free platform for discovering and comparing simulators, sharing and re-using biomodels, running simulations, and browsing/sharing/visualizing simulation results. With simulators and simulations on one platform, researchers have access to streamlined workflows to accelerate their discoveries.
+      </template>
+
+      <UPageGrid class="grid-cols-1 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-6">
+        <UPageCard
+          title="Simulators"
+          description="Access a registry of biosimulation tools encompassing diverse frameworks, algorithms, and model formats curated to streamline the simulation process. The registry, powered by conventions like SED-ML, offers readily available Python packages, command-line programs, and Docker images for consistent execution."
+          variant="subtle"
+          class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-800/60 shadow-xs"
+          :ui="{
+            title: 'text-xl font-bold text-slate-900 dark:text-white',
+            description: 'text-slate-600 dark:text-slate-300 leading-relaxed text-sm',
+            footer: 'mt-6'
+          }"
+        >
+          <template #footer>
+            <div class="flex flex-wrap items-center gap-3">
+              <UButton
+                color="primary"
+                size="md"
+                icon="i-lucide-rocket"
+                to="/simulators/get-started"
+                label="Get Started"
+                class="font-semibold shadow-xs"
+              />
+              <UButton
+                color="neutral"
+                variant="outline"
+                size="md"
+                icon="i-lucide-search"
+                to="/simulators"
+                label="Browse Simulators"
+                class="font-medium bg-white/60 dark:bg-slate-800/60"
+              />
             </div>
-          </TransitionGroup>
+          </template>
+        </UPageCard>
 
-          <!-- Static multimedia slot; renders the `associated_multimedia` of the current active WorkflowFeature -->
-          <div id="multimedia_wrapper" class="w-full min-h-[100px] shadow-2xl overflow-hidden rounded-xl hidden md:block" data-aos="fade-up" data-aos-duration="1000">
-            <img class="w-full h-full object-cover object-center block" v-if="current_workflow_feature && current_workflow_feature.associated_multimedia.type == 'image'" :src="current_workflow_feature.associated_multimedia.src" :alt="current_workflow_feature.associated_multimedia.alt">
+        <UPageCard
+          title="Simulations"
+          description="Access a wide range of frameworks (e.g., logical, Flux-Balance Analysis (FBA), continuous kinetic, discrete kinetic), simulation algorithms (e.g., FBA, SSA), model formats (e.g., SBML), and tools (e.g., COBRApy, COPASI, tellurium) and connect with a community of others supercharging their bio-data processing."
+          variant="subtle"
+          class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-800/60 shadow-xs"
+          :ui="{
+            title: 'text-xl font-bold text-slate-900 dark:text-white',
+            description: 'text-slate-600 dark:text-slate-300 leading-relaxed text-sm',
+            footer: 'mt-6'
+          }"
+        >
+          <template #footer>
+            <div class="flex flex-wrap items-center gap-3">
+              <UButton
+                color="primary"
+                size="md"
+                icon="i-lucide-sparkles"
+                to="/simulations/run"
+                label="Run a Simulation"
+                class="font-semibold shadow-xs"
+              />
+              <UButton
+                color="neutral"
+                variant="outline"
+                size="md"
+                icon="i-lucide-search"
+                to="/simulations"
+                label="Browse Simulation Runs"
+                class="font-medium bg-white/60 dark:bg-slate-800/60"
+              />
+            </div>
+          </template>
+        </UPageCard>
+      </UPageGrid>
+    </UPageSection>
+
+    <UPageSection
+      id="workflow"
+      class="w-full"
+      title="Your Workflow, Your Way"
+      description="Starting from scratch? BioSimulations offers a nuts-to-bolts pipeline. Ready to import and upgrade some data? BioSimulations has extensive documentation to make supercharging your bio data easy."
+      :ui="{
+        container: 'max-w-[1200px]',
+        header: 'text-center md:text-left',
+        title: 'text-3xl font-bold',
+        description: 'text-lg'
+      }"
+    >
+      <div class="w-full flex flex-col md:flex-col-reverse lg:flex-row items-center lg:items-stretch justify-center lg:justify-between gap-6" ref="workflow_container">
+        <TransitionGroup class="w-full flex flex-col gap-4" name="workflow_features" tag="div">
+          <div tabindex="0" role="button" :aria-label="workflow_feature.title" :id="`workflow_feature_${index}`" :class="`workflow_feature py-1 cursor-pointer rounded-xl group flex flex-col gap-4 w-full ${workflow_feature.selected ? 'bg-gray-50 p-4!' : 'bg-transparent'}`" v-for="(workflow_feature, index) of workflow_features" :key="workflow_feature.title" @keydown.enter.prevent="switch_workflow_feature(index)" @keydown.space.prevent="switch_workflow_feature(index)" @click="switch_workflow_feature(index)">
+            <div class="w-full flex flex-col">
+              <p class="text-lg" :class="workflow_feature.selected ? 'text-black' : 'opacity-50 group-hover:opacity-100'"><strong>{{workflow_feature.title}}</strong></p>
+              <p v-if="workflow_feature.selected">{{workflow_feature.description}}</p>
+            </div>
+            <!-- Static multimedia slot for mobile; renders the `associated_multimedia` of the current active WorkflowFeature -->
+            <div v-if="workflow_feature.selected" id="mobile_multimedia_wrapper" class="w-full min-h-[100px] shadow-2xl overflow-hidden rounded-xl block md:hidden">
+              <img class="object-cover" v-if="current_workflow_feature && current_workflow_feature.associated_multimedia.type == 'image'" :src="current_workflow_feature.associated_multimedia.src" :alt="current_workflow_feature.associated_multimedia.alt">
+            </div>
+            <UProgress
+              v-if="workflow_feature.selected"
+              class="w-full"
+              size="sm"
+              color="primary"
+              :model-value="0"
+              :ui="{
+                base: 'h-[6px] bg-gray-100 rounded-full overflow-hidden relative',
+                indicator: 'progress_bar bg-blue-500 rounded-full group-hover:[--play-state:paused] !transform-none'
+              }"
+              :style="{'--duration': `${workflow_feature.duration}ms`}"
+              @animationend="switch_workflow_feature()"
+            />
           </div>
+        </TransitionGroup>
+
+        <!-- Static multimedia slot; renders the `associated_multimedia` of the current active WorkflowFeature -->
+        <div id="multimedia_wrapper" class="w-full min-h-[100px] shadow-2xl overflow-hidden rounded-xl hidden md:block" data-aos="fade-up" data-aos-duration="1000">
+          <img class="w-full h-full object-cover object-center block" v-if="current_workflow_feature && current_workflow_feature.associated_multimedia.type == 'image'" :src="current_workflow_feature.associated_multimedia.src" :alt="current_workflow_feature.associated_multimedia.alt">
         </div>
       </div>
-    </section>
+    </UPageSection>
   </div>
 </template>
 <style>
   #bottom_fade_gradient {
     background: linear-gradient(to bottom, transparent 75%, white);
-  }
-
-  #revolutionary_platform {
-    #color_gradient {
-      background: linear-gradient(to bottom right, #2196f3 10%, #fe9700 100%);
-    }
-
-    #top_fade_gradient {
-      background: linear-gradient(to top, transparent 75%, white);
-    }
   }
 
   .workflow_feature {
