@@ -8,12 +8,21 @@ mocked one -- see client.py for how Auth0Settings gets pointed at this
 container instead of Auth0.
 """
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
 import pytest
+import requests
 from testcontainers.keycloak import KeycloakContainer  # type: ignore[import-untyped]
+
+# Pinned rather than testcontainers' default ":latest", so the server CI starts
+# cannot change underneath it. Must stay >= 25: the readiness probe below relies
+# on /health/* being served on the management port.
+KEYCLOAK_IMAGE = "quay.io/keycloak/keycloak:26.7.5"
+# A cold CI runner pulls the image and imports realm.json before reporting ready.
+READINESS_TIMEOUT_SECONDS = 180.0
 
 REALM_NAME = "biosim-test"
 CLIENT_ID = "biosim-test-client"
@@ -44,6 +53,32 @@ class KeycloakTestRealm:
     roles_claim: str = ROLES_CLAIM
 
 
+class _ManagementPortKeycloakContainer(KeycloakContainer):  # type: ignore[misc]
+    """KeycloakContainer whose readiness probe only polls the management port.
+
+    The upstream probe (testcontainers 4.14) falls back to the HTTP port's
+    /health/ready whenever the management port refuses a connection. On
+    Keycloak >= 25 that path is a 404, and the resulting HTTPError is not one of
+    the errors its retry decorator catches -- so a container that was merely
+    still booting failed the whole session (backend-ci run 38454571680: 13 setup
+    errors, all "404 ... /health/ready").
+    """
+
+    def _readiness_probe(self) -> None:
+        url = f"{self.get_management_url()}/health/ready"
+        deadline = time.monotonic() + READINESS_TIMEOUT_SECONDS
+        while True:
+            try:
+                requests.get(url, timeout=2).raise_for_status()
+                return
+            except requests.RequestException as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Keycloak was not ready within {READINESS_TIMEOUT_SECONDS:.0f}s: {exc}"
+                    ) from exc
+                time.sleep(1)
+
+
 @pytest.fixture(scope="session")
 def keycloak_container() -> Iterator[KeycloakContainer]:
     """Starts a single Keycloak dev container for the whole test session, pre-loaded with realm.json.
@@ -52,7 +87,7 @@ def keycloak_container() -> Iterator[KeycloakContainer]:
     needs a real token shares this one running container instead of paying
     the startup cost per test.
     """
-    with KeycloakContainer().with_realm_import_file(REALM_IMPORT_FILE) as container:
+    with _ManagementPortKeycloakContainer(KEYCLOAK_IMAGE).with_realm_import_file(REALM_IMPORT_FILE) as container:
         yield container
 
 
