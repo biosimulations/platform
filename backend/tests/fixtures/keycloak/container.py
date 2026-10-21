@@ -21,8 +21,11 @@ from testcontainers.keycloak import KeycloakContainer  # type: ignore[import-unt
 # cannot change underneath it. Must stay >= 25: the readiness probe below relies
 # on /health/* being served on the management port.
 KEYCLOAK_IMAGE = "quay.io/keycloak/keycloak:26.7.5"
-# A cold CI runner pulls the image and imports realm.json before reporting ready.
+# Covers booting Keycloak and importing realm.json on a slow CI runner. The image
+# pull happens earlier, inside DockerContainer.start(), and is not counted here.
 READINESS_TIMEOUT_SECONDS = 180.0
+# How much of Keycloak's output a failed startup carries, so a CI log shows why.
+_LOG_TAIL_LINES = 50
 
 REALM_NAME = "biosim-test"
 CLIENT_ID = "biosim-test-client"
@@ -62,6 +65,12 @@ class _ManagementPortKeycloakContainer(KeycloakContainer):  # type: ignore[misc]
     the errors its retry decorator catches -- so a container that was merely
     still booting failed the whole session (backend-ci run 38454571680: 13 setup
     errors, all "404 ... /health/ready").
+
+    Unlike upstream, it does not also wait for the "started in" and "Created
+    temporary admin user" log lines. Tests only fetch realm users' tokens
+    (tokens.py) and never use the master-realm admin client, and Keycloak
+    serves /health/ready only after the realm import has finished. Restore the
+    admin-user wait before calling get_client().
     """
 
     def _readiness_probe(self) -> None:
@@ -72,11 +81,23 @@ class _ManagementPortKeycloakContainer(KeycloakContainer):  # type: ignore[misc]
                 requests.get(url, timeout=2).raise_for_status()
                 return
             except requests.RequestException as exc:
+                # A container that has exited will never become ready, so fail now
+                # rather than at the deadline.
+                self.reload()
+                if self.status in ("exited", "dead"):
+                    raise RuntimeError(
+                        f"Keycloak container {self.status} before it was ready.\n{self._log_tail()}"
+                    ) from exc
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
-                        f"Keycloak was not ready within {READINESS_TIMEOUT_SECONDS:.0f}s: {exc}"
+                        f"Keycloak was not ready within {READINESS_TIMEOUT_SECONDS:.0f}s: {exc}\n{self._log_tail()}"
                     ) from exc
                 time.sleep(1)
+
+    def _log_tail(self) -> str:
+        stdout, stderr = self.get_logs()
+        lines = (stdout + stderr).decode(errors="replace").splitlines()
+        return "Last Keycloak output:\n" + "\n".join(lines[-_LOG_TAIL_LINES:])
 
 
 @pytest.fixture(scope="session")
