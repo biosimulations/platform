@@ -1,4 +1,5 @@
 import { createAuth0 } from '@auth0/auth0-vue'
+import { until } from '@vueuse/core'
 import { isPlatformApiRequest } from '../utils/api-auth'
 
 export default defineNuxtPlugin((nuxtApp) => {
@@ -23,6 +24,12 @@ export default defineNuxtPlugin((nuxtApp) => {
 
       if (options.credentials === undefined) {
         options.credentials = 'include'
+      }
+
+      // The session is restored asynchronously; requests made during page load would
+      // otherwise go out anonymous even for a signed-in user
+      if (auth0.isLoading.value) {
+        await until(auth0.isLoading).toBe(false)
       }
 
       if (auth0.isAuthenticated.value) {

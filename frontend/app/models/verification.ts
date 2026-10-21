@@ -164,14 +164,24 @@ export interface CompatibilityResponse {
   eligible_simulators: EligibleSimulator[]
 }
 
-export interface VerificationRecord {
-  omex_hash: string
-  run_ids: string[]
+export type VerificationType = 'omex' | 'runs'
+
+// One listing row of GET /verification_ids (contract proposed on #136)
+export interface VerificationSummary {
+  workflow_id: string
+  verify_type: VerificationType
+  created: string
+  omex_hash?: string | null
+  // Terminal status once the server has observed it; null means not known to be finished yet
+  status?: VerifyWorkflowStatus | null
 }
 
 export interface VerificationIdsResponse {
-  verification_ids?: string[]
-  verification_records?: VerificationRecord[]
-  records?: VerificationRecord[]
+  verification_ids: string[]
+  // Same rows as verification_ids, in the same order; absent on backends that predate #136
+  verifications?: VerificationSummary[]
   next_cursor?: string | null
 }
+
+// A listing row as the page holds it: older backends only return the workflow ID
+export type VerificationListItem = Pick<VerificationSummary, 'workflow_id'> & Partial<VerificationSummary>

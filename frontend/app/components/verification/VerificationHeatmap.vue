@@ -132,12 +132,15 @@ const gridCells = computed<CellData[][]>(() => {
       let colorClass = 'bg-neutral-100 text-neutral-500'
       if (concordance.isError) {
         colorClass = 'bg-rose-100 text-rose-800 border border-rose-300'
-      } else if (concordance.percentage === 100) {
-        colorClass = 'bg-emerald-500 hover:bg-emerald-600 text-white font-semibold'
-      } else if (concordance.percentage >= 70) {
-        colorClass = 'bg-amber-400 hover:bg-amber-500 text-neutral-900 font-semibold'
-      } else {
-        colorClass = 'bg-rose-500 hover:bg-rose-600 text-white font-semibold'
+      } else if (concordance.totalCount > 0) {
+        // Green only when every variable agreed; a pair with no variables stays neutral
+        if (concordance.concordantCount === concordance.totalCount) {
+          colorClass = 'bg-emerald-500 hover:bg-emerald-600 text-white font-semibold'
+        } else if (concordance.percentage >= 70) {
+          colorClass = 'bg-amber-400 hover:bg-amber-500 text-neutral-900 font-semibold'
+        } else {
+          colorClass = 'bg-rose-500 hover:bg-rose-600 text-white font-semibold'
+        }
       }
 
       row.push({
@@ -181,6 +184,14 @@ const selectedErrorData = ref<{
   errorMessage?: string
   failedSimulator?: ExcludedSimulatorInfo
 } | null>(null)
+
+function cellTitle(cell: CellData): string {
+  const pair = `${formatSimLabel(cell.simI)} vs ${formatSimLabel(cell.simJ)}`
+  if (cell.isExcluded) return `${pair}: Run failed. Click to reveal issue manifest.`
+  if (cell.isError) return `Comparison issue: ${cell.errorMessage}. Click to reveal issue manifest.`
+  if (cell.totalCount === 0) return `${pair}: no variables to compare`
+  return `${pair}: ${cell.concordantCount}/${cell.totalCount} concordant (${cell.percentage}%)`
+}
 
 function handleCellClick(cell: CellData) {
   if (cell.isExcluded) {
@@ -266,8 +277,12 @@ function openExcludedHeaderDetails(excludedIndex: number) {
           <span class="text-neutral-600">Run failed / Excluded</span>
         </div>
         <div class="flex items-center gap-1.5">
-          <span class="size-3 rounded bg-neutral-300 shrink-0" />
+          <span class="size-3 rounded bg-rose-100 border border-rose-300 shrink-0" />
           <span class="text-neutral-600">Error / Mismatch</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="size-3 rounded bg-neutral-100 border border-neutral-300 shrink-0" />
+          <span class="text-neutral-600">No variables compared</span>
         </div>
       </div>
     </div>
@@ -353,7 +368,7 @@ function openExcludedHeaderDetails(excludedIndex: number) {
                         ? 'ring-2 ring-primary ring-offset-2 scale-95 font-bold shadow-md'
                         : 'hover:scale-[1.02]'))
                 ]"
-                :title="cell.isExcluded ? `${formatSimLabel(cell.simI)} vs ${formatSimLabel(cell.simJ)}: Run failed. Click to reveal issue manifest.` : (cell.isError ? `Comparison issue: ${cell.errorMessage}. Click to reveal issue manifest.` : `${formatSimLabel(cell.simI)} vs ${formatSimLabel(cell.simJ)}: ${cell.concordantCount}/${cell.totalCount} concordant (${cell.percentage}%)`)"
+                :title="cellTitle(cell)"
                 @click="handleCellClick(cell)"
               >
                 <template v-if="cell.isExcluded">
@@ -373,6 +388,9 @@ function openExcludedHeaderDetails(excludedIndex: number) {
                   <span class="text-[9px] opacity-80 mt-0.5 underline decoration-dotted">
                     Click for issue
                   </span>
+                </template>
+                <template v-else-if="cell.totalCount === 0">
+                  <span class="text-sm font-semibold leading-tight">—</span>
                 </template>
                 <template v-else>
                   <span class="text-sm font-semibold leading-tight">

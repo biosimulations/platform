@@ -9,10 +9,13 @@ import type {
   RunPrecheckResult,
   SimulationRunInfo,
   VerificationIdsResponse,
-  VerificationRecord,
-  VerifyWorkflowOutput
+  VerificationListItem,
+  VerificationType,
+  VerifyWorkflowOutput,
+  VerifyWorkflowStatus
 } from '~/models/verification'
 import { useVerificationAnalytics } from '~/composables/useVerificationAnalytics'
+import { OMEX_HASH_PATTERN, parseServerTimestamp, parseVerificationListing, verificationTypeOf } from '~/utils/verification-listing'
 import type { ExcludedSimulatorInfo, SimulatorInfo } from '~/components/verification/VerificationHeatmap.vue'
 import PlatformRunPickerModal from '~/components/verification/PlatformRunPickerModal.vue'
 
@@ -21,7 +24,7 @@ const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 const { copy } = useClipboard()
-const { buildVariableComparisonRows, precheckRunIds } = useVerificationAnalytics()
+const { buildVariableComparisonRows, precheckRunIds, summarizeConcordance } = useVerificationAnalytics()
 
 useSeoMeta({
   title: 'Model Verification Hub — BioSimulations',
@@ -60,7 +63,8 @@ const toleranceSettings = reactive({
   rel_tol: 0.0001,
   abs_tol_min: 0.001,
   abs_tol_scale: 0.00001,
-  include_outputs: true,
+  // Matches the backend default: full trajectories travel through Temporal payloads, so they are opt-in
+  include_outputs: false,
   user_description: 'model-verification'
 })
 const showAdvancedSettings = ref(false)
@@ -98,6 +102,8 @@ const isRunPickerModalOpen = ref(false)
 const checkingCompatibility = ref(false)
 const compatibilityError = ref<string | null>(null)
 const compatibilityResponse = ref<CompatibilityResponse | null>(null)
+// Only the latest check may write state; clearing or switching inputs makes earlier ones stale
+let compatibilityRequest = 0
 
 // Compatible Simulators & Version Selection State
 export interface SimulatorOption {
@@ -179,14 +185,20 @@ function onFileUpload(file: File | File[] | null | undefined) {
   }
 }
 
-function clearFile() {
-  omexFile.value = null
+function resetArchiveState() {
+  compatibilityRequest++
+  checkingCompatibility.value = false
   compatibilityResponse.value = null
   compatibilityError.value = null
   compatibleSimulators.value = []
   historicalGroups.value = {}
   historicalRunsError.value = null
   step2Mode.value = 'solvers'
+}
+
+function clearFile() {
+  omexFile.value = null
+  resetArchiveState()
 }
 
 function onUrlSubmit() {
@@ -199,12 +211,7 @@ function onUrlSubmit() {
 
 function clearUrl() {
   omexUrl.value = ''
-  compatibilityResponse.value = null
-  compatibilityError.value = null
-  compatibleSimulators.value = []
-  historicalGroups.value = {}
-  historicalRunsError.value = null
-  step2Mode.value = 'solvers'
+  resetArchiveState()
 }
 
 function onPlatformRunSelected(run: {
@@ -223,12 +230,7 @@ function onPlatformRunSelected(run: {
 
 function clearPlatformRun() {
   selectedPlatformRun.value = null
-  compatibilityResponse.value = null
-  compatibilityError.value = null
-  compatibleSimulators.value = []
-  historicalGroups.value = {}
-  historicalRunsError.value = null
-  step2Mode.value = 'solvers'
+  resetArchiveState()
 }
 
 watch(inputSourceMode, (newMode) => {
@@ -273,6 +275,7 @@ async function checkOmexCompatibility() {
   const urlToUse = selectedPlatformRun.value?.downloadUrl || omexUrl.value.trim()
   if (!hasFile && !urlToUse) return
 
+  const request = ++compatibilityRequest
   checkingCompatibility.value = true
   compatibilityError.value = null
   compatibilityResponse.value = null
@@ -295,6 +298,7 @@ async function checkOmexCompatibility() {
         }
       })
     }
+    if (request !== compatibilityRequest) return
 
     compatibilityResponse.value = res
 
@@ -314,13 +318,18 @@ async function checkOmexCompatibility() {
     // Query platform runs for this archive to populate historical runs tree
     await fetchHistoricalRunsForArchive()
 
-    // Query past platform verification records to detect previous workflows for this archive
-    await fetchPastVerificationIds(true)
+    // Ask the server for earlier verifications of this archive (fills the banner)
+    if (request === compatibilityRequest && res?.omex_id) {
+      fetchArchiveVerifications(res.omex_id)
+    }
   } catch (err: any) {
+    if (request !== compatibilityRequest) return
     compatibilityError.value = err?.data?.detail || err?.message || 'Could not verify archive compatibility.'
     compatibleSimulators.value = []
   } finally {
-    checkingCompatibility.value = false
+    if (request === compatibilityRequest) {
+      checkingCompatibility.value = false
+    }
   }
 }
 
@@ -425,36 +434,35 @@ const totalHistoricalRunsCount = computed(() => {
 // ----------------------------------------------------
 // Server-Backed Archive Verification Matcher
 // ----------------------------------------------------
-const pastVerificationsForHash = computed<string[]>(() => {
-  const hash = compatibilityResponse.value?.omex_id?.toLowerCase()
-  if (!hash || pastVerificationRecords.value.length === 0) return []
+// The listing has no total, so a full page reads as "N+"
+const ARCHIVE_LOOKUP_LIMIT = 100
+const archiveVerifications = ref<{ hash: string, count: number, hasMore: boolean } | null>(null)
 
-  // Check server-provided verification records for this archive hash
-  const matchingIds: string[] = []
-  for (const record of pastVerificationRecords.value) {
-    if (record.omex_hash && record.omex_hash.toLowerCase() === hash) {
-      if (Array.isArray(record.run_ids)) {
-        matchingIds.push(...record.run_ids)
-      }
-    }
-  }
-
-  return [...new Set(matchingIds)]
+const archiveVerificationCount = computed<string | null>(() => {
+  const found = archiveVerifications.value
+  if (!found || found.count === 0 || found.hash !== compatibilityResponse.value?.omex_id) return null
+  return found.hasMore ? `${found.count}+` : String(found.count)
 })
 
-function viewPastReportsForCurrentHash() {
+async function fetchArchiveVerifications(hash: string) {
+  archiveVerifications.value = null
+  try {
+    const page = await fetchVerificationPage({ limit: ARCHIVE_LOOKUP_LIMIT, omexHash: hash })
+    if (compatibilityResponse.value?.omex_id !== hash) return
+    archiveVerifications.value = { hash, count: page.rows.length, hasMore: page.nextCursor !== null }
+  } catch {
+    // The banner is only a hint; the lookup tab reports listing errors
+  }
+}
+
+async function viewPastReportsForCurrentHash() {
   const hash = compatibilityResponse.value?.omex_id
   if (!hash) return
-  pastSearchQuery.value = hash
+  pastSearchQuery.value = ''
   pastTypeFilter.value = 'all'
+  // Navigate before switching tabs (see openWorkflowReport); the omex_hash watcher applies the filter
+  await router.push({ query: { ...route.query, tab: 'lookup', omex_hash: hash } })
   activeMode.value = 'lookup'
-  router.push({
-    query: {
-      ...route.query,
-      tab: 'lookup',
-      omex_hash: hash
-    }
-  })
 }
 
 // ----------------------------------------------------
@@ -507,9 +515,6 @@ async function submitOmexVerification() {
     queryParams.set('abs_tol_min', String(toleranceSettings.abs_tol_min))
     queryParams.set('abs_tol_scale', String(toleranceSettings.abs_tol_scale))
     queryParams.set('include_outputs', String(toleranceSettings.include_outputs))
-    if (compatibilityResponse.value?.omex_id) {
-      queryParams.set('omex_hash', compatibilityResponse.value.omex_id)
-    }
 
     selectedSims.forEach((sim) => {
       const spec = sim.selectedVersion ? `${sim.id}:${sim.selectedVersion}` : sim.id
@@ -523,9 +528,6 @@ async function submitOmexVerification() {
     })
 
     if (res && res.workflow_id) {
-      activeWorkflowId.value = res.workflow_id
-      workflowOutput.value = res
-
       // Track all submitted simulators so client can detect any dropped/omitted by backend
       const submitted = selectedSims.map(s => ({
         id: s.id,
@@ -539,26 +541,9 @@ async function submitOmexVerification() {
         // Ignore sessionStorage write errors
       }
 
-      if (compatibilityResponse.value?.omex_id) {
-        const currentHash = compatibilityResponse.value.omex_id
-        const existingRecord = pastVerificationRecords.value.find(r => r.omex_hash === currentHash)
-        if (existingRecord) {
-          if (!existingRecord.run_ids.includes(res.workflow_id)) {
-            existingRecord.run_ids.unshift(res.workflow_id)
-          }
-        } else {
-          pastVerificationRecords.value.unshift({
-            omex_hash: currentHash,
-            run_ids: [res.workflow_id]
-          })
-        }
-      }
-
       // Slide user over to Past Verifications tab and open newly created record in modal
-      activeMode.value = 'lookup'
-      isHistoricalModalOpen.value = true
-      fetchPastVerificationIds(true)
-      router.push({ query: { ...route.query, tab: 'lookup', workflow_id: res.workflow_id } })
+      fetchPastVerifications(true)
+      await openWorkflowReport(res.workflow_id, { output: res })
     }
   } catch (err: any) {
     submissionError.value = err?.data?.detail || err?.message || 'Failed to submit OMEX verification request.'
@@ -585,7 +570,6 @@ async function submitRunsVerification(customRunIds?: string[]) {
     // Step 1: Automatic Pre-check
     const apiUrl = config.public.legacy_api_url
     const result = await precheckRunIds(idsToVerify, apiUrl)
-    precheckResult.value = result
     isPrechecking.value = false
 
     if (!result.can_proceed || result.valid_runs.length < 2) {
@@ -613,35 +597,15 @@ async function submitRunsVerification(customRunIds?: string[]) {
     })
 
     if (res && res.workflow_id) {
-      activeWorkflowId.value = res.workflow_id
-      workflowOutput.value = res
-      if (precheckResult.value) {
-        try {
-          sessionStorage.setItem(`verify_precheck_${res.workflow_id}`, JSON.stringify(precheckResult.value))
-        } catch {
-          // Ignore sessionStorage write errors
-        }
-      }
-      if (compatibilityResponse.value?.omex_id) {
-        const currentHash = compatibilityResponse.value.omex_id
-        const existingRecord = pastVerificationRecords.value.find(r => r.omex_hash === currentHash)
-        if (existingRecord) {
-          if (!existingRecord.run_ids.includes(res.workflow_id)) {
-            existingRecord.run_ids.unshift(res.workflow_id)
-          }
-        } else {
-          pastVerificationRecords.value.unshift({
-            omex_hash: currentHash,
-            run_ids: [res.workflow_id]
-          })
-        }
+      try {
+        sessionStorage.setItem(`verify_precheck_${res.workflow_id}`, JSON.stringify(result))
+      } catch {
+        // Ignore sessionStorage write errors
       }
 
       // Slide user over to Past Verifications tab and open newly created record in modal
-      activeMode.value = 'lookup'
-      isHistoricalModalOpen.value = true
-      fetchPastVerificationIds(true)
-      router.push({ query: { ...route.query, tab: 'lookup', workflow_id: res.workflow_id } })
+      fetchPastVerifications(true)
+      await openWorkflowReport(res.workflow_id, { output: res, precheck: result })
     }
   } catch (err: any) {
     submissionError.value = err?.data?.detail || err?.message || 'Failed to submit runs verification request.'
@@ -656,53 +620,66 @@ async function submitRunsVerification(customRunIds?: string[]) {
 // ----------------------------------------------------
 const lookupIdInput = ref<string>('')
 const dashboardRef = ref<HTMLElement | null>(null)
-const pastVerificationRecords = ref<VerificationRecord[]>([])
-const pastVerificationIds = ref<string[]>([])
+const PAST_PAGE_SIZE = 50
+const pastVerifications = ref<VerificationListItem[]>([])
 const pastNextCursor = ref<string | null>(null)
 const isLoadingPastIds = ref<boolean>(false)
 const isLoadingMorePastIds = ref<boolean>(false)
 const pastIdsError = ref<string | null>(null)
 const pastSearchQuery = ref<string>('')
-const pastTypeFilter = ref<'all' | 'omex' | 'runs'>('all')
+const pastTypeFilter = ref<'all' | VerificationType>('all')
+// Archive filter sent to the server as omex_hash; follows route.query.omex_hash
+const pastHashFilter = ref<string | null>(null)
+// False when the server lists bare IDs, so it can neither describe rows nor filter by archive
+const pastListingSummaries = ref<boolean>(true)
 
-const hashByWorkflowId = computed<Record<string, string>>(() => {
-  const map: Record<string, string> = {}
-  for (const record of pastVerificationRecords.value) {
-    if (record.omex_hash && Array.isArray(record.run_ids)) {
-      for (const id of record.run_ids) {
-        map[id] = record.omex_hash
-      }
-    }
-  }
-  return map
-})
-
-const filteredPastVerificationIds = computed(() => {
+// Narrows the loaded rows only; filtering by archive happens on the server
+const filteredPastVerifications = computed(() => {
   const query = pastSearchQuery.value.trim().toLowerCase()
-  return pastVerificationIds.value.filter((id) => {
-    if (pastTypeFilter.value === 'omex' && !id.startsWith('omex-')) return false
-    if (pastTypeFilter.value === 'runs' && !id.startsWith('runs-')) return false
-    if (query.length > 0) {
-      const matchesId = id.toLowerCase().includes(query)
-      const associatedHash = hashByWorkflowId.value[id]?.toLowerCase() || ''
-      const matchesHash = associatedHash.includes(query)
-      return matchesId || matchesHash
-    }
-    return true
+  return pastVerifications.value.filter((item) => {
+    if (pastTypeFilter.value !== 'all' && verificationTypeOf(item) !== pastTypeFilter.value) return false
+    return query.length === 0 || item.workflow_id.toLowerCase().includes(query)
   })
 })
 
-function getVerificationType(id?: string | null): { label: string; icon: string; color: 'primary' | 'secondary' | 'neutral' } {
-  if (!id) {
-    return { label: 'Workflow', icon: 'i-lucide-hash', color: 'neutral' }
-  }
-  if (id.startsWith('omex-')) {
+// The open report's type: from its listing row when loaded, else from its ID
+const activeVerifyType = computed<VerificationType | null>(() => {
+  const id = activeWorkflowId.value
+  if (!id) return null
+  return verificationTypeOf(pastVerifications.value.find(item => item.workflow_id === id) ?? { workflow_id: id })
+})
+
+function getVerificationType(type?: VerificationType | null): { label: string; icon: string; color: 'primary' | 'secondary' | 'neutral' } {
+  if (type === 'omex') {
     return { label: 'OMEX Archive', icon: 'i-lucide-archive', color: 'primary' }
   }
-  if (id.startsWith('runs-')) {
+  if (type === 'runs') {
     return { label: 'Multi-Run', icon: 'i-lucide-layers', color: 'secondary' }
   }
   return { label: 'Workflow', icon: 'i-lucide-hash', color: 'neutral' }
+}
+
+// The listing records terminal statuses only; null means the server hasn't seen the run finish
+function getStatusBadge(status?: VerifyWorkflowStatus | null): { label: string; color: 'success' | 'error' | 'warning' | 'neutral' } {
+  switch (status) {
+    case 'COMPLETED':
+      return { label: 'Completed', color: 'success' }
+    case 'FAILED':
+      return { label: 'Failed', color: 'error' }
+    case 'RUN_ID_NOT_FOUND':
+      return { label: 'Run not found', color: 'error' }
+    case 'PENDING':
+    case 'IN_PROGRESS':
+      return { label: 'In progress', color: 'warning' }
+    default:
+      return { label: 'Unknown', color: 'neutral' }
+  }
+}
+
+function formatCreated(created?: string | null): string | null {
+  if (!created) return null
+  const date = parseServerTimestamp(created)
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleString()
 }
 
 function copyWorkflowId(id?: string | null) {
@@ -729,131 +706,126 @@ function copyPermalink(id?: string | null) {
   })
 }
 
-async function fetchPastVerificationIds(reset = true) {
+async function fetchVerificationPage(options: { limit: number, cursor?: string | null, omexHash?: string | null }) {
+  const params: Record<string, string | number> = { limit: options.limit }
+  if (options.cursor) params.cursor = options.cursor
+  if (options.omexHash) params.omex_hash = options.omexHash
+  const res = await $fetch<VerificationIdsResponse>(`${config.public.api_url}/verification_ids`, { params })
+  return parseVerificationListing(res, options.omexHash ?? null)
+}
+
+// Bumped by every reset, so a page requested before it can't land in the new list
+let pastListGeneration = 0
+
+async function fetchPastVerifications(reset = true) {
   if (reset) {
+    pastListGeneration++
+    pastNextCursor.value = null
     isLoadingPastIds.value = true
+    isLoadingMorePastIds.value = false
     pastIdsError.value = null
   } else {
+    if (!pastNextCursor.value) return
     isLoadingMorePastIds.value = true
   }
+  const generation = pastListGeneration
 
   try {
-    const params: Record<string, any> = {
-      limit: 50
-    }
-    if (!reset && pastNextCursor.value) {
-      params.cursor = pastNextCursor.value
-    }
-
-    const res = await $fetch<VerificationIdsResponse | VerificationRecord[] | string[]>(`${config.public.api_url}/verification_ids`, {
-      params
+    const page = await fetchVerificationPage({
+      limit: PAST_PAGE_SIZE,
+      cursor: reset ? null : pastNextCursor.value,
+      omexHash: pastHashFilter.value
     })
-
-    let incomingRecords: VerificationRecord[] = []
-    let nextCursor: string | null = null
-
-    if (Array.isArray(res)) {
-      if (res.length > 0 && typeof res[0] === 'object' && res[0] !== null && 'omex_hash' in res[0]) {
-        incomingRecords = res as VerificationRecord[]
-      } else if (res.length > 0 && typeof res[0] === 'string') {
-        incomingRecords = [{ omex_hash: '', run_ids: res as string[] }]
-      }
-    } else if (res && typeof res === 'object') {
-      nextCursor = res.next_cursor || null
-      if (Array.isArray(res.records)) {
-        incomingRecords = res.records
-      } else if (Array.isArray(res.verification_records)) {
-        incomingRecords = res.verification_records
-      } else if (Array.isArray(res.verification_ids)) {
-        incomingRecords = [{ omex_hash: '', run_ids: res.verification_ids }]
-      }
-    }
+    if (generation !== pastListGeneration) return
 
     if (reset) {
-      pastVerificationRecords.value = incomingRecords
-      const allIds: string[] = []
-      const seen = new Set<string>()
-      for (const rec of incomingRecords) {
-        for (const id of rec.run_ids || []) {
-          if (!seen.has(id)) {
-            seen.add(id)
-            allIds.push(id)
-          }
-        }
-      }
-      pastVerificationIds.value = allIds
+      pastVerifications.value = page.rows
     } else {
-      pastVerificationRecords.value.push(...incomingRecords)
-      const existing = new Set(pastVerificationIds.value)
-      for (const rec of incomingRecords) {
-        for (const id of rec.run_ids || []) {
-          if (!existing.has(id)) {
-            existing.add(id)
-            pastVerificationIds.value.push(id)
-          }
-        }
-      }
+      const loaded = new Set(pastVerifications.value.map(item => item.workflow_id))
+      pastVerifications.value = [...pastVerifications.value, ...page.rows.filter(item => !loaded.has(item.workflow_id))]
     }
-    pastNextCursor.value = nextCursor
+    pastNextCursor.value = page.nextCursor
+    pastListingSummaries.value = page.summaries
   } catch (err: any) {
-    const msg = err?.data?.detail || err?.message || 'Failed to load past verification IDs from server.'
-    pastIdsError.value = msg
+    if (generation !== pastListGeneration) return
+    pastIdsError.value = err?.data?.detail || err?.message || 'Failed to load past verifications from server.'
   } finally {
-    isLoadingPastIds.value = false
-    isLoadingMorePastIds.value = false
+    if (generation === pastListGeneration) {
+      isLoadingPastIds.value = false
+      isLoadingMorePastIds.value = false
+    }
   }
 }
 
-function loadMorePastVerificationIds() {
-  if (!pastNextCursor.value || isLoadingMorePastIds.value) return
-  fetchPastVerificationIds(false)
+function loadMorePastVerifications() {
+  if (!pastNextCursor.value || isLoadingMorePastIds.value || isLoadingPastIds.value) return
+  fetchPastVerifications(false)
 }
 
 const isHistoricalModalOpen = ref(false)
 const isHistoricalModalFullscreen = ref(false)
 
-function openHistoricalModal(id: string) {
-  if (!id.trim()) return
-  const wId = id.trim()
-  activeWorkflowId.value = wId
-  lookupIdInput.value = wId
-  activeMode.value = 'lookup'
-  isHistoricalModalOpen.value = true
-
-  try {
-    const saved = sessionStorage.getItem(`verify_precheck_${wId}`)
-    if (saved) {
-      precheckResult.value = JSON.parse(saved)
-    }
-  } catch {
-    // Ignore sessionStorage read errors
-  }
-
-  router.push({ query: { ...route.query, tab: 'lookup', workflow_id: wId } })
+// Everything derived from one report; switching reports must carry none of it over
+function resetReportState() {
+  workflowOutput.value = null
+  precheckResult.value = null
+  selectedI.value = 0
+  selectedJ.value = 1
+  activeVariable.value = ''
 }
 
-function loadWorkflowById(id: string) {
-  if (!id.trim()) return
-  const wId = id.trim()
-  activeWorkflowId.value = wId
-  lookupIdInput.value = wId
+function readSavedPrecheck(workflowId: string): RunPrecheckResult | null {
   try {
-    const saved = sessionStorage.getItem(`verify_precheck_${wId}`)
-    if (saved) {
-      precheckResult.value = JSON.parse(saved)
-    }
+    const saved = sessionStorage.getItem(`verify_precheck_${workflowId}`)
+    return saved ? JSON.parse(saved) : null
   } catch {
     // Ignore sessionStorage read errors
+    return null
   }
-  activeMode.value = 'lookup'
+}
+
+interface InitialReport {
+  output?: VerifyWorkflowOutput
+  precheck?: RunPrecheckResult
+}
+
+// Shows a report without navigating; route watchers and onMounted call this directly
+function showWorkflow(id: string, initial: InitialReport = {}) {
+  const wId = id.trim()
+  if (!wId) return
+  if (wId !== activeWorkflowId.value) {
+    resetReportState()
+    activeWorkflowId.value = wId
+    precheckResult.value = initial.precheck ?? readSavedPrecheck(wId)
+  }
+  if (initial.output) {
+    workflowOutput.value = initial.output
+  }
+  lookupIdInput.value = wId
   isHistoricalModalOpen.value = true
-  router.push({ query: { ...route.query, tab: 'lookup', workflow_id: wId } })
+}
+
+async function openWorkflowReport(id: string, initial: InitialReport = {}) {
+  const wId = id.trim()
+  if (!wId) return
+  showWorkflow(wId, initial)
+  // Navigate before switching tabs: the activeMode watcher would otherwise replace() the
+  // route from the not-yet-updated query and cancel this push, dropping workflow_id
+  await router.push({ query: { ...route.query, tab: 'lookup', workflow_id: wId } })
+  activeMode.value = 'lookup'
+}
+
+// VerificationStatus reports every poll; ignore answers for a report the user has left
+function onWorkflowOutput(output: VerifyWorkflowOutput) {
+  if (output.workflow_id === activeWorkflowId.value) {
+    workflowOutput.value = output
+  }
 }
 
 watch(activeMode, (mode) => {
   if (mode === 'lookup') {
-    if (pastVerificationIds.value.length === 0 && !isLoadingPastIds.value) {
-      fetchPastVerificationIds(true)
+    if (pastVerifications.value.length === 0 && !isLoadingPastIds.value) {
+      fetchPastVerifications(true)
     }
   } else {
     isHistoricalModalOpen.value = false
@@ -889,27 +861,47 @@ watch(isHistoricalModalOpen, (isOpen) => {
 // Watch route.query.workflow_id so any external or router query updates activate Lookup mode & modal
 watch(() => route.query.workflow_id, (newWId) => {
   if (newWId) {
-    const wId = String(newWId).trim()
-    activeWorkflowId.value = wId
-    lookupIdInput.value = wId
+    showWorkflow(String(newWId))
     activeMode.value = 'lookup'
-    isHistoricalModalOpen.value = true
-    if (pastVerificationIds.value.length === 0 && !isLoadingPastIds.value) {
-      fetchPastVerificationIds(true)
+    if (pastVerifications.value.length === 0 && !isLoadingPastIds.value) {
+      fetchPastVerifications(true)
     }
+  } else {
+    // Back/forward to a URL without a report closes it
+    isHistoricalModalOpen.value = false
   }
 })
 
-// Watch route.query.omex_hash so hash filter URLs switch to Lookup mode and apply the filter
+// route.query.omex_hash drives the archive filter, which the server applies
 watch(() => route.query.omex_hash, (newHash) => {
-  if (newHash) {
-    pastSearchQuery.value = String(newHash).trim()
-    activeMode.value = 'lookup'
-    if (pastVerificationRecords.value.length === 0 && !isLoadingPastIds.value) {
-      fetchPastVerificationIds(true)
-    }
-  }
+  applyHashFilter(newHash ? String(newHash) : null)
 })
+
+function applyHashFilter(rawHash: string | null) {
+  const hash = rawHash?.trim().toLowerCase() || null
+  if (hash && !OMEX_HASH_PATTERN.test(hash)) {
+    toast.add({
+      title: 'Ignoring invalid archive hash',
+      description: 'An archive hash is 32 hexadecimal characters.',
+      color: 'warning',
+      icon: 'i-lucide-alert-triangle'
+    })
+    return
+  }
+  if (hash === pastHashFilter.value) return
+  pastHashFilter.value = hash
+  if (hash) {
+    activeMode.value = 'lookup'
+  }
+  fetchPastVerifications(true)
+}
+
+function clearHashFilter() {
+  const query = { ...route.query }
+  delete query.omex_hash
+  // The omex_hash watcher drops the filter and reloads the list
+  router.replace({ query })
+}
 
 
 // ----------------------------------------------------
@@ -1109,24 +1101,22 @@ const variableComparisonRows = computed(() => {
   )
 })
 
-const overallConcordance = computed(() => {
-  const m = currentMatrix.value
-  if (!m || m.length === 0) return 0
+const concordanceSummary = computed(() => summarizeConcordance(currentMatrix.value))
 
-  let totalPairs = 0
-  let concordantPairs = 0
+const concordanceClass = computed(() => {
+  const { percentage, concordantCount, totalCount, comparedPairs, totalPairs } = concordanceSummary.value
+  if (percentage === null) return 'text-neutral-400'
+  // Green, like a heatmap cell, only when every variable of every solver pair was compared and agreed
+  if (concordantCount === totalCount && comparedPairs === totalPairs) return 'text-emerald-600'
+  return percentage >= 70 ? 'text-amber-500' : 'text-rose-600'
+})
 
-  for (let i = 0; i < m.length; i++) {
-    for (let j = i + 1; j < m.length; j++) {
-      const stats = m[i]?.[j]
-      if (stats && stats.is_close) {
-        totalPairs += stats.is_close.length
-        concordantPairs += stats.is_close.filter(Boolean).length
-      }
-    }
-  }
-
-  return totalPairs > 0 ? Math.round((concordantPairs / totalPairs) * 100) : 100
+const concordanceNotice = computed<string | null>(() => {
+  const { percentage, totalPairs } = concordanceSummary.value
+  if (percentage !== null) return null
+  return totalPairs === 0
+    ? 'Fewer than two solvers produced results for this dataset, so nothing could be compared.'
+    : 'None of the solver pairs could be compared for this dataset. Select a heatmap cell to see why.'
 })
 
 const totalOutlierCount = computed(() => {
@@ -1153,29 +1143,20 @@ function onVisualizeVariable(varName: string) {
 // On mount: check URL for workflow_id and tab
 onMounted(() => {
   if (route.query.omex_hash) {
-    pastSearchQuery.value = String(route.query.omex_hash).trim()
-    activeMode.value = 'lookup'
+    // Applies the archive filter, switches to Lookup and loads the filtered list
+    applyHashFilter(String(route.query.omex_hash))
   }
 
   if (route.query.workflow_id) {
     // If a workflow_id is provided in the URL, ALWAYS take the user to the "Lookup" cards and activate the modal
-    const wId = String(route.query.workflow_id).trim()
-    activeWorkflowId.value = wId
-    lookupIdInput.value = wId
+    showWorkflow(String(route.query.workflow_id))
     activeMode.value = 'lookup'
-    isHistoricalModalOpen.value = true
-    try {
-      const saved = sessionStorage.getItem(`verify_precheck_${wId}`)
-      if (saved) {
-        precheckResult.value = JSON.parse(saved)
-      }
-    } catch {
-      // Ignore sessionStorage read errors
-    }
-    fetchPastVerificationIds(true)
-  } else if (route.query.tab === 'lookup' || route.query.omex_hash) {
+  } else if (route.query.tab === 'lookup') {
     activeMode.value = 'lookup'
-    fetchPastVerificationIds(true)
+  }
+
+  if (activeMode.value === 'lookup' && !isLoadingPastIds.value) {
+    fetchPastVerifications(true)
   }
 })
 </script>
@@ -1421,12 +1402,12 @@ onMounted(() => {
 
             <!-- Previous Verification Alert Banner -->
             <UAlert
-              v-if="pastVerificationsForHash.length > 0"
+              v-if="archiveVerificationCount"
               color="primary"
               variant="subtle"
               icon="i-lucide-history"
               title="Previous Verification Workflows Found"
-              :description="`This OMEX archive has ${pastVerificationsForHash.length} verification workflow(s) recorded on the platform.`"
+              :description="`This OMEX archive has ${archiveVerificationCount} verification workflow(s) recorded on the platform.`"
               orientation="horizontal"
               :actions="[
                 {
@@ -1853,7 +1834,7 @@ onMounted(() => {
                   size="md"
                   icon="i-lucide-hash"
                   class="w-full font-mono text-xs"
-                  @keydown.enter="loadWorkflowById(lookupIdInput)"
+                  @keydown.enter="openWorkflowReport(lookupIdInput)"
                 />
               </div>
               <div class="flex items-center gap-2">
@@ -1872,7 +1853,7 @@ onMounted(() => {
                   icon="i-lucide-arrow-right"
                   label="Load Report"
                   :disabled="!lookupIdInput.trim()"
-                  @click="loadWorkflowById(lookupIdInput)"
+                  @click="openWorkflowReport(lookupIdInput)"
                 />
               </div>
             </div>
@@ -1893,12 +1874,12 @@ onMounted(() => {
                       Prior Verification Runs
                     </h2>
                     <UBadge
-                      v-if="pastVerificationIds.length > 0"
+                      v-if="pastVerifications.length > 0"
                       color="neutral"
                       variant="subtle"
                       size="sm"
                     >
-                      {{ pastVerificationIds.length }} loaded
+                      {{ pastVerifications.length }} loaded
                     </UBadge>
                   </div>
                   <p class="text-xs text-neutral-500 mt-1">
@@ -1915,7 +1896,7 @@ onMounted(() => {
                   icon="i-lucide-refresh-cw"
                   :loading="isLoadingPastIds"
                   label="Refresh"
-                  @click="fetchPastVerificationIds(true)"
+                  @click="fetchPastVerifications(true)"
                 />
               </div>
             </div>
@@ -1927,7 +1908,7 @@ onMounted(() => {
               <div class="flex-1 max-w-md flex items-center gap-1.5">
                 <UInput
                   v-model="pastSearchQuery"
-                  placeholder="Filter by ID, prefix, or hash..."
+                  placeholder="Filter loaded runs by workflow ID..."
                   size="sm"
                   icon="i-lucide-search"
                   class="flex-1 font-mono text-xs"
@@ -1972,6 +1953,23 @@ onMounted(() => {
               </div>
             </div>
 
+            <!-- Archive filter, applied by the server -->
+            <div v-if="pastHashFilter" class="flex flex-wrap items-center gap-2 text-xs text-neutral-600">
+              <UIcon name="i-lucide-archive" class="size-3.5 text-primary shrink-0" />
+              <span>Showing verifications of archive</span>
+              <code class="font-mono text-[11px] bg-neutral-100 px-1.5 py-0.5 rounded" :title="pastHashFilter">
+                {{ pastHashFilter.slice(0, 12) }}…
+              </code>
+              <UButton
+                size="xs"
+                variant="ghost"
+                color="neutral"
+                icon="i-lucide-x"
+                label="Show all"
+                @click="clearHashFilter"
+              />
+            </div>
+
             <!-- Error Banner -->
             <UAlert
               v-if="pastIdsError"
@@ -1987,7 +1985,7 @@ onMounted(() => {
                   color="error"
                   variant="outline"
                   label="Retry"
-                  @click="fetchPastVerificationIds(true)"
+                  @click="fetchPastVerifications(true)"
                 />
               </template>
             </UAlert>
@@ -2016,15 +2014,26 @@ onMounted(() => {
 
             <!-- Empty State (No items at all) -->
             <div
-              v-else-if="pastVerificationIds.length === 0"
+              v-else-if="pastVerifications.length === 0"
               class="py-12 px-4 text-center border-2 border-dashed border-neutral-200 rounded-xl"
             >
               <div class="size-12 rounded-full bg-neutral-100 text-neutral-400 flex items-center justify-center mx-auto mb-3">
                 <UIcon name="i-lucide-inbox" class="size-6" />
               </div>
-              <h3 class="text-sm font-semibold text-neutral-900">No Past Verifications Found</h3>
-              <p class="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
+              <h3 class="text-sm font-semibold text-neutral-900">
+                <template v-if="!pastHashFilter">No Past Verifications Found</template>
+                <template v-else-if="pastListingSummaries">No Verifications of This Archive</template>
+                <template v-else>Archive Lookup Unavailable</template>
+              </h3>
+              <p v-if="!pastHashFilter" class="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
                 No verification workflow records were found. Run a new verification in the "Verify Biomodel Archive" tab to start generating comparison history.
+              </p>
+              <p v-else-if="pastListingSummaries" class="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
+                No verification workflows are recorded for this archive yet.
+              </p>
+              <!-- An older server ignores omex_hash, which says nothing about this archive's history -->
+              <p v-else class="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
+                This server can't look up verifications by archive yet. Choose "Show all" to browse every verification.
               </p>
               <UButton
                 size="sm"
@@ -2039,7 +2048,7 @@ onMounted(() => {
 
             <!-- Empty State (Filtered out) -->
             <div
-              v-else-if="filteredPastVerificationIds.length === 0"
+              v-else-if="filteredPastVerifications.length === 0"
               class="py-10 px-4 text-center border border-neutral-100 rounded-xl bg-neutral-50/50"
             >
               <div class="size-10 rounded-full bg-neutral-100 text-neutral-400 flex items-center justify-center mx-auto mb-2">
@@ -2062,10 +2071,10 @@ onMounted(() => {
             <!-- Verification Grid of Cards -->
             <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               <div
-                v-for="id in filteredPastVerificationIds"
-                :key="id"
+                v-for="item in filteredPastVerifications"
+                :key="item.workflow_id"
                 class="relative flex flex-col justify-between p-4 rounded-xl border border-neutral-200 transition-all duration-200 cursor-pointer group bg-white shadow-xs hover:shadow-md hover:border-primary-400"
-                @click="openHistoricalModal(id)"
+                @click="openWorkflowReport(item.workflow_id)"
               >
                 <div class="space-y-3">
                   <!-- Top Row: Workflow ID Label + Action Buttons -->
@@ -2075,15 +2084,15 @@ onMounted(() => {
                         Workflow ID
                       </span>
                       <UBadge
-                        v-if="hashByWorkflowId[id]"
+                        v-if="item.omex_hash"
                         color="neutral"
                         variant="subtle"
                         size="xs"
                         class="font-mono text-[10px] text-neutral-500 truncate max-w-[140px]"
-                        :title="`OMEX Hash: ${hashByWorkflowId[id]}`"
+                        :title="`OMEX Hash: ${item.omex_hash}`"
                       >
                         <UIcon name="i-lucide-hash" class="size-2.5 mr-0.5 text-neutral-400" />
-                        {{ hashByWorkflowId[id].slice(0, 8) }}…
+                        {{ item.omex_hash.slice(0, 8) }}…
                       </UBadge>
                     </div>
 
@@ -2095,7 +2104,7 @@ onMounted(() => {
                         icon="i-lucide-link"
                         class="opacity-60 group-hover:opacity-100 transition-opacity"
                         title="Copy Permalink"
-                        @click.stop="copyPermalink(id)"
+                        @click.stop="copyPermalink(item.workflow_id)"
                       />
                       <UButton
                         size="xs"
@@ -2104,7 +2113,7 @@ onMounted(() => {
                         icon="i-lucide-copy"
                         class="opacity-60 group-hover:opacity-100 transition-opacity"
                         title="Copy Workflow ID"
-                        @click.stop="copyWorkflowId(id)"
+                        @click.stop="copyWorkflowId(item.workflow_id)"
                       />
                     </div>
                   </div>
@@ -2112,21 +2121,41 @@ onMounted(() => {
                   <!-- Workflow ID Body -->
                   <div>
                     <div class="font-mono text-xs font-semibold text-neutral-800 break-all group-hover:text-primary transition-colors leading-relaxed select-all">
-                      {{ id }}
+                      {{ item.workflow_id }}
                     </div>
+                  </div>
+
+                  <!-- Type & Status (status only from servers whose listing reports it) -->
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <UBadge :color="getVerificationType(verificationTypeOf(item)).color" variant="subtle" size="xs">
+                      <UIcon :name="getVerificationType(verificationTypeOf(item)).icon" class="size-3 mr-0.5" />
+                      {{ getVerificationType(verificationTypeOf(item)).label }}
+                    </UBadge>
+                    <UBadge
+                      v-if="item.status !== undefined"
+                      :color="getStatusBadge(item.status).color"
+                      variant="subtle"
+                      size="xs"
+                      :title="item.status ? undefined : 'No finished status recorded yet. Open the report to check.'"
+                    >
+                      {{ getStatusBadge(item.status).label }}
+                    </UBadge>
                   </div>
                 </div>
 
-                <!-- Footer: View Report Button -->
-                <div class="pt-3 mt-4 border-t border-neutral-100 flex items-center justify-end text-xs">
+                <!-- Footer: Created + View Report Button -->
+                <div class="pt-3 mt-4 border-t border-neutral-100 flex items-center justify-between gap-2 text-xs">
+                  <span v-if="formatCreated(item.created)" class="text-[11px] text-neutral-400" :title="item.created ?? undefined">
+                    {{ formatCreated(item.created) }}
+                  </span>
                   <UButton
                     size="xs"
                     color="primary"
                     variant="soft"
                     icon="i-lucide-arrow-up-right"
                     label="View Report"
-                    class="group-hover:bg-primary group-hover:text-white transition-colors"
-                    @click.stop="openHistoricalModal(id)"
+                    class="ml-auto group-hover:bg-primary group-hover:text-white transition-colors"
+                    @click.stop="openWorkflowReport(item.workflow_id)"
                   />
                 </div>
               </div>
@@ -2134,11 +2163,11 @@ onMounted(() => {
 
             <!-- Pagination / Continuation Controls -->
             <div
-              v-if="pastNextCursor || (!pastNextCursor && pastVerificationIds.length > 0)"
+              v-if="pastNextCursor || pastVerifications.length > 0"
               class="pt-3 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-neutral-500"
             >
               <span>
-                Showing {{ filteredPastVerificationIds.length }} of {{ pastVerificationIds.length }} runs
+                Showing {{ filteredPastVerifications.length }} of {{ pastVerifications.length }} runs
               </span>
 
               <UButton
@@ -2149,7 +2178,7 @@ onMounted(() => {
                 icon="i-lucide-chevron-down"
                 :loading="isLoadingMorePastIds"
                 label="Load More Verifications"
-                @click="loadMorePastVerificationIds"
+                @click="loadMorePastVerifications"
               />
               <span v-else class="text-neutral-400 italic">
                 All visible verification runs loaded
@@ -2178,9 +2207,10 @@ onMounted(() => {
 
         <!-- Live Polling Status Component (auto-refreshes every 5s) -->
         <VerificationStatus
-          v-model="workflowOutput"
+          :model-value="workflowOutput"
           :workflow-id="activeWorkflowId"
           :auto-poll="true"
+          @update:model-value="onWorkflowOutput"
         />
 
         <!-- Results Display when COMPLETED -->
@@ -2204,11 +2234,14 @@ onMounted(() => {
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
               <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
                 <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Overall Concordance</span>
+                <span class="text-lg font-bold font-mono" :class="concordanceClass">
+                  {{ concordanceSummary.percentage === null ? '—' : `${concordanceSummary.percentage}%` }}
+                </span>
                 <span
-                  class="text-lg font-bold font-mono"
-                  :class="overallConcordance >= 95 ? 'text-emerald-600' : overallConcordance >= 70 ? 'text-amber-500' : 'text-rose-600'"
+                  v-if="concordanceSummary.comparedPairs < concordanceSummary.totalPairs"
+                  class="block text-[10px] text-amber-600"
                 >
-                  {{ overallConcordance }}%
+                  {{ concordanceSummary.comparedPairs }} of {{ concordanceSummary.totalPairs }} pairs compared
                 </span>
               </UCard>
 
@@ -2233,13 +2266,22 @@ onMounted(() => {
                 <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Outliers Flagged</span>
                 <span
                   class="text-lg font-bold font-mono"
-                  :class="totalOutlierCount > 0 ? 'text-amber-600 font-bold' : 'text-emerald-600'"
+                  :class="concordanceSummary.percentage === null ? 'text-neutral-400' : totalOutlierCount > 0 ? 'text-amber-600 font-bold' : 'text-emerald-600'"
                 >
                   {{ totalOutlierCount }}
                 </span>
               </UCard>
             </div>
           </div>
+
+          <UAlert
+            v-if="concordanceNotice"
+            color="warning"
+            variant="subtle"
+            icon="i-lucide-alert-triangle"
+            title="Nothing to compare"
+            :description="concordanceNotice"
+          />
 
           <!-- Component 1: Concordance Heatmap Matrix -->
           <VerificationHeatmap
@@ -2290,7 +2332,7 @@ onMounted(() => {
         <div class="flex items-center justify-between w-full">
           <div class="flex items-center gap-3 min-w-0">
             <div class="size-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0">
-              <UIcon :name="getVerificationType(activeWorkflowId).icon" class="size-5" />
+              <UIcon :name="getVerificationType(activeVerifyType).icon" class="size-5" />
             </div>
             <div class="min-w-0">
               <div class="flex items-center gap-2 flex-wrap">
@@ -2298,11 +2340,11 @@ onMounted(() => {
                   Verification Report
                 </h3>
                 <UBadge
-                  :color="getVerificationType(activeWorkflowId).color"
+                  :color="getVerificationType(activeVerifyType).color"
                   variant="subtle"
                   size="xs"
                 >
-                  {{ getVerificationType(activeWorkflowId).label }}
+                  {{ getVerificationType(activeVerifyType).label }}
                 </UBadge>
               </div>
               <div class="font-mono text-xs text-neutral-500 flex items-center gap-1.5 mt-0.5 truncate select-all">
@@ -2354,9 +2396,10 @@ onMounted(() => {
           <!-- Live Polling Status Component -->
           <VerificationStatus
             v-if="activeWorkflowId"
-            v-model="workflowOutput"
+            :model-value="workflowOutput"
             :workflow-id="activeWorkflowId"
             :auto-poll="true"
+            @update:model-value="onWorkflowOutput"
           />
 
           <!-- Results Display when COMPLETED -->
@@ -2380,11 +2423,14 @@ onMounted(() => {
               <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                 <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
                   <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Overall Concordance</span>
+                  <span class="text-lg font-bold font-mono" :class="concordanceClass">
+                    {{ concordanceSummary.percentage === null ? '—' : `${concordanceSummary.percentage}%` }}
+                  </span>
                   <span
-                    class="text-lg font-bold font-mono"
-                    :class="overallConcordance >= 95 ? 'text-emerald-600' : overallConcordance >= 70 ? 'text-amber-500' : 'text-rose-600'"
+                    v-if="concordanceSummary.comparedPairs < concordanceSummary.totalPairs"
+                    class="block text-[10px] text-amber-600"
                   >
-                    {{ overallConcordance }}%
+                    {{ concordanceSummary.comparedPairs }} of {{ concordanceSummary.totalPairs }} pairs compared
                   </span>
                 </UCard>
 
@@ -2409,13 +2455,22 @@ onMounted(() => {
                   <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Outliers Flagged</span>
                   <span
                     class="text-lg font-bold font-mono"
-                    :class="totalOutlierCount > 0 ? 'text-amber-600 font-bold' : 'text-emerald-600'"
+                    :class="concordanceSummary.percentage === null ? 'text-neutral-400' : totalOutlierCount > 0 ? 'text-amber-600 font-bold' : 'text-emerald-600'"
                   >
                     {{ totalOutlierCount }}
                   </span>
                 </UCard>
               </div>
             </div>
+
+            <UAlert
+              v-if="concordanceNotice"
+              color="warning"
+              variant="subtle"
+              icon="i-lucide-alert-triangle"
+              title="Nothing to compare"
+              :description="concordanceNotice"
+            />
 
             <!-- Component 1: Concordance Heatmap Matrix -->
             <VerificationHeatmap

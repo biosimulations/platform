@@ -131,7 +131,8 @@ export function useVerificationAnalytics() {
 
     const varCount = stats.var_names?.length || 0
     if (varCount === 0) {
-      return { concordantCount: 0, totalCount: 0, percentage: 100, isError: false }
+      // Nothing was compared; totalCount 0 tells callers not to present this as agreement
+      return { concordantCount: 0, totalCount: 0, percentage: 0, isError: false }
     }
 
     let concordantCount = 0
@@ -149,8 +150,46 @@ export function useVerificationAnalytics() {
       }
     }
 
-    const percentage = Math.round((concordantCount / varCount) * 100)
+    // Floor, so 100% only ever means every variable agreed (199/200 must not round up)
+    const percentage = Math.floor((concordantCount / varCount) * 100)
     return { concordantCount, totalCount: varCount, percentage, isError: false }
+  }
+
+  /**
+   * Summarizes variable agreement over every simulator pair of one dataset matrix.
+   * Pairs whose comparison errored are reported, not silently dropped.
+   */
+  function summarizeConcordance(matrix: (ComparisonStatistics | undefined)[][]): {
+    percentage: number | null
+    concordantCount: number
+    totalCount: number
+    comparedPairs: number
+    totalPairs: number
+  } {
+    let concordantCount = 0
+    let totalCount = 0
+    let comparedPairs = 0
+    let totalPairs = 0
+
+    for (let i = 0; i < matrix.length; i++) {
+      for (let j = i + 1; j < matrix.length; j++) {
+        totalPairs++
+        const stats = matrix[i]?.[j] || matrix[j]?.[i]
+        if (!stats || stats.error_message || !stats.is_close || stats.is_close.length === 0) continue
+        comparedPairs++
+        totalCount += stats.is_close.length
+        concordantCount += stats.is_close.filter(Boolean).length
+      }
+    }
+
+    return {
+      // null when nothing was compared: fewer than two solvers, or every pair errored
+      percentage: totalCount > 0 ? Math.floor((concordantCount / totalCount) * 100) : null,
+      concordantCount,
+      totalCount,
+      comparedPairs,
+      totalPairs
+    }
   }
 
   /**
@@ -448,6 +487,7 @@ export function useVerificationAnalytics() {
     extractTimePoints,
     calculateTrajectoryErrors,
     computePairConcordance,
+    summarizeConcordance,
     detectConsensusOutliers,
     buildVariableComparisonRows,
     precheckRunIds

@@ -39,23 +39,22 @@ test('missing or malformed configuration fails closed', () => {
   }
 })
 
-test('the actual plugin attaches the right token only to Platform requests', async () => {
+// Runs the real plugin source with its imports stubbed and returns its onRequest hook
+function loadPluginHook(auth0) {
   let hook
-  let tokenCalls = 0
-  const auth0 = {
-    isAuthenticated: { value: true },
-    async getAccessTokenSilently(options) {
-      assert.equal(options.authorizationParams.audience, 'https://api.biosimulations.org')
-      tokenCalls++
-      return 'test-token'
-    }
-  }
   const source = readFileSync(new URL('../app/plugins/auth0.client.ts', import.meta.url), 'utf8')
     .replace(/^import .*$/gm, '')
     .replace('export default ', '')
   const context = {
     createAuth0: () => auth0,
     isPlatformApiRequest,
+    // Stands in for @vueuse/core's until() on the plain-object refs used here
+    until: ref => ({
+      toBe: value => new Promise((resolve) => {
+        const check = () => (ref.value === value ? resolve() : setTimeout(check, 0))
+        check()
+      })
+    }),
     defineNuxtPlugin: plugin => plugin({ vueApp: { use() {} } }),
     useRuntimeConfig: () => ({ public: { api_url: api, auth0Audience: 'https://api.biosimulations.org' } }),
     window: { location: { origin: page } },
@@ -63,6 +62,21 @@ test('the actual plugin attaches the right token only to Platform requests', asy
     $fetch: { create: (options) => { hook = options.onRequest } }
   }
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context)
+  return hook
+}
+
+test('the actual plugin attaches the right token only to Platform requests', async () => {
+  let tokenCalls = 0
+  const auth0 = {
+    isLoading: { value: false },
+    isAuthenticated: { value: true },
+    async getAccessTokenSilently(options) {
+      assert.equal(options.authorizationParams.audience, 'https://api.biosimulations.org')
+      tokenCalls++
+      return 'test-token'
+    }
+  }
+  const hook = loadPluginHook(auth0)
   const options = {}
   await hook({ request: `${api}/me`, options })
   assert.equal(options.headers.get('Authorization'), 'Bearer test-token')
@@ -78,4 +92,32 @@ test('the actual plugin attaches the right token only to Platform requests', asy
   const anonymous = {}
   await hook({ request: `${api}/me`, options: anonymous })
   assert.equal(anonymous.headers, undefined)
+})
+
+test('Platform requests made while Auth0 restores the session wait for it', async () => {
+  const auth0 = {
+    isLoading: { value: true },
+    isAuthenticated: { value: false },
+    async getAccessTokenSilently() {
+      return 'restored-token'
+    }
+  }
+  const hook = loadPluginHook(auth0)
+  const options = {}
+  let settled = false
+  const pending = hook({ request: `${api}/verify/abc`, options }).then(() => {
+    settled = true
+  })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(settled, false)
+  auth0.isAuthenticated.value = true
+  auth0.isLoading.value = false
+  await pending
+  assert.equal(options.headers.get('Authorization'), 'Bearer restored-token')
+
+  // Other destinations are not held up by Auth0
+  auth0.isLoading.value = true
+  const external = {}
+  await hook({ request: 'https://legacy.example/runs/1', options: external })
+  assert.deepEqual(external, {})
 })

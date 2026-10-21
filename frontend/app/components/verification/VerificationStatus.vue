@@ -19,12 +19,27 @@ const config = useRuntimeConfig()
 const toast = useToast()
 const { copy } = useClipboard()
 
+// Poll every 5s, backing off to at most a minute while requests fail
+const POLL_INTERVAL_SECONDS = 5
+const MAX_POLL_INTERVAL_SECONDS = 60
+// The 4xx answers that can change on retry; ofetch treats the same ones as transient
+const TRANSIENT_CLIENT_ERRORS = new Set([408, 409, 425, 429])
+
+// The parent's output only seeds this view when it belongs to the workflow being shown
+function matchingModelValue(): VerifyWorkflowOutput | null {
+  return props.modelValue?.workflow_id === props.workflowId ? props.modelValue : null
+}
+
 const polling = ref(false)
-const workflowData = ref<VerifyWorkflowOutput | null>(props.modelValue || null)
+const workflowData = ref<VerifyWorkflowOutput | null>(matchingModelValue())
 const errorMsg = ref<string | null>(null)
+// Set on a lasting 4xx (no access, unknown or expired ID), which retrying on a timer won't fix
+const halted = ref(false)
+const pollInterval = ref<number>(POLL_INTERVAL_SECONDS)
 const secondsElapsed = ref<number>(0)
-const nextRefreshCountdown = ref<number>(5)
+const nextRefreshCountdown = ref<number>(POLL_INTERVAL_SECONDS)
 let timer: ReturnType<typeof setInterval> | null = null
+let inFlight: AbortController | null = null
 
 const status = computed<VerifyWorkflowStatus>(() => {
   return workflowData.value?.workflow_status || 'PENDING'
@@ -67,18 +82,27 @@ const statusIcon = computed(() => {
 })
 
 async function fetchStatus() {
-  if (!props.workflowId) return
+  const workflowId = props.workflowId
+  if (!workflowId) return
+  // Supersede a request still in flight (manual refresh, or a switch to another workflow)
+  inFlight?.abort()
+  const controller = new AbortController()
+  inFlight = controller
   polling.value = true
   errorMsg.value = null
 
   try {
-    const res = await $fetch<VerifyWorkflowOutput>(`${config.public.api_url}/verify/${props.workflowId}`, {
+    const res = await $fetch<VerifyWorkflowOutput>(`${config.public.api_url}/verify/${workflowId}`, {
       params: { _t: Date.now() },
       headers: {
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache'
-      }
+      },
+      signal: controller.signal
     })
+    // A late answer for a workflow we've moved away from must not overwrite the current one
+    if (controller.signal.aborted || workflowId !== props.workflowId) return
+    pollInterval.value = POLL_INTERVAL_SECONDS
     if (res) {
       workflowData.value = res
       emit('update:modelValue', res)
@@ -94,29 +118,41 @@ async function fetchStatus() {
       }
     }
   } catch (err: any) {
+    if (controller.signal.aborted || workflowId !== props.workflowId) return
     const errText = err?.data?.detail || err?.message || 'Failed to poll verification workflow'
     errorMsg.value = errText
+    const status: number | undefined = err?.response?.status ?? err?.statusCode
+    if (status !== undefined && status >= 400 && status < 500 && !TRANSIENT_CLIENT_ERRORS.has(status)) {
+      halted.value = true
+      stopTimers()
+    } else {
+      // Transient, server or network failure: back off rather than hammer a struggling backend
+      pollInterval.value = Math.min(pollInterval.value * 2, MAX_POLL_INTERVAL_SECONDS)
+    }
   } finally {
-    polling.value = false
+    if (inFlight === controller) {
+      inFlight = null
+      polling.value = false
+      // Count down from when the answer arrived, so requests never overlap
+      nextRefreshCountdown.value = pollInterval.value
+    }
+  }
+}
+
+function tick() {
+  secondsElapsed.value++
+  if (props.autoPoll === false || isDone.value || halted.value || polling.value) return
+  nextRefreshCountdown.value--
+  if (nextRefreshCountdown.value <= 0) {
+    fetchStatus()
   }
 }
 
 function startTimers() {
   stopTimers()
   secondsElapsed.value = 0
-  nextRefreshCountdown.value = 5
-
-  timer = setInterval(() => {
-    secondsElapsed.value++
-
-    if (props.autoPoll !== false && !isDone.value) {
-      nextRefreshCountdown.value--
-      if (nextRefreshCountdown.value <= 0) {
-        nextRefreshCountdown.value = 5
-        fetchStatus()
-      }
-    }
-  }, 1000)
+  nextRefreshCountdown.value = pollInterval.value
+  timer = setInterval(tick, 1000)
 }
 
 function stopTimers() {
@@ -126,8 +162,13 @@ function stopTimers() {
   }
 }
 
+// Also the retry after a 4xx halted polling
 function manualRefresh() {
-  nextRefreshCountdown.value = 5
+  halted.value = false
+  pollInterval.value = POLL_INTERVAL_SECONDS
+  if (!timer) {
+    timer = setInterval(tick, 1000)
+  }
   fetchStatus()
 }
 
@@ -141,23 +182,29 @@ function copyWorkflowId() {
 }
 
 watch(() => props.workflowId, (newId) => {
+  inFlight?.abort()
+  workflowData.value = matchingModelValue()
+  errorMsg.value = null
+  halted.value = false
+  pollInterval.value = POLL_INTERVAL_SECONDS
   if (newId) {
-    workflowData.value = props.modelValue || null
     startTimers()
     fetchStatus()
+  } else {
+    stopTimers()
   }
 })
 
 watch(() => props.modelValue, (newVal) => {
-  if (newVal) {
-    workflowData.value = newVal
-    if (!isDone.value && !timer) {
-      startTimers()
-    } else if (isDone.value) {
-      stopTimers()
-    }
+  // Output for another workflow (a parent that hasn't caught up yet) must not replace this one
+  if (!newVal || newVal.workflow_id !== props.workflowId) return
+  workflowData.value = newVal
+  if (isDone.value) {
+    stopTimers()
+  } else if (!timer && !halted.value) {
+    startTimers()
   }
-}, { deep: true })
+})
 
 onMounted(() => {
   startTimers()
@@ -166,6 +213,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopTimers()
+  inFlight?.abort()
 })
 </script>
 
@@ -189,7 +237,7 @@ onUnmounted(() => {
               ({{ secondsElapsed }}s elapsed)
             </span>
             <span
-              v-if="!isDone"
+              v-if="!isDone && !halted"
               class="inline-flex items-center gap-1 text-[11px] font-normal px-2 py-0.5 rounded-full bg-primary-50 text-primary border border-primary-200"
             >
               <UIcon :name="polling ? 'i-svg-spinners:ring-resize' : 'i-lucide-refresh-cw'" class="size-3" :class="{ 'animate-spin': polling }" />
@@ -218,7 +266,7 @@ onUnmounted(() => {
           variant="soft"
           color="primary"
           :loading="polling"
-          label="Refresh Now"
+          :label="halted ? 'Retry' : 'Refresh Now'"
           @click="manualRefresh"
         />
         <NuxtLink
