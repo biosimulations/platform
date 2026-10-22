@@ -1382,7 +1382,8 @@ onMounted(() => {
               <div class="flex flex-wrap items-center gap-3 text-neutral-600">
                 <span class="inline-flex items-center gap-1 font-mono font-medium text-neutral-900">
                   <UIcon name="i-lucide-hash" class="size-3.5 text-primary" />
-                  Hash: {{ compatibilityResponse.omex_id.slice(0, 10) }}…
+                  Hash: {{ compatibilityResponse.omex_id }}
+                  <UButton trailing-icon="i-lucide-copy" variant="ghost" size="sm" @click="copy(compatibilityResponse.omex_id)" />
                 </span>
                 <span>•</span>
                 <span v-if="compatibilityResponse.omex_content.simulations && compatibilityResponse.omex_content.simulations.length > 0">
