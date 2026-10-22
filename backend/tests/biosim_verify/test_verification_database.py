@@ -235,7 +235,7 @@ class _RecordingCollection:
 async def test_page_read_is_bounded(owner: str | None, after: VerificationCursor | None) -> None:
     """Each page is one limit+1 read: never ``to_list(length=None)``."""
     docs: list[dict[str, object]] = [
-        {"workflow_id": f"wf-{i}", "created": datetime(2025, 1, 1, 0, 0, i)} for i in range(10)
+        {"workflow_id": f"wf-{i}", "verify_type": "omex", "created": datetime(2025, 1, 1, 0, 0, i)} for i in range(10)
     ]
     cursor = _RecordingCursor(docs)
     svc = object.__new__(VerificationDatabaseServiceMongo)
@@ -250,7 +250,7 @@ async def test_page_read_is_bounded(owner: str | None, after: VerificationCursor
                         {"$nor": [{"created": after.created,
                                    "workflow_id": {"$lte": after.workflow_id}}]}])
     assert collection.find_calls == [(({"$and": clauses},), {
-        "projection": {"workflow_id": 1, "created": 1, "_id": 0},
+        "projection": {"workflow_id": 1, "verify_type": 1, "created": 1, "omex_hash": 1, "status": 1, "_id": 0},
     })]
 
     assert cursor.limits == [5]
@@ -366,3 +366,109 @@ async def test_duplicate_workflow_id_raises(svc: VerificationDatabaseServiceMong
     await svc.insert_verification(rec)
     with pytest.raises(DuplicateKeyError):
         await svc.insert_verification(rec)
+
+
+# ---------------------------------------------------------------------------
+# omex_hash filter, summaries and terminal status (PR #136)
+# ---------------------------------------------------------------------------
+
+from biosim_server.biosim_verify.models import VerificationSummary, VerifyWorkflowStatus  # noqa: E402
+
+HASH_A = "a" * 32
+HASH_B = "b" * 32
+
+
+def _hashed(workflow_id: str, owner: str | None, created: datetime, omex_hash: str | None) -> VerificationRecord:
+    return VerificationRecord(workflow_id=workflow_id, verify_type=VerificationType.RUNS, owner_sub=owner,
+                              created=created, omex_hash=omex_hash)
+
+
+async def _all_ids_for_hash(
+    svc: VerificationDatabaseServiceMongo, owner_sub: str | None, omex_hash: str, *, limit: int,
+) -> list[list[str]]:
+    pages: list[list[str]] = []
+    after: VerificationCursor | None = None
+    while True:
+        page = await svc.list_verification_ids(owner_sub, limit=limit, after=after, omex_hash=omex_hash)
+        pages.append(page.verification_ids)
+        assert [s.workflow_id for s in page.verifications] == page.verification_ids
+        assert all(s.omex_hash == omex_hash for s in page.verifications)
+        if page.next_cursor is None:
+            return pages
+        after = decode_verification_cursor(encode_verification_cursor(page.next_cursor))
+
+
+@pytest.mark.asyncio
+async def test_hash_filter_returns_only_matching_rows(svc: VerificationDatabaseServiceMongo) -> None:
+    await svc.insert_verification(_hashed("wf-a1", None, _utc(2025, 1, 1), HASH_A))
+    await svc.insert_verification(_hashed("wf-b1", None, _utc(2025, 1, 2), HASH_B))
+    await svc.insert_verification(_hashed("wf-none", None, _utc(2025, 1, 3), None))
+    await svc.insert_verification(_hashed("wf-a2", None, _utc(2025, 1, 4), HASH_A))
+
+    page = await svc.list_verification_ids(None, limit=10, omex_hash=HASH_A)
+    assert page.verification_ids == ["wf-a2", "wf-a1"]
+    assert page.next_cursor is None
+    unfiltered = await svc.list_verification_ids(None, limit=10)
+    assert unfiltered.verification_ids == ["wf-a2", "wf-none", "wf-b1", "wf-a1"]
+    assert [s.omex_hash for s in unfiltered.verifications] == [HASH_A, None, HASH_B, HASH_A]
+
+
+@pytest.mark.asyncio
+async def test_hash_filter_keeps_owner_scoping(svc: VerificationDatabaseServiceMongo) -> None:
+    """A's owned row about H is invisible to anonymous callers and to B filtering by H, visible to A."""
+    await svc.insert_verification(_hashed("wf-public", None, _utc(2025, 1, 1), HASH_A))
+    await svc.insert_verification(_hashed("wf-alice", "alice", _utc(2025, 1, 2), HASH_A))
+
+    assert (await svc.list_verification_ids(None, limit=10, omex_hash=HASH_A)).verification_ids == ["wf-public"]
+    assert (await svc.list_verification_ids("bob", limit=10, omex_hash=HASH_A)).verification_ids == ["wf-public"]
+    assert (await svc.list_verification_ids("alice", limit=10, omex_hash=HASH_A)).verification_ids == ["wf-alice", "wf-public"]
+
+
+@pytest.mark.asyncio
+async def test_hash_filter_paginates_stably(svc: VerificationDatabaseServiceMongo) -> None:
+    """Rows about other archives never pad, anchor or underfill a filtered page."""
+    for i in range(7):
+        await svc.insert_verification(_hashed(f"wf-a{i}", None, _utc(2025, 1, 1, i), HASH_A))
+        await svc.insert_verification(_hashed(f"wf-b{i}", None, _utc(2025, 1, 1, i), HASH_B))
+    pages = await _all_ids_for_hash(svc, None, HASH_A, limit=3)
+    assert pages == [["wf-a6", "wf-a5", "wf-a4"], ["wf-a3", "wf-a2", "wf-a1"], ["wf-a0"]]
+
+
+@pytest.mark.asyncio
+async def test_summaries_carry_no_owner_and_an_aware_utc_created(svc: VerificationDatabaseServiceMongo) -> None:
+    await svc.insert_verification(_hashed("wf-owned", "alice", _utc(2025, 3, 4, 5), HASH_A))
+    page = await svc.list_verification_ids("alice", limit=10)
+    [summary] = page.verifications
+    assert isinstance(summary, VerificationSummary)
+    assert set(summary.model_dump()) == {"workflow_id", "verify_type", "created", "omex_hash", "status"}
+    assert summary.created == _utc(2025, 3, 4, 5)
+    assert summary.created.tzinfo is not None and summary.created.utcoffset() == timedelta(0)
+    assert summary.status is None
+    assert summary.verify_type == VerificationType.RUNS
+
+
+@pytest.mark.asyncio
+async def test_record_terminal_status_writes_once(svc: VerificationDatabaseServiceMongo) -> None:
+    """Sets a null or missing status; a second call is a no-op; an absent row is a no-op."""
+    await svc.insert_verification(_hashed("wf-null", None, _utc(2025, 1, 1), None))
+    await svc._collection.insert_one({"workflow_id": "wf-legacy", "verify_type": "omex", "owner_sub": None,
+                                      "created": datetime(2025, 1, 2)})  # pre-#136 row: no status field at all
+
+    await svc.record_terminal_status("wf-null", VerifyWorkflowStatus.COMPLETED)
+    await svc.record_terminal_status("wf-legacy", VerifyWorkflowStatus.FAILED)
+    await svc.record_terminal_status("wf-null", VerifyWorkflowStatus.FAILED)  # must not overwrite
+    await svc.record_terminal_status("wf-absent", VerifyWorkflowStatus.COMPLETED)
+
+    page = await svc.list_verification_ids(None, limit=10)
+    assert {s.workflow_id: s.status for s in page.verifications} == {
+        "wf-null": VerifyWorkflowStatus.COMPLETED, "wf-legacy": VerifyWorkflowStatus.FAILED,
+    }
+    assert await svc.get_verification("wf-absent") is None
+    legacy = await svc.get_verification("wf-legacy")
+    assert legacy is not None and legacy.status == VerifyWorkflowStatus.FAILED and legacy.omex_hash is None
+
+
+@pytest.mark.asyncio
+async def test_hash_index_serves_the_listing_sort(svc: VerificationDatabaseServiceMongo) -> None:
+    indexes = await svc._collection.index_information()
+    assert any(spec["key"] == [("omex_hash", 1), ("created", -1), ("workflow_id", 1)] for spec in indexes.values())

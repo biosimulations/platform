@@ -1364,6 +1364,25 @@ paths:
         description: 'SED-ML data set labels of interest. Validated only: the request
           is rejected with 400 if none appear in the runs'' common dataset labels.
           Not yet used to filter the returned comparison.'
+      - name: omex_hash
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{32}$
+          - type: 'null'
+          description: MD5 hexdigest of the OMEX archive these runs were produced
+            from, to link the verification to it in GET /verification_ids. Ignored
+            when the platform can derive the hash from its own record of the runs,
+            and ignored for anonymous callers (whose verifications are public, so
+            an unverifiable hash could mislabel someone else's archive).
+          title: Omex Hash
+        description: MD5 hexdigest of the OMEX archive these runs were produced from,
+          to link the verification to it in GET /verification_ids. Ignored when the
+          platform can derive the hash from its own record of the runs, and ignored
+          for anonymous callers (whose verifications are public, so an unverifiable
+          hash could mislabel someone else's archive).
       responses:
         '200':
           description: Successful Response
@@ -1394,7 +1413,9 @@ paths:
         administrator bypass. Invalid credentials are rejected. Responses use Cache-Control:
         private, no-store. Keep the same identity while paginating; restart after
         login/logout. One bounded page at a time. Follow `next_cursor` (pass it back
-        as `cursor`) for older IDs; it is null on the last page.'
+        as `cursor`) for older IDs; it is null on the last page. `verifications` carries
+        the same rows with their type, start time, OMEX hash and terminal status;
+        `omex_hash` narrows a page to one archive.'
       operationId: list-verification-ids
       security:
       - HTTPBearer: []
@@ -1421,6 +1442,19 @@ paths:
           description: Opaque `next_cursor` from a previous page.
           title: Cursor
         description: Opaque `next_cursor` from a previous page.
+      - name: omex_hash
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{32}$
+          - type: 'null'
+          description: Only verifications of the archive with this MD5 hexdigest,
+            within the caller's visibility.
+          title: Omex Hash
+        description: Only verifications of the archive with this MD5 hexdigest, within
+          the caller's visibility.
       responses:
         '200':
           description: One page visible to the current caller.
@@ -3430,6 +3464,14 @@ components:
             callers see ownerless verifications; authenticated callers see ownerless
             plus their own. Follow `next_cursor` with the same identity for older
             visible IDs.
+        verifications:
+          items:
+            $ref: '#/components/schemas/VerificationSummary'
+          type: array
+          title: Verifications
+          description: 'The same rows as `verification_ids`, in the same order, with
+            their type, start time, OMEX hash and terminal status. A flat list: one
+            archive''s verifications can straddle pages, so group by `omex_hash` client-side.'
         next_cursor:
           anyOf:
           - type: string
@@ -3441,6 +3483,47 @@ components:
       required:
       - verification_ids
       title: VerificationIdsResponse
+    VerificationSummary:
+      properties:
+        workflow_id:
+          type: string
+          title: Workflow Id
+          description: Pass to GET /verify/{workflow_id} for the report.
+        verify_type:
+          $ref: '#/components/schemas/VerificationType'
+        created:
+          type: string
+          format: date-time
+          title: Created
+          description: When the verification was started (UTC).
+        omex_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Omex Hash
+          description: MD5 hexdigest of the verified OMEX archive, when known. Group
+            by it client-side.
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/VerifyWorkflowStatus'
+          - type: 'null'
+          description: 'Terminal status recorded the first time GET /verify/{workflow_id}
+            saw the workflow finish. null means not yet observed as finished: still
+            running, never polled, or polled only after its Temporal history expired.'
+      type: object
+      required:
+      - workflow_id
+      - verify_type
+      - created
+      title: VerificationSummary
+      description: 'Public listing item for GET /verification_ids: a ledger row without
+        its owner.'
+    VerificationType:
+      type: string
+      enum:
+      - omex
+      - runs
+      title: VerificationType
     VerifyWorkflowOutput:
       properties:
         workflow_id:

@@ -46,7 +46,7 @@ async def test_scoped_pages_hide_other_prefixes_and_cursor_anchors(
         ("e-secret-admin", "admin"), ("f-public-null", None),
         ("g-secret-alice", "alice"), ("h-empty-owner", ""),
     ]
-    docs = [{"workflow_id": name, "created": datetime(2025, 1, 1), "owner_sub": sub} for name, sub in rows]
+    docs = [{"workflow_id": name, "verify_type": "omex", "created": datetime(2025, 1, 1), "owner_sub": sub} for name, sub in rows]
     docs[2].pop("owner_sub")
     await svc._collection.insert_many(docs)
     expected = [name for name, sub in rows if sub is None or sub == owner]
@@ -79,7 +79,7 @@ async def test_foreign_and_forged_cursor_does_not_grant_access(
 ) -> None:
     svc = verification_database_service_mongo
     await svc._collection.insert_many([
-        {"workflow_id": name, "created": datetime(2025, 1, 1), "owner_sub": sub}
+        {"workflow_id": name, "verify_type": "runs", "created": datetime(2025, 1, 1), "owner_sub": sub}
         for name, sub in [("a-private", "alice"), ("b-private", "alice"), ("c-public", None), ("d-bob", "bob")]
     ])
     headers = {} if owner is None else {"Authorization": "Bearer " + KEY.token(sub=owner)}
@@ -90,7 +90,10 @@ async def test_foreign_and_forged_cursor_does_not_grant_access(
         for token in (cursor, forged):
             response = await client.get("/verification_ids", params={"cursor": token}, headers=headers)
             assert response.status_code == 200
-            assert response.json() == {"verification_ids": ["c-public"] + (["d-bob"] if owner else []), "next_cursor": None}
+            body = response.json()
+            assert body["verification_ids"] == ["c-public"] + (["d-bob"] if owner else [])
+            assert body["next_cursor"] is None
+            assert [v["workflow_id"] for v in body["verifications"]] == body["verification_ids"]
 
 
 @pytest.mark.parametrize("public_count", [0, 1, 2])
@@ -99,14 +102,17 @@ async def test_hidden_rows_do_not_create_lookahead_or_underfill_pages(
 ) -> None:
     svc = verification_database_service_mongo
     await svc._collection.insert_many([
-        {"workflow_id": f"private-{i}", "owner_sub": "alice", "created": datetime(2025, 1, 2)} for i in range(10)
+        {"workflow_id": f"private-{i}", "verify_type": "omex", "owner_sub": "alice", "created": datetime(2025, 1, 2)} for i in range(10)
     ] + [
-        {"workflow_id": f"public-{i}", "owner_sub": None, "created": datetime(2025, 1, 1)} for i in range(public_count)
+        {"workflow_id": f"public-{i}", "verify_type": "omex", "owner_sub": None, "created": datetime(2025, 1, 1)} for i in range(public_count)
     ])
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/verification_ids", params={"limit": 2})
     assert response.status_code == 200
-    assert response.json() == {"verification_ids": [f"public-{i}" for i in range(public_count)], "next_cursor": None}
+    body = response.json()
+    assert body["verification_ids"] == [f"public-{i}" for i in range(public_count)]
+    assert body["next_cursor"] is None
+    assert [v["workflow_id"] for v in body["verifications"]] == body["verification_ids"]
 
 
 @pytest.mark.parametrize("kind", ["malformed", "empty", "basic", "expired", "signature", "outage"])
