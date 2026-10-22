@@ -26,6 +26,7 @@ from biosim_server.biosim_verify.models import (
     VERIFICATION_IDS_DEFAULT_PAGE_SIZE,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
     VerificationRecord,
+    VerificationSummary,
     VerificationType,
     VerifyWorkflowOutput,
     VerifyWorkflowStatus,
@@ -1098,9 +1099,9 @@ async def test_list_verification_ids_anonymous_gets_the_first_bounded_page(ids: 
     ledger = _ledger_returning(ids)
     resp = await _get_verification_ids(ledger)
     assert resp.status_code == 200
-    assert resp.json() == {"verification_ids": ids, "next_cursor": None}
+    assert resp.json() == {"verification_ids": ids, "verifications": [], "next_cursor": None}
     ledger.list_verification_ids.assert_awaited_once_with(
-        None, limit=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, after=None
+        None, limit=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, after=None, omex_hash=None
     )
 
 
@@ -1116,7 +1117,48 @@ async def test_list_verification_ids_returns_and_accepts_an_opaque_cursor() -> N
     ledger = _ledger_returning([])
     resp = await _get_verification_ids(ledger, {"limit": 2, "cursor": token})
     assert resp.status_code == 200
-    ledger.list_verification_ids.assert_awaited_once_with(None, limit=2, after=last)
+    ledger.list_verification_ids.assert_awaited_once_with(None, limit=2, after=last, omex_hash=None)
+
+
+@pytest.mark.asyncio
+async def test_list_verification_ids_with_omex_hash_filter() -> None:
+    """A well-formed hash reaches the ledger as a filter; summaries come back flat, aligned with the IDs."""
+    app.dependency_overrides.pop(get_current_user, None)
+    app.dependency_overrides.pop(get_optional_user, None)
+    omex_hash = "0" * 31 + "a"
+    summary = VerificationSummary(
+        workflow_id="wf-1", verify_type=VerificationType.OMEX, created=datetime(2025, 1, 1, tzinfo=UTC),
+        omex_hash=omex_hash, status=VerifyWorkflowStatus.COMPLETED,
+    )
+    ledger = AsyncMock()
+    ledger.list_verification_ids = AsyncMock(
+        return_value=VerificationIdPage(verification_ids=["wf-1"], next_cursor=None, verifications=[summary])
+    )
+    resp = await _get_verification_ids(ledger, {"omex_hash": omex_hash})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "verification_ids": ["wf-1"],
+        "verifications": [{
+            "workflow_id": "wf-1", "verify_type": "omex", "created": "2025-01-01T00:00:00Z",
+            "omex_hash": omex_hash, "status": "COMPLETED",
+        }],
+        "next_cursor": None,
+    }
+    ledger.list_verification_ids.assert_awaited_once_with(
+        None, limit=VERIFICATION_IDS_DEFAULT_PAGE_SIZE, after=None, omex_hash=omex_hash
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("omex_hash", ["", "A" * 32, "0" * 31, "0" * 33, "g" * 32, "x" * 5000])
+async def test_list_verification_ids_malformed_omex_hash_is_422_before_any_read(omex_hash: str) -> None:
+    """`?omex_hash=` is not "no filter": anything but 32 lowercase hex chars is refused."""
+    app.dependency_overrides.pop(get_current_user, None)
+    app.dependency_overrides.pop(get_optional_user, None)
+    ledger = _ledger_returning([])
+    resp = await _get_verification_ids(ledger, {"omex_hash": omex_hash})
+    assert resp.status_code == 422, resp.text
+    ledger.list_verification_ids.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1615,3 +1657,139 @@ async def test_verify_omex_workflow_input_simulators_are_bounded_and_ordered() -
     ]
     files.upload_bytes.assert_awaited_once()
     ledger.insert_verification.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# POST /verify/runs — omex_hash linkage (PR #136)
+# ---------------------------------------------------------------------------
+
+_HASH = "c" * 32
+
+
+def _cached_run(file_hash_md5: str) -> MagicMock:
+    run = MagicMock()
+    run.file_hash_md5 = file_hash_md5
+    return run
+
+
+async def _post_verify_runs_with_hash(
+    *, authenticated: bool, omex_hash: str | None, cached: dict[str, list[MagicMock]] | None,
+) -> tuple[Response, AsyncMock]:
+    """Submit two runs; *cached* maps run id -> platform-cached BiosimulatorWorkflowRun records."""
+    temporal, ledger = _make_temporal_for_runs(), AsyncMock()
+    db = None
+    if cached is not None:
+        db = AsyncMock()
+        db.get_biosimulator_workflow_runs_by_biosim_runid = AsyncMock(side_effect=lambda rid: cached.get(rid, []))
+    params: dict[str, str | list[str]] = {"biosimulations_run_ids": ["r1", "r2"]}
+    if omex_hash is not None:
+        params["omex_hash"] = omex_hash
+    if authenticated:
+        user = AuthenticatedUser(sub="auth0|u", email="u@example.com")
+        app.dependency_overrides[get_current_user] = app.dependency_overrides[get_optional_user] = lambda: user
+    else:
+        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_optional_user, None)
+    try:
+        with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+             patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
+             patch("biosim_server.api.main.get_database_service", return_value=db), \
+             patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=AsyncMock(return_value={})):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post("/verify/runs", params=params)
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_optional_user, None)
+    return response, ledger
+
+
+def _inserted_hash(ledger: AsyncMock) -> str | None:
+    record = ledger.insert_verification.await_args.args[0]
+    assert isinstance(record, VerificationRecord)
+    assert record.status is None  # never written at insert
+    return record.omex_hash
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authenticated", [False, True])
+async def test_verify_runs_hash_is_derived_from_cached_runs_over_the_callers_claim(authenticated: bool) -> None:
+    response, ledger = await _post_verify_runs_with_hash(
+        authenticated=authenticated, omex_hash="d" * 32, cached={"r1": [_cached_run(_HASH)], "r2": [_cached_run(_HASH)]},
+    )
+    assert response.status_code == 200, response.text
+    assert _inserted_hash(ledger) == _HASH
+
+
+@pytest.mark.asyncio
+async def test_verify_runs_authenticated_caller_hash_is_used_when_nothing_is_cached() -> None:
+    response, ledger = await _post_verify_runs_with_hash(authenticated=True, omex_hash=_HASH, cached={})
+    assert response.status_code == 200, response.text
+    assert _inserted_hash(ledger) == _HASH
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached", [None, {}])
+async def test_verify_runs_anonymous_caller_hash_is_ignored(cached: dict[str, list[MagicMock]] | None) -> None:
+    """Anonymous rows are public: a caller-supplied hash there could tag unrelated runs for everyone."""
+    response, ledger = await _post_verify_runs_with_hash(authenticated=False, omex_hash=_HASH, cached=cached)
+    assert response.status_code == 200, response.text
+    assert _inserted_hash(ledger) is None
+
+
+@pytest.mark.asyncio
+async def test_verify_runs_runs_from_different_archives_link_to_no_hash() -> None:
+    response, ledger = await _post_verify_runs_with_hash(
+        authenticated=True, omex_hash=_HASH, cached={"r1": [_cached_run("a" * 32)], "r2": [_cached_run("b" * 32)]},
+    )
+    assert response.status_code == 200, response.text
+    assert _inserted_hash(ledger) is None
+
+
+@pytest.mark.asyncio
+async def test_verify_runs_cache_failure_falls_back_to_no_derived_hash() -> None:
+    db = AsyncMock()
+    db.get_biosimulator_workflow_runs_by_biosim_runid = AsyncMock(side_effect=RuntimeError("private db"))
+    temporal, ledger = _make_temporal_for_runs(), AsyncMock()
+    app.dependency_overrides.pop(get_current_user, None)
+    app.dependency_overrides.pop(get_optional_user, None)
+    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
+         patch("biosim_server.api.main.get_database_service", return_value=db), \
+         patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=AsyncMock(return_value={})):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/verify/runs", params={"biosimulations_run_ids": ["r1", "r2"]})
+    assert response.status_code == 200, response.text
+    assert "private db" not in response.text
+    assert _inserted_hash(ledger) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("omex_hash", ["", "C" * 32, "c" * 31, "c" * 33, "zz" * 16])
+async def test_verify_runs_malformed_omex_hash_is_422_before_any_work(omex_hash: str) -> None:
+    temporal, ledger, preflight = _make_temporal_for_runs(), AsyncMock(), AsyncMock(return_value={})
+    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
+         patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=preflight):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/verify/runs", params={"biosimulations_run_ids": ["r1"], "omex_hash": omex_hash})
+    assert response.status_code == 422, response.text
+    _assert_no_runs_work(temporal, ledger, preflight)
+
+
+@pytest.mark.asyncio
+async def test_verify_omex_links_the_server_computed_hash() -> None:
+    """POST /verify/omex stores the upload's own MD5; there is no caller-supplied hash to trust."""
+    files, omex, biosim, temporal = _verify_omex_mocks()
+    ledger = AsyncMock()
+    app.dependency_overrides.pop(get_current_user, None)
+    app.dependency_overrides.pop(get_optional_user, None)
+    with patch("biosim_server.api.main.get_file_service", return_value=files), \
+         patch("biosim_server.api.main.get_omex_database_service", return_value=omex), \
+         patch("biosim_server.api.main.get_biosim_service", return_value=biosim), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/verify/omex", params={"simulators": "copasi"},
+                                         files={"uploaded_file": ("m.omex", b"fake", "application/zip")})
+    assert response.status_code == 200, response.text
+    assert _inserted_hash(ledger) == hashlib.md5(b"fake").hexdigest()

@@ -1,3 +1,4 @@
+import os
 from typing import AsyncGenerator
 
 import pytest
@@ -21,7 +22,15 @@ from biosim_server.dependencies import get_temporal_client, set_temporal_client
 async def temporal_env(request: pytest.FixtureRequest) -> AsyncGenerator[WorkflowEnvironment, None]:
     env_type = request.config.getoption("--workflow-environment")
     if env_type == "local":
-        env = await WorkflowEnvironment.start_local(ui=True, data_converter=pydantic_data_converter)
+        # CI pre-installs a pinned, checksum-verified Temporal CLI and points
+        # TEMPORAL_CLI_PATH at it (.github/workflows/ci.yaml): the SDK's on-demand
+        # download from temporal.download intermittently failed there with
+        # "error decoding response body". Unset locally, the SDK downloads as before.
+        env = await WorkflowEnvironment.start_local(
+            ui=True,
+            data_converter=pydantic_data_converter,
+            dev_server_existing_path=os.environ.get("TEMPORAL_CLI_PATH"),
+        )
     elif env_type == "time-skipping":
         env = await WorkflowEnvironment.start_time_skipping(data_converter=pydantic_data_converter)
     else:
