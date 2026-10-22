@@ -154,7 +154,7 @@ backend/
 | `/simulations/run` | POST | Run simulations for an OMEX archive across selected simulators |
 | `/simulations/runs` | POST | List simulation runs (`type=all` public with email redacted; `type=user` scoped to `owner_sub`) |
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
-| `/verification_ids` | GET | List verification workflow IDs, newest first, paginated (`limit` ≤ 1000, opaque `cursor`; optional auth: ownerless plus caller-owned IDs) |
+| `/verification_ids` | GET | List verification workflow IDs with summaries (type, start time, OMEX hash, terminal status), newest first, paginated (`limit` ≤ 1000, opaque `cursor`, optional `omex_hash` filter; optional auth: ownerless plus caller-owned IDs) |
 | `/verify/omex` | POST | Verify OMEX file across simulators (token optional; a valid token persists `owner_sub`) |
 | `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin) |
 | `/verify/runs` | POST | Compare existing biosimulation runs (token optional; a valid token persists `owner_sub`) |
@@ -168,7 +168,7 @@ backend/
 
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
-- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired.
+- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created, omex_hash, status). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; `status` is written once by `GET /verify/{workflow_id}` when it first sees the workflow finished; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired.
 - **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns
@@ -559,7 +559,16 @@ authenticated callers see those rows plus their own. Administrators get no globa
 listing bypass. Invalid credentials return 401 rather than anonymous access;
 authentication infrastructure failures retain the existing fail-closed behavior.
 Returns one bounded page at a time, newest first (`created` descending,
-`workflow_id` ascending): `{"verification_ids": [...], "next_cursor": ...}`.
+`workflow_id` ascending):
+`{"verification_ids": [...], "verifications": [...], "next_cursor": ...}`.
+`verifications` is the same rows in the same order as `verification_ids`, each a
+`VerificationSummary` of `workflow_id`, `verify_type`, `created` (UTC, with offset),
+`omex_hash` and `status` -- never `owner_sub`. It is a **flat list**: one archive's
+verifications can straddle pages, so clients group by `omex_hash` themselves.
+`omex_hash` (32 lowercase hex chars, else **422**; the same MD5 as
+`OmexFile.file_hash_md5` and `/compatibility/check`'s `omex_id`) narrows the page to
+one archive, inside the caller's visibility, served from a compound
+`(omex_hash, created, workflow_id)` index.
 Successful responses carry `Cache-Control: private, no-store`.
 `limit` defaults to **100** and may not exceed **1000** (otherwise **422**).
 Pass a page's `next_cursor` back as `cursor` for the next, older page;
@@ -587,6 +596,28 @@ cached or scraped data. No live cache invalidation is implied by this code chang
 Keep logs limited to count/has-more, never IDs, subjects, raw cursors, or credentials.
 503 when the
 ledger service is unavailable.
+
+**`omex_hash` on the ledger row.** `POST /verify/omex` always stores the
+server-computed MD5 of the upload. `POST /verify/runs` derives it from the platform's
+own `BiosimulatorWorkflowRun` cache (`file_hash_md5`) when every cached run agrees on
+one archive; runs known only to biosimulations.org carry no hash. Only when nothing
+is cached does an **authenticated** caller's `omex_hash` query parameter get stored
+(its row is scoped to them, so a wrong tag is visible only to them). It is ignored
+for anonymous callers, whose rows are public -- otherwise anyone could tag unrelated
+runs with a real archive's hash for every user who filters by it -- and ignored when
+the cached runs come from different archives. The parameter is pattern-validated
+(**422**) before any work either way.
+
+**`status` on the ledger row** is the terminal `VerifyWorkflowStatus` (`COMPLETED`,
+`FAILED`, `RUN_ID_NOT_FOUND`), written **once** by `GET /verify/{workflow_id}` the
+first time it observes the workflow finished -- after the ownership check, on the
+recovered-from-history paths too, with a guarded `update_one({"status": None})` so
+the first observed status sticks and rows written before the field existed are
+covered. Nothing is written at insert and a ledger error never fails the GET.
+`null` in the listing therefore means "not yet observed as finished": still running,
+never polled, or polled only after its Temporal history expired (that path 404s
+before any write). A client that needs a live status still has to poll
+`GET /verify/{workflow_id}`.
 
 **Which token to send:** the Platform API is an OAuth resource server and
 accepts **access tokens** only. Do not send an OIDC ID token in

@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Final, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from biosim_server.biosim_runs import BiosimSimulationRun, HDF5File, Hdf5DataValues
 
@@ -100,13 +100,51 @@ class VerificationType(StrEnum):
     RUNS = "runs"
 
 
+# MD5 hexdigest of an OMEX archive, as `OmexFile.file_hash_md5` and
+# `/compatibility/check`'s `omex_id` already spell it. Published as the OpenAPI
+# `pattern` of every `omex_hash` query parameter, so `?omex_hash=` (empty),
+# uppercase hex or an over-long value is a 422 before any database read.
+OMEX_HASH_PATTERN: Final = r"^[0-9a-f]{32}$"
+
+
 class VerificationRecord(BaseModel):
+    """One ledger row (BiosimCompare collection)."""
+
     workflow_id: str
     verify_type: VerificationType
     # Caller's verified sub, or None for an anonymous (legacy API) submission,
     # which makes the verification publicly readable.
     owner_sub: Optional[str] = None
     created: datetime
+    # MD5 of the archive the verification is about. Always set by POST
+    # /verify/omex (computed server-side from the upload); for POST /verify/runs
+    # it is derived from the platform's cached runs when possible, else taken
+    # from an authenticated caller, else None.
+    omex_hash: Optional[str] = None
+    # Terminal workflow status, written once by GET /verify/{workflow_id} the
+    # first time it observes the workflow finished. None until then -- also for
+    # verifications nobody polled and for ones whose Temporal history expired.
+    status: Optional[VerifyWorkflowStatus] = None
+
+
+class VerificationSummary(BaseModel):
+    """Public listing item for GET /verification_ids: a ledger row without its owner."""
+
+    workflow_id: str = Field(description="Pass to GET /verify/{workflow_id} for the report.")
+    verify_type: VerificationType
+    created: AwareDatetime = Field(description="When the verification was started (UTC).")
+    omex_hash: Optional[str] = Field(
+        default=None,
+        description="MD5 hexdigest of the verified OMEX archive, when known. Group by it client-side.",
+    )
+    status: Optional[VerifyWorkflowStatus] = Field(
+        default=None,
+        description=(
+            "Terminal status recorded the first time GET /verify/{workflow_id} saw the workflow "
+            "finish. null means not yet observed as finished: still running, never polled, or "
+            "polled only after its Temporal history expired."
+        ),
+    )
 
 
 # GET /verification_ids page sizes (PR #120, B3). IDs are ~40-70 bytes, so a full
@@ -133,6 +171,14 @@ class VerificationIdsResponse(BaseModel):
             "see ownerless verifications; authenticated callers see ownerless plus their own. "
             "Follow `next_cursor` with the same identity for older visible IDs."
         )
+    )
+    verifications: list[VerificationSummary] = Field(
+        default_factory=list,
+        description=(
+            "The same rows as `verification_ids`, in the same order, with their type, start time, "
+            "OMEX hash and terminal status. A flat list: one archive's verifications can straddle "
+            "pages, so group by `omex_hash` client-side."
+        ),
     )
     next_cursor: Optional[str] = Field(
         default=None,
