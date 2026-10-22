@@ -3,16 +3,16 @@ import {ref, useTemplateRef} from 'vue'
 import {upperFirst} from 'scule'
 import type {TableColumn} from '@nuxt/ui'
 import type {BreadcrumbItem} from "#ui/components/Breadcrumb.vue";
-import {normalize_text} from "~/functions/functions";
 import type {TableFilter, TableFilterConfig, TablePagination} from "~/models/filtering";
 import type {ProjectQueryStat, ProjectQueryStatFilter, ProjectSearchFilter, ProjectStub, ProjectStubPage,} from "~/models/projects";
 import type {AppChip} from "~/models/common";
 
-const route = useRoute()
 const display_mode = ref<'cards' | 'table'>('cards')
-const routes = route.path.split('/').filter(i => i && i.trim().length > 0)
 const runtimeConfig = useRuntimeConfig()
-const breadcrumbs = ref<BreadcrumbItem[]>([])
+const breadcrumbs: BreadcrumbItem[] = [
+  { label: 'Home', to: '/', icon: 'i-lucide-home' },
+  { label: 'BioSim DB' }
+]
 const advanced_filters_open = ref(false)
 const fuzzy_search_term = ref('')
 const chips = ref<AppChip[]>([])
@@ -95,16 +95,6 @@ const searched_filters = ref<ProjectSearchFilter[]>([])
 const projects = ref<ProjectStub[]>([])
 
 onMounted(async () => {
-  breadcrumbs.value = [{label: 'Home', to: '/', icon: 'i-lucide-home'}]
-  routes.forEach((route, _index) => {
-    const breadcrumb = {
-      label: normalize_text(route),
-      to: `/${route}`
-    }
-
-    breadcrumbs.value.push(breadcrumb)
-  })
-
   await fetch_projects()
 })
 
@@ -256,7 +246,7 @@ function visit_page(e: Event, row: any) {
 
 <template>
   <section class="w-full min-h-[calc(100vh-var(--ui-header-height))] p-6 max-w-(--ui-container) mx-auto flex flex-col gap-4" :class="{'items-center justify-center': !projects || error_encountered, 'items-start justify-start': !error_encountered}">
-    <UBreadcrumb class="mx-auto" :items="breadcrumbs"></UBreadcrumb>
+    <UBreadcrumb class="mx-auto" :items="breadcrumbs" />
 
     <div class="page_header relative overflow-hidden w-full p-8 bg-primary-500 text-white flex flex-col items-center justify-center gap-2 rounded-lg">
       <div class="background isometric w-full h-full"></div>

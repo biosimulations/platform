@@ -2,6 +2,7 @@ import type { PageProjectFile, PageSimulationRunSedDocument } from '~/models/pag
 import type { VisualizationList, VegaVisualization, SedPlot2DVisualization, Visualization } from '~/models/visualizations';
 import {getPlotlyDataLayout} from '~/functions/sed-plot-2d-visualization';
 import { reactive } from 'vue';
+import { sanitizeVegaSpec } from '~/utils/vega';
 
 export async function useVisualizations(
   runId: string,
@@ -50,7 +51,7 @@ export async function useVisualizations(
 
       // Fetch the actual Vega Spec asynchronously
       $fetch(file.url).then((spec) => {
-        vis.vegaSpec = spec;
+        vis.vegaSpec = sanitizeVegaSpec(spec);
         vis._isLoading = false;
       }).catch((err) => {
         console.error('Failed to fetch vega spec for ' + file.location, err);
