@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: biosim-server
-  version: 0.10.1
+  version: 0.10.2
 paths:
   /compatibility/check:
     post:
