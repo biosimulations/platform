@@ -3256,6 +3256,30 @@ components:
       - processingId
       - jobs
       title: SimulationRunResults
+    SimulatorFailure:
+      properties:
+        simulator_version:
+          type: string
+          title: Simulator Version
+        biosimulations_run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Biosimulations Run Id
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+      type: object
+      required:
+      - simulator_version
+      title: SimulatorFailure
+      description: 'A requested simulator that produced no results: its run failed
+        on biosimulations.org, or could not be
+
+        submitted. Reported instead of being dropped silently, so a verification with
+        no usable runs says why.'
     SimulatorSelection:
       properties:
         id:
@@ -3546,6 +3570,12 @@ components:
           - type: string
           - type: 'null'
           title: Workflow Error
+        failed_simulators:
+          items:
+            $ref: '#/components/schemas/SimulatorFailure'
+          type: array
+          title: Failed Simulators
+          default: []
         workflow_results:
           anyOf:
           - $ref: '#/components/schemas/GenerateStatisticsActivityOutput'
