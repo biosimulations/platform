@@ -63,8 +63,8 @@ const toleranceSettings = reactive({
   rel_tol: 0.0001,
   abs_tol_min: 0.001,
   abs_tol_scale: 0.00001,
-  // Matches the backend default: full trajectories travel through Temporal payloads, so they are opt-in
-  include_outputs: false,
+  // Stored by default so users can view interactive trajectory plots in VerificationPlotViewer
+  include_outputs: true,
   user_description: 'model-verification'
 })
 const showAdvancedSettings = ref(false)
@@ -620,7 +620,6 @@ async function submitRunsVerification(customRunIds?: string[]) {
 // ----------------------------------------------------
 const lookupIdInput = ref<string>('')
 const catalogCardRef = ref<any>(null)
-const dashboardRef = ref<HTMLElement | null>(null)
 const PAST_PAGE_SIZE = 50
 const pastVerifications = ref<VerificationListItem[]>([])
 const pastNextCursor = ref<string | null>(null)
@@ -646,6 +645,19 @@ const filteredPastVerifications = computed(() => {
     matchesVerificationFilter(item, pastSearchQuery.value, pastTypeFilter.value)
   )
 })
+
+function resetLookupFilters() {
+  lookupIdInput.value = ''
+  pastSearchQuery.value = ''
+  pastTypeFilter.value = 'all'
+  pastIdsError.value = null
+  const hadArchiveFilter = Boolean(pastHashFilter.value)
+  pastHashFilter.value = null
+  if (hadArchiveFilter) {
+    pastVerifications.value = []
+    pastNextCursor.value = null
+  }
+}
 
 // The open report's type: from its listing row when loaded, else from its ID
 const activeVerifyType = computed<VerificationType | null>(() => {
@@ -835,18 +847,34 @@ watch(activeMode, (mode) => {
   } else {
     isHistoricalModalOpen.value = false
     isHistoricalModalFullscreen.value = false
+    resetReportState()
+    activeWorkflowId.value = null
+    resetLookupFilters()
   }
 
   // Synchronize activeMode with the tab URL query param
   const currentTab = route.query.tab
   const targetTab = mode === 'lookup' ? 'lookup' : undefined
-  if (currentTab !== targetTab) {
-    const q = { ...route.query }
-    if (targetTab) {
-      q.tab = targetTab
-    } else {
-      delete q.tab
+  const hasStaleParams = Boolean(
+    route.query.tab
+    || route.query.workflow_id
+    || route.query.run_id
+    || route.query.omex_hash
+    || route.query.omex_id
+  )
+
+  if (targetTab) {
+    if (currentTab !== 'lookup') {
+      router.replace({ query: { ...route.query, tab: 'lookup' } })
     }
+  } else if (hasStaleParams) {
+    // Consciously switched to verify tab: strip out preserved IDs/hashes and tab param
+    const q = { ...route.query }
+    delete q.tab
+    delete q.workflow_id
+    delete q.run_id
+    delete q.omex_hash
+    delete q.omex_id
     router.replace({ query: q })
   }
 })
@@ -854,9 +882,12 @@ watch(activeMode, (mode) => {
 watch(isHistoricalModalOpen, (isOpen) => {
   if (!isOpen) {
     isHistoricalModalFullscreen.value = false
-    if (activeMode.value === 'lookup' && route.query.workflow_id) {
+    resetReportState()
+    activeWorkflowId.value = null
+    if (activeMode.value === 'lookup' && (route.query.workflow_id || route.query.run_id)) {
       const q = { ...route.query }
       delete q.workflow_id
+      delete q.run_id
       q.tab = 'lookup'
       router.push({ query: q })
     }
@@ -866,10 +897,11 @@ watch(isHistoricalModalOpen, (isOpen) => {
 // Watch route.query.workflow_id so any external or router query updates activate Lookup mode & modal
 watch(() => route.query.workflow_id, (newWId) => {
   if (newWId) {
-    showWorkflow(String(newWId))
-    activeMode.value = 'lookup'
-    if (pastVerifications.value.length === 0 && !isLoadingPastIds.value) {
-      fetchPastVerifications(true)
+    if (activeMode.value === 'lookup') {
+      showWorkflow(String(newWId))
+      if (pastVerifications.value.length === 0 && !isLoadingPastIds.value) {
+        fetchPastVerifications(true)
+      }
     }
   } else {
     // Back/forward to a URL without a report closes it
@@ -879,7 +911,11 @@ watch(() => route.query.workflow_id, (newWId) => {
 
 // route.query.omex_hash drives the archive filter, which the server applies
 watch(() => route.query.omex_hash, (newHash) => {
-  applyHashFilter(newHash ? String(newHash) : null)
+  if (activeMode.value === 'lookup') {
+    applyHashFilter(newHash ? String(newHash) : null)
+  } else if (!newHash) {
+    pastHashFilter.value = null
+  }
 })
 
 function applyHashFilter(rawHash: string | null) {
@@ -895,15 +931,13 @@ function applyHashFilter(rawHash: string | null) {
   }
   if (hash === pastHashFilter.value) return
   pastHashFilter.value = hash
-  if (hash) {
-    activeMode.value = 'lookup'
-  }
   fetchPastVerifications(true)
 }
 
 function clearHashFilter() {
   const query = { ...route.query }
   delete query.omex_hash
+  delete query.omex_id
   // The omex_hash watcher drops the filter and reloads the list
   router.replace({ query })
 }
@@ -1192,29 +1226,29 @@ function onSelectHeatmapPair(i: number, j: number) {
   selectedJ.value = j
 }
 
-const plotSectionRef = ref<HTMLElement | null>(null)
 const modalPlotSectionRef = ref<HTMLElement | null>(null)
 function onVisualizeVariable(varName: string) {
   activeVariable.value = varName
   nextTick(() => {
-    const target = isHistoricalModalOpen.value ? modalPlotSectionRef.value : plotSectionRef.value
-    if (target) {
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    if (modalPlotSectionRef.value) {
+      modalPlotSectionRef.value.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   })
 }
 
-// On mount: check URL for workflow_id and tab
+// On mount: check URL for workflow_id, omex_hash, and tab
 onMounted(() => {
-  if (route.query.omex_hash) {
-    // Applies the archive filter, switches to Lookup and loads the filtered list
-    applyHashFilter(String(route.query.omex_hash))
-  }
+  const initialHash = (route.query.omex_hash || route.query.omex_id) as string | undefined
+  const initialWId = (route.query.workflow_id || route.query.run_id) as string | undefined
 
-  if (route.query.workflow_id) {
-    // If a workflow_id is provided in the URL, ALWAYS take the user to the "Lookup" cards and activate the modal
-    showWorkflow(String(route.query.workflow_id))
+  if (initialHash) {
+    // If an archive hash is provided in the URL, automate displaying the Lookup tab filtered to that archive
     activeMode.value = 'lookup'
+    applyHashFilter(String(initialHash))
+  } else if (initialWId) {
+    // If a workflow_id is provided in the URL, automate displaying the Lookup tab and open the report
+    activeMode.value = 'lookup'
+    showWorkflow(String(initialWId))
   } else if (route.query.tab === 'lookup') {
     activeMode.value = 'lookup'
   }
@@ -2267,9 +2301,6 @@ onMounted(() => {
                 label="Load More Verifications"
                 @click="loadMorePastVerifications"
               />
-              <span v-else class="text-neutral-400 italic">
-                All visible verification runs loaded
-              </span>
             </div>
           </div>
         </UCard>
@@ -2286,121 +2317,6 @@ onMounted(() => {
         close
         @update:open="submissionError = null"
       />
-
-      <!-- ---------------------------------------------------- -->
-      <!-- Interactive Verification Dashboard Section (New Run) -->
-      <!-- ---------------------------------------------------- -->
-      <div v-if="activeMode === 'verify' && activeWorkflowId" ref="dashboardRef" class="space-y-6 pt-4">
-
-        <!-- Live Polling Status Component (auto-refreshes every 5s) -->
-        <VerificationStatus
-          :model-value="workflowOutput"
-          :workflow-id="activeWorkflowId"
-          :auto-poll="true"
-          @update:model-value="onWorkflowOutput"
-        />
-
-        <!-- Results Display when COMPLETED -->
-        <div v-if="workflowOutput?.workflow_status === 'COMPLETED'" class="space-y-6">
-          <!-- Dataset Selector & KPI Cards -->
-          <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
-            <!-- Dataset Selector -->
-            <div class="flex items-center gap-2">
-              <span class="text-xs font-semibold text-neutral-500 uppercase tracking-wider">Dataset / Report:</span>
-              <div class="w-72">
-                <USelect
-                  v-model="activeDataset"
-                  :items="availableDatasets"
-                  size="sm"
-                  class="font-mono text-xs"
-                />
-              </div>
-            </div>
-
-            <!-- KPI Cards -->
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-              <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
-                <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Overall Concordance</span>
-                <span class="text-lg font-bold font-mono" :class="concordanceClass">
-                  {{ concordanceSummary.percentage === null ? '—' : `${concordanceSummary.percentage}%` }}
-                </span>
-                <span
-                  v-if="concordanceSummary.comparedPairs < concordanceSummary.totalPairs"
-                  class="block text-[10px] text-amber-600"
-                >
-                  {{ concordanceSummary.comparedPairs }} of {{ concordanceSummary.totalPairs }} pairs compared
-                </span>
-              </UCard>
-
-              <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
-                <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Solvers Compared</span>
-                <span class="text-lg font-bold font-mono text-neutral-800">
-                  {{ simulatorsList.length }}
-                  <span v-if="excludedSimulatorsList.length > 0" class="text-xs font-normal text-amber-600">
-                    ({{ excludedSimulatorsList.length }} failed)
-                  </span>
-                </span>
-              </UCard>
-
-              <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
-                <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Variables</span>
-                <span class="text-lg font-bold font-mono text-neutral-800">
-                  {{ variableComparisonRows.length }}
-                </span>
-              </UCard>
-
-              <UCard variant="subtle" class="text-center shadow-xs" :ui="{ body: 'p-3' }">
-                <span class="text-neutral-400 block text-[10px] uppercase font-semibold">Outliers Flagged</span>
-                <span
-                  class="text-lg font-bold font-mono"
-                  :class="concordanceSummary.percentage === null ? 'text-neutral-400' : totalOutlierCount > 0 ? 'text-amber-600 font-bold' : 'text-emerald-600'"
-                >
-                  {{ totalOutlierCount }}
-                </span>
-              </UCard>
-            </div>
-          </div>
-
-          <UAlert
-            v-if="concordanceNotice"
-            color="warning"
-            variant="subtle"
-            icon="i-lucide-alert-triangle"
-            title="Nothing to compare"
-            :description="concordanceNotice"
-          />
-
-          <!-- Component 1: Concordance Heatmap Matrix -->
-          <VerificationHeatmap
-            :simulators="simulatorsList"
-            :excluded-simulators="excludedSimulatorsList"
-            :matrix="currentMatrix"
-            :selected-i="selectedI"
-            :selected-j="selectedJ"
-            @select-pair="onSelectHeatmapPair"
-          />
-
-          <!-- Component 2: Concordance & Outlier Table -->
-          <VerificationTable
-            :rows="variableComparisonRows"
-            :pair-label="selectedPairLabel"
-            :has-outputs="Boolean(workflowOutput?.workflow_results?.sim_run_data)"
-            @visualize="onVisualizeVariable"
-          />
-
-          <!-- Component 3: Plotly Multi-Solution Viewer -->
-          <div ref="plotSectionRef">
-            <VerificationPlotViewer
-              :dataset-name="activeDataset"
-              :sim-run-data="workflowOutput?.workflow_results?.sim_run_data"
-              :sims-run-info="workflowOutput?.workflow_results?.sims_run_info"
-              :initial-variable="activeVariable"
-              :initial-sim-i="selectedI"
-              :initial-sim-j="selectedJ"
-            />
-          </div>
-        </div>
-      </div>
     </div>
 
     <!-- Historical Verification Run Modal (Tab 2) -->
