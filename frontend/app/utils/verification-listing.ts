@@ -3,6 +3,31 @@ import type { VerificationIdsResponse, VerificationListItem, VerificationType } 
 // The validation the backend applies to omex_hash: an md5 hexdigest, like /compatibility/check's omex_id
 export const OMEX_HASH_PATTERN = /^[0-9a-f]{32}$/
 
+/** Returns true if value is a 32-character hexadecimal OMEX MD5 hash (case-insensitive). */
+export function isOmexHash(value?: string | null): boolean {
+  if (!value) return false
+  return OMEX_HASH_PATTERN.test(value.trim().toLowerCase())
+}
+
+/**
+ * Evaluates whether a verification list item matches the filter query (by workflow_id or omex_hash)
+ * and type filter.
+ */
+export function matchesVerificationFilter(
+  item: VerificationListItem,
+  query: string,
+  typeFilter: 'all' | VerificationType = 'all'
+): boolean {
+  if (typeFilter !== 'all' && verificationTypeOf(item) !== typeFilter) {
+    return false
+  }
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  const matchesWorkflow = item.workflow_id.toLowerCase().includes(q)
+  const matchesHash = Boolean(item.omex_hash && item.omex_hash.toLowerCase().includes(q))
+  return matchesWorkflow || matchesHash
+}
+
 // The backend's default workflow_id_prefix per verification type; the GUI never overrides it
 const DEFAULT_ID_PREFIXES: Record<VerificationType, string> = {
   omex: 'omex-verification-',

@@ -15,7 +15,7 @@ import type {
   VerifyWorkflowStatus
 } from '~/models/verification'
 import { useVerificationAnalytics } from '~/composables/useVerificationAnalytics'
-import { OMEX_HASH_PATTERN, parseServerTimestamp, parseVerificationListing, verificationTypeOf } from '~/utils/verification-listing'
+import { isOmexHash, matchesVerificationFilter, OMEX_HASH_PATTERN, parseServerTimestamp, parseVerificationListing, verificationTypeOf } from '~/utils/verification-listing'
 import type { ExcludedSimulatorInfo, SimulatorInfo } from '~/components/verification/VerificationHeatmap.vue'
 import PlatformRunPickerModal from '~/components/verification/PlatformRunPickerModal.vue'
 
@@ -619,6 +619,7 @@ async function submitRunsVerification(customRunIds?: string[]) {
 // Tab 2: Past Report Lookup / Direct Workflow Load & Catalog
 // ----------------------------------------------------
 const lookupIdInput = ref<string>('')
+const catalogCardRef = ref<any>(null)
 const dashboardRef = ref<HTMLElement | null>(null)
 const PAST_PAGE_SIZE = 50
 const pastVerifications = ref<VerificationListItem[]>([])
@@ -633,13 +634,17 @@ const pastHashFilter = ref<string | null>(null)
 // False when the server lists bare IDs, so it can neither describe rows nor filter by archive
 const pastListingSummaries = ref<boolean>(true)
 
-// Narrows the loaded rows only; filtering by archive happens on the server
+// Whether the direct lookup input holds an OMEX archive hash rather than a workflow ID
+const isLookupHash = computed(() => isOmexHash(lookupIdInput.value))
+
+// Whether the search query in the catalog toolbar is a full 32-character OMEX archive hash
+const isPastSearchQueryHash = computed(() => isOmexHash(pastSearchQuery.value))
+
+// Narrows the loaded rows by verification run ID or OMEX hash; filtering by archive on the full database happens on the server
 const filteredPastVerifications = computed(() => {
-  const query = pastSearchQuery.value.trim().toLowerCase()
-  return pastVerifications.value.filter((item) => {
-    if (pastTypeFilter.value !== 'all' && verificationTypeOf(item) !== pastTypeFilter.value) return false
-    return query.length === 0 || item.workflow_id.toLowerCase().includes(query)
-  })
+  return pastVerifications.value.filter(item =>
+    matchesVerificationFilter(item, pastSearchQuery.value, pastTypeFilter.value)
+  )
 })
 
 // The open report's type: from its listing row when loaded, else from its ID
@@ -901,6 +906,65 @@ function clearHashFilter() {
   delete query.omex_hash
   // The omex_hash watcher drops the filter and reloads the list
   router.replace({ query })
+}
+
+async function handleDirectLookup() {
+  const input = lookupIdInput.value.trim()
+  if (!input) return
+  if (isOmexHash(input)) {
+    const hash = input.toLowerCase()
+    pastSearchQuery.value = ''
+    pastTypeFilter.value = 'all'
+    if (route.query.omex_hash === hash) {
+      applyHashFilter(hash)
+    } else {
+      await router.push({ query: { ...route.query, tab: 'lookup', omex_hash: hash } })
+    }
+    activeMode.value = 'lookup'
+    toast.add({
+      title: 'Filtering by OMEX Hash',
+      description: `Showing verification runs for archive ${hash.slice(0, 12)}…`,
+      color: 'primary',
+      icon: 'i-lucide-archive'
+    })
+    nextTick(() => {
+      const el = catalogCardRef.value?.$el || catalogCardRef.value
+      if (el?.scrollIntoView) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    })
+  } else {
+    await openWorkflowReport(input)
+  }
+}
+
+async function applyHashFilterFromSearch() {
+  const hash = pastSearchQuery.value.trim().toLowerCase()
+  if (!isOmexHash(hash)) return
+  pastSearchQuery.value = ''
+  if (route.query.omex_hash === hash) {
+    applyHashFilter(hash)
+  } else {
+    await router.push({ query: { ...route.query, tab: 'lookup', omex_hash: hash } })
+  }
+}
+
+async function filterByCardHash(hash?: string | null) {
+  if (!hash) return
+  pastSearchQuery.value = ''
+  const normalized = hash.trim().toLowerCase()
+  if (route.query.omex_hash === normalized) {
+    applyHashFilter(normalized)
+  } else {
+    await router.push({ query: { ...route.query, tab: 'lookup', omex_hash: normalized } })
+  }
+}
+
+async function handleCatalogSearchEnter() {
+  const query = pastSearchQuery.value.trim().toLowerCase()
+  if (isOmexHash(query)) {
+    await applyHashFilterFromSearch()
+  }
 }
 
 
@@ -1805,19 +1869,19 @@ onMounted(() => {
 
       <!-- Tab 2: Lookup Past Verifications -->
       <div v-if="activeMode === 'lookup'" class="space-y-6">
-        <!-- Direct ID Query Card -->
+        <!-- Direct Run or Archive Lookup Card -->
         <UCard class="shadow-sm border border-neutral-200">
           <template #header>
             <div class="flex items-start gap-4">
               <div class="size-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0">
-                <UIcon name="i-lucide-search" class="size-5" />
+                <UIcon :name="isLookupHash ? 'i-lucide-archive' : 'i-lucide-search'" class="size-5" />
               </div>
               <div>
                 <h2 class="text-base sm:text-lg font-semibold text-neutral-900 flex items-center gap-2">
-                  Direct Workflow Lookup
+                  Direct Run or Archive Lookup
                 </h2>
                 <p class="text-xs text-neutral-500 mt-1 max-w-2xl leading-relaxed">
-                  Directly inspect any verification workflow using its unique Workflow ID from a previous execution or log.
+                  Directly inspect any verification workflow using its Workflow ID, or filter prior runs across the platform by OMEX archive hash.
                 </p>
               </div>
             </div>
@@ -1825,17 +1889,17 @@ onMounted(() => {
 
           <div class="space-y-2">
             <label class="block text-xs font-semibold uppercase tracking-wider text-neutral-600">
-              Verification Workflow ID
+              Verification Run ID or OMEX Hash
             </label>
             <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
               <div class="flex-1">
                 <UInput
                   v-model="lookupIdInput"
-                  placeholder="e.g. omex-verification-b2ac553f... or runs-verification-..."
+                  placeholder="e.g. omex-verification-b2ac553f... or 32-character OMEX MD5 hash..."
                   size="md"
-                  icon="i-lucide-hash"
+                  :icon="isLookupHash ? 'i-lucide-archive' : 'i-lucide-hash'"
                   class="w-full font-mono text-xs"
-                  @keydown.enter="openWorkflowReport(lookupIdInput)"
+                  @keydown.enter="handleDirectLookup"
                 />
               </div>
               <div class="flex items-center gap-2">
@@ -1851,10 +1915,10 @@ onMounted(() => {
                 <UButton
                   color="primary"
                   size="md"
-                  icon="i-lucide-arrow-right"
-                  label="Load Report"
+                  :icon="isLookupHash ? 'i-lucide-archive' : 'i-lucide-arrow-right'"
+                  :label="isLookupHash ? 'Filter Archive' : 'Load Report'"
                   :disabled="!lookupIdInput.trim()"
-                  @click="openWorkflowReport(lookupIdInput)"
+                  @click="handleDirectLookup"
                 />
               </div>
             </div>
@@ -1862,7 +1926,7 @@ onMounted(() => {
         </UCard>
 
         <!-- Prior Verification Runs Catalog Card -->
-        <UCard class="shadow-sm border border-neutral-200">
+        <UCard ref="catalogCardRef" class="shadow-sm border border-neutral-200">
           <template #header>
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div class="flex items-start gap-3">
@@ -1909,10 +1973,11 @@ onMounted(() => {
               <div class="flex-1 max-w-md flex items-center gap-1.5">
                 <UInput
                   v-model="pastSearchQuery"
-                  placeholder="Filter loaded runs by workflow ID..."
+                  placeholder="Filter runs by workflow ID or OMEX hash..."
                   size="sm"
                   icon="i-lucide-search"
                   class="flex-1 font-mono text-xs"
+                  @keydown.enter="handleCatalogSearchEnter"
                 />
                 <UButton
                   v-if="pastSearchQuery"
@@ -1922,6 +1987,16 @@ onMounted(() => {
                   icon="i-lucide-x"
                   title="Clear filter"
                   @click="pastSearchQuery = ''"
+                />
+                <UButton
+                  v-if="isPastSearchQueryHash"
+                  variant="subtle"
+                  color="primary"
+                  size="xs"
+                  icon="i-lucide-archive"
+                  title="Filter entire platform database by this OMEX hash"
+                  label="Filter Archive"
+                  @click="applyHashFilterFromSearch"
                 />
               </div>
 
@@ -2057,16 +2132,26 @@ onMounted(() => {
               </div>
               <h3 class="text-sm font-semibold text-neutral-900">No Matching Verifications</h3>
               <p class="text-xs text-neutral-500 mt-1">
-                No runs match the filter "{{ pastSearchQuery }}" or selected type.
+                No loaded runs match the filter "{{ pastSearchQuery }}" or selected type.
               </p>
-              <UButton
-                size="xs"
-                color="neutral"
-                variant="outline"
-                label="Reset Filters"
-                class="mt-3"
-                @click="pastSearchQuery = ''; pastTypeFilter = 'all'"
-              />
+              <div class="mt-3 flex flex-wrap items-center justify-center gap-2">
+                <UButton
+                  v-if="isPastSearchQueryHash"
+                  size="xs"
+                  color="primary"
+                  variant="solid"
+                  icon="i-lucide-archive"
+                  label="Search Database for This Archive Hash"
+                  @click="applyHashFilterFromSearch"
+                />
+                <UButton
+                  size="xs"
+                  color="neutral"
+                  variant="outline"
+                  label="Reset Filters"
+                  @click="pastSearchQuery = ''; pastTypeFilter = 'all'"
+                />
+              </div>
             </div>
 
             <!-- Verification Grid of Cards -->
@@ -2089,8 +2174,9 @@ onMounted(() => {
                         color="neutral"
                         variant="subtle"
                         size="xs"
-                        class="font-mono text-[10px] text-neutral-500 truncate max-w-[140px]"
-                        :title="`OMEX Hash: ${item.omex_hash}`"
+                        class="font-mono text-[10px] text-neutral-500 truncate max-w-[140px] cursor-pointer hover:bg-neutral-200 hover:text-neutral-900 transition-colors"
+                        :title="`Click to filter runs by OMEX Hash: ${item.omex_hash}`"
+                        @click.stop="filterByCardHash(item.omex_hash)"
                       >
                         <UIcon name="i-lucide-hash" class="size-2.5 mr-0.5 text-neutral-400" />
                         {{ item.omex_hash.slice(0, 8) }}…
