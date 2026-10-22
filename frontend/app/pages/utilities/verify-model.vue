@@ -1937,7 +1937,8 @@ onMounted(() => {
                       v-if="pastVerifications.length > 0"
                       color="neutral"
                       variant="subtle"
-                      size="sm"
+                      size="md"
+                      class="text-xs font-medium px-2 py-0.5"
                     >
                       {{ pastVerifications.length }} loaded
                     </UBadge>
@@ -2026,10 +2027,10 @@ onMounted(() => {
 
             <!-- Archive filter, applied by the server -->
             <div v-if="pastHashFilter" class="flex flex-wrap items-center gap-2 text-xs text-neutral-600">
-              <UIcon name="i-lucide-archive" class="size-3.5 text-primary shrink-0" />
+              <UIcon name="i-lucide-archive" class="size-4 text-primary shrink-0" />
               <span>Showing verifications of archive</span>
-              <code class="font-mono text-[11px] bg-neutral-100 px-1.5 py-0.5 rounded" :title="pastHashFilter">
-                {{ pastHashFilter.slice(0, 12) }}…
+              <code class="font-mono text-xs bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 rounded font-medium text-neutral-800 dark:text-neutral-200 select-all" :title="pastHashFilter">
+                {{ pastHashFilter }}
               </code>
               <UButton
                 size="xs"
@@ -2158,27 +2159,18 @@ onMounted(() => {
                 @click="openWorkflowReport(item.workflow_id)"
               >
                 <div class="space-y-3">
-                  <!-- Top Row: Workflow ID Label + Action Buttons -->
-                  <div class="flex items-center justify-between gap-2">
-                    <div class="flex items-center gap-1.5 min-w-0">
-                      <span class="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider">
+                  <!-- Header Row: Run ID + Action Buttons -->
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <span class="text-xs font-semibold text-neutral-400 uppercase tracking-wider block">
                         Run ID
                       </span>
-                      <UBadge
-                        v-if="item.omex_hash"
-                        color="neutral"
-                        variant="subtle"
-                        size="xs"
-                        class="font-mono text-[10px] text-neutral-500 truncate max-w-[140px] cursor-pointer hover:bg-neutral-200 hover:text-neutral-900 transition-colors"
-                        :title="`Click to filter runs by OMEX Hash: ${item.omex_hash}`"
-                        @click.stop="filterByCardHash(item.omex_hash)"
-                      >
-                        <UIcon name="i-lucide-hash" class="size-2.5 mr-0.5 text-neutral-400" />
-                        {{ item.omex_hash.slice(0, 8) }}…
-                      </UBadge>
+                      <div class="font-mono text-xs font-semibold text-neutral-800 break-all group-hover:text-primary transition-colors leading-relaxed select-all mt-0.5">
+                        {{ item.workflow_id }}
+                      </div>
                     </div>
 
-                    <div class="flex items-center gap-0.5 shrink-0">
+                    <div class="flex items-center gap-0.5 shrink-0 pt-0.5">
                       <UButton
                         size="xs"
                         color="neutral"
@@ -2200,24 +2192,39 @@ onMounted(() => {
                     </div>
                   </div>
 
-                  <!-- Workflow ID Body -->
-                  <div>
-                    <div class="font-mono text-xs font-semibold text-neutral-800 break-all group-hover:text-primary transition-colors leading-relaxed select-all">
-                      {{ item.workflow_id }}
-                    </div>
+                  <!-- Untruncated OMEX Hash (Immediately Underneath Header Row) -->
+                  <div v-if="item.omex_hash" class="pt-0.5">
+                    <UBadge
+                      color="neutral"
+                      variant="subtle"
+                      size="md"
+                      class="font-mono text-xs text-neutral-700 dark:text-neutral-300 break-all cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors w-full justify-start items-center gap-1.5 py-1 px-2.5 font-medium"
+                      :title="`Click to filter runs by OMEX Hash: ${item.omex_hash}`"
+                      @click.stop="filterByCardHash(item.omex_hash)"
+                    >
+                      <UIcon name="i-lucide-archive" class="size-3.5 shrink-0 text-neutral-400" />
+                      <span class="text-[10px] uppercase font-sans font-semibold tracking-wider text-neutral-400 shrink-0">OMEX Hash</span>
+                      <span class="break-all select-all font-mono">{{ item.omex_hash }}</span>
+                    </UBadge>
                   </div>
 
-                  <!-- Type & Status (status only from servers whose listing reports it) -->
-                  <div class="flex flex-wrap items-center gap-1.5">
-                    <UBadge :color="getVerificationType(verificationTypeOf(item)).color" variant="subtle" size="xs">
-                      <UIcon :name="getVerificationType(verificationTypeOf(item)).icon" class="size-3 mr-0.5" />
+                  <!-- Type & Status (Enlarged for Legibility) -->
+                  <div class="flex flex-wrap items-center gap-2 pt-0.5">
+                    <UBadge
+                      :color="getVerificationType(verificationTypeOf(item)).color"
+                      variant="subtle"
+                      size="md"
+                      class="font-medium text-xs py-1 px-2.5"
+                    >
+                      <UIcon :name="getVerificationType(verificationTypeOf(item)).icon" class="size-3.5 mr-1" />
                       {{ getVerificationType(verificationTypeOf(item)).label }}
                     </UBadge>
                     <UBadge
                       v-if="item.status !== undefined"
                       :color="getStatusBadge(item.status).color"
                       variant="subtle"
-                      size="xs"
+                      size="md"
+                      class="font-medium text-xs py-1 px-2.5"
                       :title="item.status ? undefined : 'No finished status recorded yet. Open the report to check.'"
                     >
                       {{ getStatusBadge(item.status).label }}
