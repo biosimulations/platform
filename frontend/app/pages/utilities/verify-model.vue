@@ -455,14 +455,11 @@ async function fetchArchiveVerifications(hash: string) {
   }
 }
 
-async function viewPastReportsForCurrentHash() {
+function viewPastReportsForCurrentHash() {
   const hash = compatibilityResponse.value?.omex_id
-  if (!hash) return
-  pastSearchQuery.value = ''
-  pastTypeFilter.value = 'all'
-  // Navigate before switching tabs (see openWorkflowReport); the omex_hash watcher applies the filter
-  await router.push({ query: { ...route.query, tab: 'lookup', omex_hash: hash } })
-  activeMode.value = 'lookup'
+  if (hash) {
+    setArchiveFilter(hash)
+  }
 }
 
 // ----------------------------------------------------
@@ -822,14 +819,17 @@ function showWorkflow(id: string, initial: InitialReport = {}) {
   isHistoricalModalOpen.value = true
 }
 
+// User-facing action to open a report: activates lookup tab and preserves omex_hash if present
 async function openWorkflowReport(id: string, initial: InitialReport = {}) {
   const wId = id.trim()
   if (!wId) return
   showWorkflow(wId, initial)
-  // Navigate before switching tabs: the activeMode watcher would otherwise replace() the
-  // route from the not-yet-updated query and cancel this push, dropping workflow_id
-  await router.push({ query: { ...route.query, tab: 'lookup', workflow_id: wId } })
   activeMode.value = 'lookup'
+  const q: Record<string, string> = { tab: 'lookup', workflow_id: wId }
+  if (pastHashFilter.value) {
+    q.omex_hash = pastHashFilter.value
+  }
+  await router.push({ query: q })
 }
 
 // VerificationStatus reports every poll; ignore answers for a report the user has left
@@ -839,86 +839,10 @@ function onWorkflowOutput(output: VerifyWorkflowOutput) {
   }
 }
 
-watch(activeMode, (mode) => {
-  if (mode === 'lookup') {
-    if (pastVerifications.value.length === 0 && !isLoadingPastIds.value) {
-      fetchPastVerifications(true)
-    }
-  } else {
-    isHistoricalModalOpen.value = false
-    isHistoricalModalFullscreen.value = false
-    resetReportState()
-    activeWorkflowId.value = null
-    resetLookupFilters()
-  }
-
-  // Synchronize activeMode with the tab URL query param
-  const currentTab = route.query.tab
-  const targetTab = mode === 'lookup' ? 'lookup' : undefined
-  const hasStaleParams = Boolean(
-    route.query.tab
-    || route.query.workflow_id
-    || route.query.run_id
-    || route.query.omex_hash
-    || route.query.omex_id
-  )
-
-  if (targetTab) {
-    if (currentTab !== 'lookup') {
-      router.replace({ query: { ...route.query, tab: 'lookup' } })
-    }
-  } else if (hasStaleParams) {
-    // Consciously switched to verify tab: strip out preserved IDs/hashes and tab param
-    const q = { ...route.query }
-    delete q.tab
-    delete q.workflow_id
-    delete q.run_id
-    delete q.omex_hash
-    delete q.omex_id
-    router.replace({ query: q })
-  }
-})
-
-watch(isHistoricalModalOpen, (isOpen) => {
-  if (!isOpen) {
-    isHistoricalModalFullscreen.value = false
-    resetReportState()
-    activeWorkflowId.value = null
-    if (activeMode.value === 'lookup' && (route.query.workflow_id || route.query.run_id)) {
-      const q = { ...route.query }
-      delete q.workflow_id
-      delete q.run_id
-      q.tab = 'lookup'
-      router.push({ query: q })
-    }
-  }
-})
-
-// Watch route.query.workflow_id so any external or router query updates activate Lookup mode & modal
-watch(() => route.query.workflow_id, (newWId) => {
-  if (newWId) {
-    if (activeMode.value === 'lookup') {
-      showWorkflow(String(newWId))
-      if (pastVerifications.value.length === 0 && !isLoadingPastIds.value) {
-        fetchPastVerifications(true)
-      }
-    }
-  } else {
-    // Back/forward to a URL without a report closes it
-    isHistoricalModalOpen.value = false
-  }
-})
-
-// route.query.omex_hash drives the archive filter, which the server applies
-watch(() => route.query.omex_hash, (newHash) => {
-  if (activeMode.value === 'lookup') {
-    applyHashFilter(newHash ? String(newHash) : null)
-  } else if (!newHash) {
-    pastHashFilter.value = null
-  }
-})
-
-function applyHashFilter(rawHash: string | null) {
+// ----------------------------------------------------
+// Archive Filtering Controller (Tab 2)
+// ----------------------------------------------------
+async function setArchiveFilter(rawHash: string | null) {
   const hash = rawHash?.trim().toLowerCase() || null
   if (hash && !OMEX_HASH_PATTERN.test(hash)) {
     toast.add({
@@ -929,77 +853,119 @@ function applyHashFilter(rawHash: string | null) {
     })
     return
   }
-  if (hash === pastHashFilter.value) return
+
+  // Update filter & search state
+  pastSearchQuery.value = ''
+  pastTypeFilter.value = 'all'
   pastHashFilter.value = hash
-  fetchPastVerifications(true)
+  lookupIdInput.value = hash || ''
+  activeMode.value = 'lookup'
+
+  // Sync route
+  const q: Record<string, string> = { tab: 'lookup' }
+  if (hash) {
+    q.omex_hash = hash
+  }
+  await router.push({ query: q })
+
+  // Trigger server fetch with omex_hash
+  await fetchPastVerifications(true)
 }
 
 function clearHashFilter() {
-  const query = { ...route.query }
-  delete query.omex_hash
-  delete query.omex_id
-  // The omex_hash watcher drops the filter and reloads the list
-  router.replace({ query })
+  setArchiveFilter(null)
+}
+
+function filterByCardHash(hash?: string | null) {
+  if (hash) {
+    setArchiveFilter(hash)
+  }
+}
+
+function applyHashFilterFromSearch() {
+  setArchiveFilter(pastSearchQuery.value)
+}
+
+function handleCatalogSearchEnter() {
+  const query = pastSearchQuery.value.trim().toLowerCase()
+  if (isOmexHash(query)) {
+    applyHashFilterFromSearch()
+  }
 }
 
 async function handleDirectLookup() {
   const input = lookupIdInput.value.trim()
   if (!input) return
   if (isOmexHash(input)) {
-    const hash = input.toLowerCase()
-    pastSearchQuery.value = ''
-    pastTypeFilter.value = 'all'
-    if (route.query.omex_hash === hash) {
-      applyHashFilter(hash)
-    } else {
-      await router.push({ query: { ...route.query, tab: 'lookup', omex_hash: hash } })
-    }
-    activeMode.value = 'lookup'
-    toast.add({
-      title: 'Filtering by OMEX Hash',
-      description: `Showing verification runs for archive ${hash.slice(0, 12)}…`,
-      color: 'primary',
-      icon: 'i-lucide-archive'
-    })
+    await setArchiveFilter(input)
     nextTick(() => {
       const el = catalogCardRef.value?.$el || catalogCardRef.value
-      if (el?.scrollIntoView) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }
+      el?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
     })
   } else {
     await openWorkflowReport(input)
   }
 }
 
-async function applyHashFilterFromSearch() {
-  const hash = pastSearchQuery.value.trim().toLowerCase()
-  if (!isOmexHash(hash)) return
-  pastSearchQuery.value = ''
-  if (route.query.omex_hash === hash) {
-    applyHashFilter(hash)
-  } else {
-    await router.push({ query: { ...route.query, tab: 'lookup', omex_hash: hash } })
-  }
-}
+// ----------------------------------------------------
+// Tab & Route Synchronization
+// ----------------------------------------------------
+watch(activeMode, (mode) => {
+  if (mode === 'verify') {
+    // Exclusively for new verification setup: clear historic run state, filters, and URL params
+    isHistoricalModalOpen.value = false
+    isHistoricalModalFullscreen.value = false
+    resetReportState()
+    activeWorkflowId.value = null
+    resetLookupFilters()
 
-async function filterByCardHash(hash?: string | null) {
-  if (!hash) return
-  pastSearchQuery.value = ''
-  const normalized = hash.trim().toLowerCase()
-  if (route.query.omex_hash === normalized) {
-    applyHashFilter(normalized)
+    if (route.query.tab || route.query.workflow_id || route.query.run_id || route.query.omex_hash || route.query.omex_id) {
+      router.replace({ query: {} })
+    }
   } else {
-    await router.push({ query: { ...route.query, tab: 'lookup', omex_hash: normalized } })
+    // Exclusively for discovering and inspecting past runs
+    if (route.query.tab !== 'lookup') {
+      const q: Record<string, string> = { tab: 'lookup' }
+      if (pastHashFilter.value) q.omex_hash = pastHashFilter.value
+      router.replace({ query: q })
+    }
+    if (!pastHashFilter.value && pastVerifications.value.length === 0 && !isLoadingPastIds.value) {
+      fetchPastVerifications(true)
+    }
   }
-}
+})
 
-async function handleCatalogSearchEnter() {
-  const query = pastSearchQuery.value.trim().toLowerCase()
-  if (isOmexHash(query)) {
-    await applyHashFilterFromSearch()
+watch(isHistoricalModalOpen, (isOpen) => {
+  if (!isOpen) {
+    isHistoricalModalFullscreen.value = false
+    resetReportState()
+    activeWorkflowId.value = null
+    if (activeMode.value === 'lookup' && (route.query.workflow_id || route.query.run_id)) {
+      const q: Record<string, string> = { tab: 'lookup' }
+      if (pastHashFilter.value) q.omex_hash = pastHashFilter.value
+      router.push({ query: q })
+    }
   }
-}
+})
+
+// Route watchers: only react to external / browser navigation (e.g. Back/Forward)
+watch(() => route.query.workflow_id, (newWId) => {
+  if (newWId) {
+    showWorkflow(String(newWId))
+  } else {
+    isHistoricalModalOpen.value = false
+  }
+})
+
+watch(() => route.query.omex_hash, (newHash) => {
+  const hash = newHash ? String(newHash).trim().toLowerCase() : null
+  if (hash !== pastHashFilter.value) {
+    if (hash) activeMode.value = 'lookup'
+    pastHashFilter.value = hash
+    lookupIdInput.value = hash || ''
+    fetchPastVerifications(true)
+  }
+})
 
 
 // ----------------------------------------------------
@@ -1241,19 +1207,14 @@ onMounted(() => {
   const initialHash = (route.query.omex_hash || route.query.omex_id) as string | undefined
   const initialWId = (route.query.workflow_id || route.query.run_id) as string | undefined
 
-  if (initialHash) {
-    // If an archive hash is provided in the URL, automate displaying the Lookup tab filtered to that archive
-    activeMode.value = 'lookup'
-    applyHashFilter(String(initialHash))
+  if (initialHash && isOmexHash(String(initialHash))) {
+    setArchiveFilter(String(initialHash))
   } else if (initialWId) {
-    // If a workflow_id is provided in the URL, automate displaying the Lookup tab and open the report
     activeMode.value = 'lookup'
     showWorkflow(String(initialWId))
+    fetchPastVerifications(true)
   } else if (route.query.tab === 'lookup') {
     activeMode.value = 'lookup'
-  }
-
-  if (activeMode.value === 'lookup' && !isLoadingPastIds.value) {
     fetchPastVerifications(true)
   }
 })
