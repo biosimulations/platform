@@ -65,6 +65,14 @@ class GenerateStatisticsActivityOutput(BaseModel):
     sim_run_data: Optional[list[RunData]] = None
 
 
+class SimulatorFailure(BaseModel):
+    """A requested simulator that produced no results: its run failed on biosimulations.org, or could not be
+    submitted. Reported instead of being dropped silently, so a verification with no usable runs says why."""
+    simulator_version: str  # <simulator_name>:<version>
+    biosimulations_run_id: Optional[str] = None  # absent when the run was never created
+    error_message: Optional[str] = None
+
+
 class VerifyWorkflowStatus(StrEnum):
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
@@ -85,6 +93,8 @@ class VerifyWorkflowOutput(BaseModel):
     timestamp: str
     workflow_run_id: Optional[str] = None
     workflow_error: Optional[str] = None
+    # Requested simulators that produced no results (OmexVerifyWorkflow); empty when every one ran
+    failed_simulators: list[SimulatorFailure] = []
     workflow_results: Optional[GenerateStatisticsActivityOutput] = None
     # Auth0 `sub` of the caller who started the workflow. Optional so in-flight
     # Temporal histories that predate this field still deserialize.
