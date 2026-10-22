@@ -185,7 +185,7 @@ function handleReset() {
             {{ urlError }}
           </p>
           <p v-else class="text-xs text-neutral-500">
-            Ensure the URL points directly to the raw model file (CORS or direct public download).
+            Ensure the URL points directly to a publicly accessible model file.
           </p>
         </div>
       </div>

@@ -232,7 +232,7 @@ onUnmounted(() => {
         </UBadge>
         <div>
           <h3 class="text-base font-semibold text-neutral-900 flex items-center gap-2">
-            Verification Workflow
+            Verification Run
             <span v-if="!isDone" class="text-xs font-normal text-neutral-500">
               ({{ secondsElapsed }}s elapsed)
             </span>
@@ -245,7 +245,7 @@ onUnmounted(() => {
             </span>
           </h3>
           <p class="text-xs text-neutral-500 flex items-center gap-1.5 mt-0.5">
-            ID: <code class="font-mono bg-neutral-100 px-1 py-0.5 rounded text-[11px]">{{ workflowId }}</code>
+            Run ID: <code class="font-mono bg-neutral-100 px-1 py-0.5 rounded text-[11px]">{{ workflowId }}</code>
             <UButton
               icon="i-lucide-copy"
               size="xs"

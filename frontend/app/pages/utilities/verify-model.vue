@@ -494,11 +494,11 @@ async function submitOmexVerification() {
       try {
         const resp = await fetch(urlToUse)
         if (!resp.ok) {
-          throw new Error(`Failed to download archive from URL: HTTP ${resp.status}`)
+          throw new Error(`Could not download archive from URL (status ${resp.status}).`)
         }
         fileToSend = await resp.blob()
       } catch (dlErr: any) {
-        throw new Error(`Could not retrieve OMEX archive file from ${urlToUse}: ${dlErr.message}`)
+        throw new Error(`Could not retrieve archive file from the provided URL: ${dlErr.message || 'Please ensure the link is publicly accessible.'}`)
       }
     }
 
@@ -704,7 +704,7 @@ function copyWorkflowId(id?: string | null) {
   copy(id)
   toast.add({
     title: 'ID Copied',
-    description: `Workflow ID ${id} copied to clipboard.`,
+    description: `Run ID ${id} copied to clipboard.`,
     color: 'success',
     icon: 'i-lucide-check'
   })
@@ -922,8 +922,8 @@ function applyHashFilter(rawHash: string | null) {
   const hash = rawHash?.trim().toLowerCase() || null
   if (hash && !OMEX_HASH_PATTERN.test(hash)) {
     toast.add({
-      title: 'Ignoring invalid archive hash',
-      description: 'An archive hash is 32 hexadecimal characters.',
+      title: 'Invalid Archive Identifier',
+      description: 'The specified archive identifier must be a valid 32-character hash.',
       color: 'warning',
       icon: 'i-lucide-alert-triangle'
     })
@@ -1390,7 +1390,7 @@ onMounted(() => {
                 />
               </div>
               <p class="text-xs text-neutral-500">
-                Ensure the URL points directly to the raw COMBINE/OMEX or SED-ML archive (CORS or direct public download).
+                Ensure the URL points directly to a publicly accessible COMBINE/OMEX or SED-ML archive.
               </p>
             </div>
           </div>
@@ -1505,8 +1505,8 @@ onMounted(() => {
               color="primary"
               variant="subtle"
               icon="i-lucide-history"
-              title="Previous Verification Workflows Found"
-              :description="`This OMEX archive has ${archiveVerificationCount} verification workflow(s) recorded on the platform.`"
+              title="Previous Verifications Found"
+              :description="`This OMEX archive has ${archiveVerificationCount} verification run(s) recorded on the platform.`"
               orientation="horizontal"
               :actions="[
                 {
@@ -1915,7 +1915,7 @@ onMounted(() => {
                   Direct Run or Archive Lookup
                 </h2>
                 <p class="text-xs text-neutral-500 mt-1 max-w-2xl leading-relaxed">
-                  Directly inspect any verification workflow using its Workflow ID, or filter prior runs across the platform by OMEX archive hash.
+                  Directly inspect any verification run using its Run ID, or filter prior runs across the platform by OMEX archive hash.
                 </p>
               </div>
             </div>
@@ -1929,7 +1929,7 @@ onMounted(() => {
               <div class="flex-1">
                 <UInput
                   v-model="lookupIdInput"
-                  placeholder="e.g. omex-verification-b2ac553f... or 32-character OMEX MD5 hash..."
+                  placeholder="e.g. omex-verification-b2ac553f... or OMEX archive hash..."
                   size="md"
                   :icon="isLookupHash ? 'i-lucide-archive' : 'i-lucide-hash'"
                   class="w-full font-mono text-xs"
@@ -1982,7 +1982,7 @@ onMounted(() => {
                     </UBadge>
                   </div>
                   <p class="text-xs text-neutral-500 mt-1">
-                    Browse and inspect previous verification workflows recorded in the platform database.
+                    Browse and inspect previous verification runs recorded on the platform.
                   </p>
                 </div>
               </div>
@@ -2007,7 +2007,7 @@ onMounted(() => {
               <div class="flex-1 max-w-md flex items-center gap-1.5">
                 <UInput
                   v-model="pastSearchQuery"
-                  placeholder="Filter runs by workflow ID or OMEX hash..."
+                  placeholder="Filter runs by run ID or OMEX hash..."
                   size="sm"
                   icon="i-lucide-search"
                   class="flex-1 font-mono text-xs"
@@ -2028,7 +2028,7 @@ onMounted(() => {
                   color="primary"
                   size="xs"
                   icon="i-lucide-archive"
-                  title="Filter entire platform database by this OMEX hash"
+                  title="Filter all runs by this OMEX hash"
                   label="Filter Archive"
                   @click="applyHashFilterFromSearch"
                 />
@@ -2136,14 +2136,14 @@ onMounted(() => {
                 <template v-else>Archive Lookup Unavailable</template>
               </h3>
               <p v-if="!pastHashFilter" class="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
-                No verification workflow records were found. Run a new verification in the "Verify Biomodel Archive" tab to start generating comparison history.
+                No past verification runs were found. Run a new verification in the "Verify Biomodel Archive" tab to start generating comparison history.
               </p>
               <p v-else-if="pastListingSummaries" class="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
-                No verification workflows are recorded for this archive yet.
+                No verification runs are recorded for this archive yet.
               </p>
               <!-- An older server ignores omex_hash, which says nothing about this archive's history -->
               <p v-else class="text-xs text-neutral-500 mt-1 max-w-sm mx-auto">
-                This server can't look up verifications by archive yet. Choose "Show all" to browse every verification.
+                Archive lookup is unavailable. Choose "Show all" to browse all verifications.
               </p>
               <UButton
                 size="sm"
@@ -2175,7 +2175,7 @@ onMounted(() => {
                   color="primary"
                   variant="solid"
                   icon="i-lucide-archive"
-                  label="Search Database for This Archive Hash"
+                  label="Search Runs for This Archive Hash"
                   @click="applyHashFilterFromSearch"
                 />
                 <UButton
@@ -2201,7 +2201,7 @@ onMounted(() => {
                   <div class="flex items-center justify-between gap-2">
                     <div class="flex items-center gap-1.5 min-w-0">
                       <span class="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider">
-                        Workflow ID
+                        Run ID
                       </span>
                       <UBadge
                         v-if="item.omex_hash"
@@ -2233,7 +2233,7 @@ onMounted(() => {
                         variant="ghost"
                         icon="i-lucide-copy"
                         class="opacity-60 group-hover:opacity-100 transition-opacity"
-                        title="Copy Workflow ID"
+                        title="Copy Run ID"
                         @click.stop="copyWorkflowId(item.workflow_id)"
                       />
                     </div>
@@ -2511,7 +2511,7 @@ onMounted(() => {
       <template #footer>
         <div class="flex items-center justify-between w-full">
           <div class="text-xs text-neutral-400 font-mono truncate max-w-sm">
-            Workflow: {{ activeWorkflowId }}
+            Run ID: {{ activeWorkflowId }}
           </div>
           <UButton
             color="neutral"

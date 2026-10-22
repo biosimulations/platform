@@ -429,7 +429,7 @@ export function useVerificationAnalytics() {
       } catch (err: any) {
         const msg = err?.data?.detail || err?.message || 'Network error'
         const reason = msg.includes('Failed to fetch')
-          ? 'Failed to query run metadata: Browser CORS restriction. (Please verify backend/proxy connection)'
+          ? 'Unable to reach the server to fetch run metadata. Please check your connection and try again.'
           : `Failed to query run metadata: ${msg}`
         excludedRuns.push({
           run_id: id,
