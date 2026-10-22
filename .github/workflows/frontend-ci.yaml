@@ -38,3 +38,6 @@ jobs:
 
       - name: Auth token destination tests
         run: npm run test:auth
+
+      - name: Verification analytics and listing tests
+        run: npm run test:verification

@@ -22,17 +22,20 @@ export default defineAppConfig({
     },
     modal: {
       slots: {
-        content: 'lenis-prevent'
+        content: 'lenis-prevent',
+        body: 'lenis-prevent overscroll-contain'
       }
     },
     drawer: {
       slots: {
-        content: 'lenis-prevent'
+        content: 'lenis-prevent',
+        container: 'lenis-prevent overscroll-contain'
       }
     },
     slideover: {
       slots: {
-        content: 'lenis-prevent'
+        content: 'lenis-prevent',
+        body: 'lenis-prevent overscroll-contain'
       }
     }
   }
