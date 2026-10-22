@@ -22,7 +22,6 @@ from biosim_server.biosim_verify.database import (
 from biosim_server.biosim_verify.models import (
     MAX_WORKFLOW_ID_BYTES,
     WORKFLOW_ID_PREFIX_MAX_LENGTH,
-    VerificationLedgerRecord,
     VerificationRecord,
     VerificationType,
     VerifyWorkflowStatus,
@@ -41,6 +40,16 @@ async def client() -> AsyncIterator[AsyncClient]:
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_optional_user, None)
+
+
+def _assert_listing(body: dict[str, Any], workflow_ids: list[str]) -> None:
+    """One last page holding exactly *workflow_ids*, with summaries aligned to them and no owner."""
+    assert body["verification_ids"] == workflow_ids
+    assert body["next_cursor"] is None
+    assert [v["workflow_id"] for v in body["verifications"]] == workflow_ids
+    for summary in body["verifications"]:
+        assert set(summary) == {"workflow_id", "verify_type", "created", "omex_hash", "status"}
+        assert summary["created"].endswith("Z")
 
 
 @pytest.mark.asyncio
@@ -95,7 +104,7 @@ async def test_expired_workflow_admin_can_see_retention_detail(client: AsyncClie
     temporal = _temporal_with_describe()
     temporal.get_workflow_handle.return_value.describe.side_effect = RPCError("private", RPCStatusCode.NOT_FOUND, b"")
     ledger = AsyncMock()
-    ledger.get_verification.return_value = VerificationLedgerRecord(workflow_id="wf", verify_type=VerificationType.RUNS,
+    ledger.get_verification.return_value = VerificationRecord(workflow_id="wf", verify_type=VerificationType.RUNS,
                                                              owner_sub="someone-else", created=datetime.now(UTC))
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
@@ -115,7 +124,7 @@ async def test_history_purged_between_describe_and_query_is_404(
     """describe succeeds, then query hits NOT_FOUND: same ledger fallback as a describe miss, not 503."""
     temporal = _temporal_with_describe(query_side_effect=RPCError("private failure", RPCStatusCode.NOT_FOUND, b""))
     ledger = AsyncMock()
-    ledger.get_verification.return_value = VerificationLedgerRecord(workflow_id="wf", verify_type=VerificationType.OMEX,
+    ledger.get_verification.return_value = VerificationRecord(workflow_id="wf", verify_type=VerificationType.OMEX,
                                                              owner_sub=row_owner, created=datetime.now(UTC))
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
@@ -232,7 +241,7 @@ async def test_post_then_list_uses_real_ledger(client: AsyncClient, kind: str, a
         assert events == ["persisted-before-start"]
         listing = await client.get("/verification_ids")
         assert listing.status_code == 200
-        assert listing.json() == {"verification_ids": [workflow_id], "next_cursor": None}
+        _assert_listing(listing.json(), [workflow_id])
         handle = temporal.get_workflow_handle.return_value
         handle.describe = AsyncMock(return_value=MagicMock(workflow_type="RunsVerifyWorkflow", status=WorkflowExecutionStatus.COMPLETED))
         handle.query = AsyncMock(return_value=_make_verify_output(workflow_id=workflow_id, owner_sub=owner))
@@ -332,7 +341,7 @@ async def test_real_temporal_and_mongo_roundtrip(
             response = await client.post("/verify/runs", params={"biosimulations_run_ids": "run1"})
             assert response.status_code == 200
             workflow_id = response.json()["workflow_id"]
-            assert (await client.get("/verification_ids")).json() == {"verification_ids": [workflow_id], "next_cursor": None}
+            _assert_listing((await client.get("/verification_ids")).json(), [workflow_id])
             handle = temporal_client.get_workflow_handle(workflow_id)
             if outcome == "failed":
                 with pytest.raises(WorkflowFailureError):
@@ -383,7 +392,7 @@ async def test_start_reply_loss_and_termination_before_first_task(
     assert desc.status == WorkflowExecutionStatus.RUNNING
     if lost_reply:
         assert response.json()["workflow_run_id"] == desc.run_id
-    assert (await client.get("/verification_ids")).json() == {"verification_ids": [wid], "next_cursor": None}
+    _assert_listing((await client.get("/verification_ids")).json(), [wid])
     await handle.terminate("private termination reason")
     output = await client.get(f"/verify/{wid}")
     assert output.status_code == 200, output.text
@@ -492,10 +501,10 @@ class _OnePageLedger:
     """
 
     def __init__(self) -> None:
-        self.records: list[VerificationLedgerRecord] = []
+        self.records: list[VerificationRecord] = []
         self.afters: list[VerificationCursor | None] = []
 
-    async def insert_verification(self, record: VerificationLedgerRecord) -> VerificationLedgerRecord:
+    async def insert_verification(self, record: VerificationRecord) -> VerificationRecord:
         self.records.append(record)
         return record
 
@@ -504,16 +513,15 @@ class _OnePageLedger:
     ) -> VerificationIdPage:
         self.afters.append(after)
         if after is not None:
-            return VerificationIdPage(verification_ids=[], records=[], next_cursor=None)
+            return VerificationIdPage(verification_ids=[], next_cursor=None)
         visible = [r for r in self.records if r.owner_sub is None or r.owner_sub == owner_sub]
         if omex_hash is not None:
             visible = [r for r in visible if r.omex_hash == omex_hash]
         if not visible:
-            return VerificationIdPage(verification_ids=[], records=[], next_cursor=None)
+            return VerificationIdPage(verification_ids=[], next_cursor=None)
         last = visible[-1]
         return VerificationIdPage(
             verification_ids=[r.workflow_id for r in visible[:limit]],
-            records=[],
             next_cursor=VerificationCursor(created=last.created.replace(tzinfo=None), workflow_id=last.workflow_id),
         )
 
@@ -527,7 +535,7 @@ async def _follow_listing(client: AsyncClient, ledger: _OnePageLedger) -> None:
         assert token is not None
         second = await client.get("/verification_ids", params={"cursor": token})
     assert second.status_code == 200, second.text
-    assert second.json() == {"verification_ids": [], "records": [], "next_cursor": None}
+    assert second.json() == {"verification_ids": [], "verifications": [], "next_cursor": None}
     last = ledger.records[-1]
     assert ledger.afters == [None, VerificationCursor(created=last.created.replace(tzinfo=None),
                                                       workflow_id=last.workflow_id)]
@@ -559,7 +567,7 @@ async def test_longest_accepted_prefix_yields_a_followable_cursor(client: AsyncC
 async def test_stored_id_at_temporal_limit_yields_a_followable_cursor(client: AsyncClient, workflow_id: str) -> None:
     """Rows written before the prefix bound can carry any ID Temporal accepted."""
     ledger = _OnePageLedger()
-    ledger.records.append(VerificationLedgerRecord(workflow_id=workflow_id, verify_type=VerificationType.RUNS,
+    ledger.records.append(VerificationRecord(workflow_id=workflow_id, verify_type=VerificationType.RUNS,
                                              owner_sub=None, created=datetime(9999, 12, 31, 23, 59, 59, 999000)))
     await _follow_listing(client, ledger)
 
@@ -584,3 +592,94 @@ async def test_overlong_prefix_is_rejected_before_any_work(client: AsyncClient, 
     ledger.insert_verification.assert_not_awaited()
     temporal.start_workflow.assert_not_awaited()
     files.upload_bytes.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# GET /verify/{id} — terminal status is recorded once, after authorization (PR #136)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", list(VerifyWorkflowStatus))
+async def test_terminal_status_is_recorded_only_when_done(client: AsyncClient, status: VerifyWorkflowStatus) -> None:
+    output = _make_verify_output(workflow_id="wf", status=status)
+    temporal = _temporal_with_describe(exec_status=WorkflowExecutionStatus.RUNNING, query_result=output)
+    ledger = AsyncMock()
+    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        response = await client.get("/verify/wf")
+    assert response.status_code == 200
+    if status.is_done:
+        ledger.record_terminal_status.assert_awaited_once_with("wf", status)
+    else:
+        ledger.record_terminal_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_terminal_status_is_recorded_on_the_recovered_path(client: AsyncClient) -> None:
+    """A workflow Temporal closed before it could answer a query still gets its FAILED status recorded."""
+    from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
+    original = RunsVerifyWorkflowInput(biosimulations_run_ids=["run1"], owner_sub="auth0|owner",
+                                       compare_settings=_make_verify_output().compare_settings)
+    temporal = _temporal_with_describe(workflow_type="RunsVerifyWorkflow", exec_status=WorkflowExecutionStatus.TERMINATED,
+        query_side_effect=RPCError("closed", RPCStatusCode.INTERNAL, b""))
+    desc = temporal.get_workflow_handle.return_value.describe.return_value
+    desc.id, desc.run_id, desc.close_time = "wf", "execution", datetime.now(UTC)
+    ledger = AsyncMock()
+    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
+         patch("biosim_server.api.main._read_verification_input", new=AsyncMock(return_value=original)):
+        response = await client.get("/verify/wf")
+    assert response.status_code == 200
+    assert response.json()["workflow_status"] == "FAILED"
+    ledger.record_terminal_status.assert_awaited_once_with("wf", VerifyWorkflowStatus.FAILED)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["anonymous", "stranger"])
+async def test_terminal_status_is_never_recorded_when_authorization_fails(client: AsyncClient, caller: str) -> None:
+    if caller == "anonymous":
+        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_optional_user, None)
+    else:
+        app.dependency_overrides[get_current_user] = app.dependency_overrides[get_optional_user] = lambda: AuthenticatedUser(sub="stranger")
+    output = _make_verify_output(workflow_id="wf", status=VerifyWorkflowStatus.COMPLETED, owner_sub="auth0|owner")
+    temporal = _temporal_with_describe(query_result=output)
+    ledger = AsyncMock()
+    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        response = await client.get("/verify/wf")
+    assert response.status_code == (401 if caller == "anonymous" else 403)
+    ledger.record_terminal_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ledger_write_failure_never_fails_the_get(client: AsyncClient) -> None:
+    output = _make_verify_output(workflow_id="wf", status=VerifyWorkflowStatus.COMPLETED)
+    temporal = _temporal_with_describe(query_result=output)
+    ledger = AsyncMock()
+    ledger.record_terminal_status.side_effect = RuntimeError("private ledger failure")
+    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        response = await client.get("/verify/wf")
+    assert response.status_code == 200
+    assert response.json()["workflow_status"] == "COMPLETED"
+    assert "private ledger failure" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_status_reaches_the_listing_after_one_poll(
+    client: AsyncClient, verification_database_service_mongo: VerificationDatabaseServiceMongo,
+) -> None:
+    """End to end through the real ledger: null before the first terminal poll, set after, unchanged by a second."""
+    db = verification_database_service_mongo
+    await db.insert_verification(VerificationRecord(workflow_id="wf", verify_type=VerificationType.OMEX,
+                                                    owner_sub="auth0|owner", created=datetime.now(UTC)))
+    assert (await client.get("/verification_ids")).json()["verifications"][0]["status"] is None
+    temporal = _temporal_with_describe(query_result=_make_verify_output(workflow_id="wf", status=VerifyWorkflowStatus.COMPLETED))
+    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+        assert (await client.get("/verify/wf")).status_code == 200
+    assert (await client.get("/verification_ids")).json()["verifications"][0]["status"] == "COMPLETED"
+    temporal = _temporal_with_describe(query_result=_make_verify_output(workflow_id="wf", status=VerifyWorkflowStatus.FAILED))
+    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+        assert (await client.get("/verify/wf")).status_code == 200
+    assert (await client.get("/verification_ids")).json()["verifications"][0]["status"] == "COMPLETED"

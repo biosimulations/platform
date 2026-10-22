@@ -12,7 +12,8 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Final
+from collections.abc import Mapping
+from typing import Any, Final
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ASCENDING, DESCENDING
@@ -20,9 +21,9 @@ from pymongo import ASCENDING, DESCENDING
 from biosim_server.biosim_verify.models import (
     MAX_WORKFLOW_ID_BYTES,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
-    VerificationLedgerRecord,
     VerificationRecord,
-    VerificationRun,
+    VerificationSummary,
+    VerifyWorkflowStatus,
 )
 from biosim_server.config import get_settings
 
@@ -49,8 +50,33 @@ class VerificationCursor:
 @dataclass(frozen=True)
 class VerificationIdPage:
     verification_ids: list[str]
-    records: list[VerificationRecord] = field(default_factory=list)
-    next_cursor: VerificationCursor | None = None
+    next_cursor: VerificationCursor | None
+    # The same rows as ``verification_ids``, in the same order, never carrying ``owner_sub``.
+    verifications: list[VerificationSummary] = field(default_factory=list)
+
+
+# Listing projection: everything a VerificationSummary needs and nothing else.
+# ``owner_sub`` is deliberately absent so it can never reach a response.
+_LISTING_PROJECTION: Final = {
+    "workflow_id": 1, "verify_type": 1, "created": 1, "omex_hash": 1, "status": 1, "_id": 0,
+}
+
+
+def _summary_from_doc(doc: Mapping[str, Any]) -> VerificationSummary:
+    created = doc["created"]
+    assert isinstance(created, datetime)
+    # The Motor client is not ``tz_aware`` (shared with every other collection), so
+    # ``created`` comes back naive. It was stored as UTC; say so, or a browser's
+    # ``new Date()`` reads it as local time.
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return VerificationSummary(
+        workflow_id=doc["workflow_id"],
+        verify_type=doc["verify_type"],
+        created=created,
+        omex_hash=doc.get("omex_hash"),
+        status=doc.get("status"),
+    )
 
 
 class InvalidVerificationCursor(ValueError):
@@ -107,32 +133,39 @@ class VerificationDatabaseService(ABC):
     """Abstract interface for the verification ledger."""
 
     @abstractmethod
-    async def insert_verification(self, record: VerificationLedgerRecord) -> VerificationLedgerRecord:
+    async def insert_verification(self, record: VerificationRecord) -> VerificationRecord:
         """Insert a new record.  Raises on duplicate workflow_id."""
         ...
 
     @abstractmethod
     async def list_verification_ids(
-        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None, omex_hash: str | None = None
+        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None,
+        omex_hash: str | None = None,
     ) -> VerificationIdPage:
-        """Return one page of workflow_id values, newest-first.
+        """Return one page of workflow_id values (and their summaries), newest-first.
 
         ``owner_sub`` is the verified caller subject, not an arbitrary owner selector.
         ``None`` returns only ownerless (null or missing owner) rows; a subject
         returns ownerless rows plus that caller's own. There is no unfiltered mode.
-        ``limit`` (1..VERIFICATION_IDS_MAX_PAGE_SIZE) bounds the read; ``after`` continues strictly past a previous page's
-        ``next_cursor``, which is ``None`` on the last page.
+        ``omex_hash`` narrows the page to rows about that archive, inside the same
+        visibility. ``limit`` (1..VERIFICATION_IDS_MAX_PAGE_SIZE) bounds the read;
+        ``after`` continues strictly past a previous page's ``next_cursor``, which
+        is ``None`` on the last page.
         """
         ...
 
     @abstractmethod
-    async def get_verification(self, workflow_id: str) -> VerificationLedgerRecord | None:
+    async def get_verification(self, workflow_id: str) -> VerificationRecord | None:
         """Return the record for *workflow_id*, or None if absent."""
         ...
 
     @abstractmethod
-    async def update_verification_status(self, workflow_id: str, status: str) -> None:
-        """Update status for *workflow_id*."""
+    async def record_terminal_status(self, workflow_id: str, status: VerifyWorkflowStatus) -> None:
+        """Record the terminal *status* for *workflow_id*, once.
+
+        A row whose status is already set is left alone, so the first observed
+        terminal status sticks and a second call is a no-op. Absent rows are a no-op.
+        """
         ...
 
     @abstractmethod
@@ -167,15 +200,17 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         # Both serve the listing sort and its (created, workflow_id) range predicate.
         await self._collection.create_index([("owner_sub", ASCENDING), *_LISTING_SORT])
         await self._collection.create_index(_LISTING_SORT)
-        await self._collection.create_index("omex_hash")
+        # A hash-filtered page is served in listing order from the index, not sorted in memory.
+        await self._collection.create_index([("omex_hash", ASCENDING), *_LISTING_SORT])
 
-    async def insert_verification(self, record: VerificationLedgerRecord) -> VerificationLedgerRecord:
+    async def insert_verification(self, record: VerificationRecord) -> VerificationRecord:
         doc = record.model_dump()
         await self._collection.insert_one(doc)
         return record
 
     async def list_verification_ids(
-        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None, omex_hash: str | None = None
+        self, owner_sub: str | None, *, limit: int, after: VerificationCursor | None = None,
+        omex_hash: str | None = None,
     ) -> VerificationIdPage:
         if not 1 <= limit <= VERIFICATION_IDS_MAX_PAGE_SIZE:
             raise ValueError(f"limit must be between 1 and {VERIFICATION_IDS_MAX_PAGE_SIZE}")
@@ -186,7 +221,7 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
             else {"owner_sub": {"$in": [None, owner_sub]}}
         )
         clauses: list[dict[str, object]] = [visibility]
-        if omex_hash:
+        if omex_hash is not None:
             clauses.append({"omex_hash": omex_hash})
         if after is not None:
             # Equivalent to the lexicographic continuation predicate for
@@ -203,7 +238,7 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         # One extra row tells us whether another page exists; the read is bounded
         # however large the ledger grows.
         cursor = self._collection.find(
-            query, projection={"workflow_id": 1, "created": 1, "omex_hash": 1, "status": 1, "_id": 0}
+            query, projection=_LISTING_PROJECTION
         ).sort(_LISTING_SORT).limit(limit + 1)
         docs = await cursor.to_list(length=limit + 1)
         page = docs[:limit]
@@ -213,40 +248,26 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
             else None
         )
 
-        records_by_hash: dict[str, list[VerificationRun]] = {}
-        for doc in page:
-            w_id = doc["workflow_id"]
-            created = doc["created"]
-            status = doc.get("status") or "PENDING"
-            hash_val = doc.get("omex_hash") or ""
-            run = VerificationRun(id=w_id, created=created, status=status)
-            if hash_val not in records_by_hash:
-                records_by_hash[hash_val] = []
-            records_by_hash[hash_val].append(run)
-
-        records = [
-            VerificationRecord(omex_hash=h, run_ids=runs)
-            for h, runs in records_by_hash.items()
-        ]
-
         return VerificationIdPage(
             verification_ids=[doc["workflow_id"] for doc in page],
-            records=records,
             next_cursor=next_cursor,
+            verifications=[_summary_from_doc(doc) for doc in page],
         )
 
-    async def get_verification(self, workflow_id: str) -> VerificationLedgerRecord | None:
+    async def get_verification(self, workflow_id: str) -> VerificationRecord | None:
         doc = await self._collection.find_one(
             {"workflow_id": workflow_id}, projection={"_id": 0}
         )
         if doc is None:
             return None
-        return VerificationLedgerRecord.model_validate(doc)
+        return VerificationRecord.model_validate(doc)
 
-    async def update_verification_status(self, workflow_id: str, status: str) -> None:
+    async def record_terminal_status(self, workflow_id: str, status: VerifyWorkflowStatus) -> None:
+        # ``{"status": None}`` matches a null status and a missing field alike, so rows
+        # written before the field existed are covered; a set status never changes.
         await self._collection.update_one(
-            {"workflow_id": workflow_id},
-            {"$set": {"status": status}}
+            {"workflow_id": workflow_id, "status": None},
+            {"$set": {"status": status.value}},
         )
 
     async def delete_verification(self, workflow_id: str) -> None:

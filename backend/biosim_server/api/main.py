@@ -49,12 +49,11 @@ from biosim_server.biosim_verify.models import (
     MAX_VERIFY_RUN_IDS,
     MAX_VERIFY_SIMULATORS,
     VERIFICATION_IDS_DEFAULT_PAGE_SIZE,
+    OMEX_HASH_PATTERN,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
     WORKFLOW_ID_PREFIX_MAX_LENGTH,
     VerificationIdsResponse,
-    VerificationLedgerRecord,
     VerificationRecord,
-    VerificationRun,
     VerificationType,
     VerifyWorkflowOutput,
     VerifyWorkflowStatus,
@@ -525,13 +524,12 @@ async def _persist_and_start_verify(
     """
     try:
         await ledger.insert_verification(
-            VerificationLedgerRecord(
+            VerificationRecord(
                 workflow_id=workflow_id,
                 verify_type=verify_type,
                 owner_sub=owner_sub,
                 created=datetime.now(UTC),
                 omex_hash=omex_hash,
-                status="PENDING",
             )
         )
     except Exception as e:
@@ -658,6 +656,23 @@ def _reconcile_terminal_status(
     return output
 
 
+async def _record_terminal_status(output: VerifyWorkflowOutput) -> None:
+    """Write the ledger's terminal status, once, after the caller is authorized.
+
+    Only a finished workflow is recorded, so a verification nobody polls stays
+    ``null`` in the listing. The ledger write never fails the GET.
+    """
+    if not output.workflow_status.is_done:
+        return
+    ledger = get_verification_database_service()
+    if ledger is None:
+        return
+    try:
+        await ledger.record_terminal_status(output.workflow_id, output.workflow_status)
+    except Exception as e:
+        logger.warning("Could not record terminal status for %s: %s", output.workflow_id, e)
+
+
 @app.get(
     "/verify/{workflow_id}",
     response_model=VerifyWorkflowOutput,
@@ -719,18 +734,21 @@ async def get_verify_output(
             await _ledger_fallback_404(workflow_id, user)
         recovered = await _recover_terminal_verification(temporal_client, desc, user)
         if recovered is not None:
+            await _record_terminal_status(recovered)
             return recovered
         logger.error("Temporal query failed for %s: %s", workflow_id, rpc_err, exc_info=rpc_err)
         raise HTTPException(status_code=503, detail="Temporal service unavailable")
     except (WorkflowQueryFailedError, WorkflowQueryRejectedError) as e:
         recovered = await _recover_terminal_verification(temporal_client, desc, user)
         if recovered is not None:
+            await _record_terminal_status(recovered)
             return recovered
         logger.warning("Workflow query failed for %s: %s", workflow_id, e, exc_info=e)
         raise HTTPException(status_code=404, detail=f"Verification not found: {workflow_id}")
     except Exception as e:
         recovered = await _recover_terminal_verification(temporal_client, desc, user)
         if recovered is not None:
+            await _record_terminal_status(recovered)
             return recovered
         logger.error("Unexpected error querying workflow %s", workflow_id, exc_info=e)
         raise HTTPException(status_code=503, detail="Temporal service unavailable")
@@ -741,17 +759,8 @@ async def get_verify_output(
     # Step 4: D1 fix — reconcile a stuck IN_PROGRESS against Temporal's execution status.
     workflow_output = _reconcile_terminal_status(workflow_output, desc.status)
 
-    ledger = get_verification_database_service()
-    if ledger is not None:
-        try:
-            status_str = (
-                workflow_output.workflow_status.value
-                if hasattr(workflow_output.workflow_status, "value")
-                else str(workflow_output.workflow_status)
-            )
-            await ledger.update_verification_status(workflow_id, status_str)
-        except Exception as e:
-            logger.warning("Could not update verification status in ledger for %s: %s", workflow_id, e)
+    # Step 5: remember the terminal status for the listing (after authorization).
+    await _record_terminal_status(workflow_output)
 
     return workflow_output
 
@@ -818,8 +827,13 @@ async def verify_runs(
                                                              "the request is rejected with 400 if none appear in the "
                                                              "runs' common dataset labels. Not yet used to filter the "
                                                              "returned comparison."),
-        omex_hash: Optional[str] = Query(default=None,
-                                         description="Optional OMEX archive MD5 hash associated with these simulation runs.")
+        omex_hash: Optional[str] = Query(default=None, pattern=OMEX_HASH_PATTERN,
+                                         description="MD5 hexdigest of the OMEX archive these runs were produced "
+                                                     "from, to link the verification to it in GET /verification_ids. "
+                                                     "Ignored when the platform can derive the hash from its own "
+                                                     "record of the runs, and ignored for anonymous callers (whose "
+                                                     "verifications are public, so an unverifiable hash could "
+                                                     "mislabel someone else's archive).")
 ) -> VerifyWorkflowOutput:
     # Validation first: a duplicate run id is rejected before any service work.
     _reject_duplicate_selections(biosimulations_run_ids, label="run IDs")
@@ -857,6 +871,15 @@ async def verify_runs(
                     detail="Requested observables are absent from the common dataset labels.",
                 )
 
+    # ---- archive hash for the ledger ---- #
+    # Server-derived where the platform submitted the runs itself; otherwise only an
+    # authenticated caller's claim, whose row is scoped to them. Anonymous rows are
+    # public, so a caller-supplied hash there could tag unrelated runs with a real
+    # archive's hash for every user who filters by it.
+    ledger_omex_hash, archives_conflict = await _derive_omex_hash_for_runs(biosimulations_run_ids)
+    if ledger_omex_hash is None and not archives_conflict and owner_sub is not None:
+        ledger_omex_hash = omex_hash
+
     # ---- create workflow input ---- #
     workflow_id = f"{workflow_id_prefix}{uuid.uuid4()}"
     compare_settings = CompareSettings(user_description=user_description, include_outputs=include_outputs,
@@ -874,7 +897,7 @@ async def verify_runs(
         owner_sub=owner_sub,
         temporal_client=temporal_client,
         workflow_input=runs_verify_workflow_input,
-        omex_hash=omex_hash,
+        omex_hash=ledger_omex_hash,
         start_workflow=lambda: temporal_client.start_workflow(
             RunsVerifyWorkflow.run,
             args=[runs_verify_workflow_input],
@@ -893,6 +916,35 @@ async def verify_runs(
         owner_sub=owner_sub
     )
     return runs_verify_workflow_output
+
+
+async def _derive_omex_hash_for_runs(run_ids: list[str]) -> tuple[str | None, bool]:
+    """The archive hash of runs the platform submitted itself, from its own cache.
+
+    ``BiosimulatorWorkflowRun`` carries ``file_hash_md5``; runs only known to
+    biosimulations.org do not. Returns ``(hash, False)`` when every cached run
+    agrees on one archive, ``(None, False)`` when nothing is known (no cached
+    runs, or the cache is unavailable), and ``(None, True)`` when the cached
+    runs come from different archives -- then no single hash describes the
+    verification, and a caller's claim that one does is contradicted.
+    """
+    db_service = get_database_service()
+    if db_service is None:
+        return None, False
+    hashes: set[str] = set()
+    for run_id in dict.fromkeys(run_ids):
+        try:
+            cached = await db_service.get_biosimulator_workflow_runs_by_biosim_runid(run_id)
+        except Exception:
+            logger.warning("Cached run record unavailable for %s", run_id, exc_info=True)
+            return None, False
+        hashes.update(run.file_hash_md5 for run in cached)
+    if len(hashes) == 1:
+        return hashes.pop(), False
+    if len(hashes) > 1:
+        logger.info("Runs span %d archives; not linking the verification to one hash", len(hashes))
+        return None, True
+    return None, False
 
 
 async def _load_hdf5_metadata_for_preflight(
@@ -945,7 +997,8 @@ async def _load_hdf5_metadata_for_preflight(
         "Invalid credentials are rejected. Responses use Cache-Control: private, no-store. "
         "Keep the same identity while paginating; restart after login/logout. One bounded page "
         "at a time. Follow `next_cursor` (pass it back as `cursor`) for older IDs; it is "
-        "null on the last page."
+        "null on the last page. `verifications` carries the same rows with their type, start "
+        "time, OMEX hash and terminal status; `omex_hash` narrows a page to one archive."
     ),
     responses={
         200: {"description": "One page visible to the current caller.", "headers": {
@@ -965,8 +1018,9 @@ async def list_verification_ids(
                            description=f"Page size (1-{VERIFICATION_IDS_MAX_PAGE_SIZE})."),
         cursor: Optional[str] = Query(default=None, max_length=VERIFICATION_CURSOR_MAX_LENGTH,
                                       description="Opaque `next_cursor` from a previous page."),
-        omex_hash: Optional[str] = Query(default=None,
-                                         description="Optional OMEX archive MD5 hash to filter verification records."),
+        omex_hash: Optional[str] = Query(default=None, pattern=OMEX_HASH_PATTERN,
+                                         description="Only verifications of the archive with this MD5 hexdigest, "
+                                                     "within the caller's visibility."),
 ) -> VerificationIdsResponse:
     # IDs can contain private caller text. Always scope the database read,
     # including anonymous requests and continuation pages.
@@ -996,7 +1050,7 @@ async def list_verification_ids(
     response.headers["Cache-Control"] = "private, no-store"
     return VerificationIdsResponse(
         verification_ids=page.verification_ids,
-        records=page.records,
+        verifications=page.verifications,
         next_cursor=encode_verification_cursor(page.next_cursor) if page.next_cursor else None,
     )
 
