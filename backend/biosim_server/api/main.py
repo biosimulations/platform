@@ -113,7 +113,9 @@ APP_ORIGINS = [
     'https://biosimulations.dev',
     'https://biosimulations.org',
     'https://bio.libretexts.org',
-    'https://biochecknet.biosimulations.org'
+    'https://biochecknet.biosimulations.org',
+    "https://api.biosim.biosimulations.org",
+    "https://biosim.biosimulations.org",
 ]
 
 # Deployment-specific origins from env (comma-separated). Empty by default;
