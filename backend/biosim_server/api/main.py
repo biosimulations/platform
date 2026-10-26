@@ -347,9 +347,9 @@ async def verify_omex(
         include_outputs: bool = Query(default=False,
                                       description="Whether to include the output data on which the comparison is based."),
         user_description: str = Query(default="my-omex-compare", description="User description of the verification run."),
-        rel_tol: float = Query(default=0.0001, description="Relative tolerance for proximity comparison."),
-        abs_tol_min: float = Query(default=0.001, description="Min absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
-        abs_tol_scale: float = Query(default=0.00001, description="Scale for absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
+        rel_tol: float = Query(default=0.0001, allow_inf_nan=False, description="Relative tolerance for proximity comparison."),
+        abs_tol_min: float = Query(default=0.001, allow_inf_nan=False, description="Min absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
+        abs_tol_scale: float = Query(default=0.00001, allow_inf_nan=False, description="Scale for absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
         cache_buster: str = Query(default="0", description="Optional unique id for cache busting (unique string to force new simulation runs)."),
         observables: Optional[list[str]] = Query(default=None,
                                                  description="List of observables to include in the return data.")
@@ -827,9 +827,9 @@ async def verify_runs(
         include_outputs: bool = Query(default=False,
                                       description="Whether to include the output data on which the comparison is based."),
         user_description: str = Query(default="my-verify-job", description="User description of the verification run."),
-        rel_tol: float = Query(default=0.0001, description="Relative tolerance for proximity comparison."),
-        abs_tol_min: float = Query(default=0.001, description="Min absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
-        abs_tol_scale: float = Query(default=0.00001, description="Scale for absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
+        rel_tol: float = Query(default=0.0001, allow_inf_nan=False, description="Relative tolerance for proximity comparison."),
+        abs_tol_min: float = Query(default=0.001, allow_inf_nan=False, description="Min absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
+        abs_tol_scale: float = Query(default=0.00001, allow_inf_nan=False, description="Scale for absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
         observables: Optional[list[str]] = Query(default=None,
                                                  description="SED-ML data set labels of interest. Validated only: "
                                                              "the request is rejected with 400 if none appear in the "
