@@ -8,6 +8,7 @@ compliant`` -- an unhandled 500 that the browser reported as a CORS error.
 
 import json
 import math
+from typing import Any
 from unittest.mock import patch
 
 import httpx
@@ -39,6 +40,39 @@ def test_non_finite_floats_render_as_null_at_any_depth() -> None:
 def test_other_render_errors_still_raise() -> None:
     with pytest.raises(TypeError, match="not JSON serializable"):
         NonFiniteSafeJSONResponse({"a": object()})
+
+
+def test_circular_content_raises_value_error_not_recursion_error() -> None:
+    content: dict[str, Any] = {}
+    content["self"] = content
+
+    with pytest.raises(ValueError, match="Circular reference detected"):
+        NonFiniteSafeJSONResponse(content)
+
+
+def test_cycle_through_a_list_raises_value_error() -> None:
+    inner: list[Any] = []
+    inner.append(inner)
+
+    with pytest.raises(ValueError, match="Circular reference detected"):
+        NonFiniteSafeJSONResponse({"x": inner})
+
+
+def test_cycle_with_non_finite_values_still_raises_cleanly() -> None:
+    node: dict[str, Any] = {"score": [math.nan]}
+    node["next"] = node
+
+    with pytest.raises(ValueError, match="Circular reference detected"):
+        NonFiniteSafeJSONResponse(node)
+
+
+def test_shared_references_are_not_mistaken_for_cycles() -> None:
+    shared = [1.0, math.nan]
+    content = {"a": shared, "b": shared}
+
+    body = json.loads(bytes(NonFiniteSafeJSONResponse(content).body))
+
+    assert body == {"a": [1.0, None], "b": [1.0, None]}
 
 
 @pytest.mark.asyncio
