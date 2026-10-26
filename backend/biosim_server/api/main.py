@@ -40,7 +40,9 @@ from biosim_server.common.auth import AuthenticatedUser, get_optional_user
 from biosim_server.common.auth.auth0 import JwksCache, get_jwks_cache
 from biosim_server.common.auth.discovery import warm_discovery_cache
 from biosim_server.common.auth.roles import require_owner_or_admin, ADMIN_ROLE
+from biosim_server.common.json_response import NonFiniteSafeJSONResponse
 from biosim_server.common.ratelimit import workflow_rate_limit
+from biosim_server.common.server_errors import ServerErrorCorsMiddleware
 from biosim_server.common.upload_limit import MultipartBodyLimitMiddleware
 from biosim_server.rbac_demo.router import router as rbac_demo_router
 from biosim_server.users.router import router as users_router
@@ -213,12 +215,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     await shutdown_standalone()
 
 
-app = FastAPI(openapi_url="/openapi.json", docs_url=None, redoc_url=None, title=APP_TITLE, version=APP_VERSION, servers=APP_SERVERS, lifespan=lifespan)
+# NonFiniteSafeJSONResponse: simulator NaN in a report renders as null instead of a 500.
+app = FastAPI(openapi_url="/openapi.json", docs_url=None, redoc_url=None, title=APP_TITLE, version=APP_VERSION, servers=APP_SERVERS, lifespan=lifespan,
+              default_response_class=NonFiniteSafeJSONResponse)
 
 # Bound multipart uploads while they are received. Registered *before* CORS:
 # the last-added middleware is outermost, so CORS stays outside and its headers
 # still reach the 413 this one returns.
 app.add_middleware(MultipartBodyLimitMiddleware)
+
+# Render unhandled exceptions as a 500 inside CORS for the same reason, so the
+# browser sees the 500 rather than a CORS error.
+app.add_middleware(ServerErrorCorsMiddleware)
 
 # add origins
 app.add_middleware(
@@ -339,9 +347,9 @@ async def verify_omex(
         include_outputs: bool = Query(default=False,
                                       description="Whether to include the output data on which the comparison is based."),
         user_description: str = Query(default="my-omex-compare", description="User description of the verification run."),
-        rel_tol: float = Query(default=0.0001, description="Relative tolerance for proximity comparison."),
-        abs_tol_min: float = Query(default=0.001, description="Min absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
-        abs_tol_scale: float = Query(default=0.00001, description="Scale for absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
+        rel_tol: float = Query(default=0.0001, allow_inf_nan=False, description="Relative tolerance for proximity comparison."),
+        abs_tol_min: float = Query(default=0.001, allow_inf_nan=False, description="Min absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
+        abs_tol_scale: float = Query(default=0.00001, allow_inf_nan=False, description="Scale for absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
         cache_buster: str = Query(default="0", description="Optional unique id for cache busting (unique string to force new simulation runs)."),
         observables: Optional[list[str]] = Query(default=None,
                                                  description="List of observables to include in the return data.")
@@ -819,9 +827,9 @@ async def verify_runs(
         include_outputs: bool = Query(default=False,
                                       description="Whether to include the output data on which the comparison is based."),
         user_description: str = Query(default="my-verify-job", description="User description of the verification run."),
-        rel_tol: float = Query(default=0.0001, description="Relative tolerance for proximity comparison."),
-        abs_tol_min: float = Query(default=0.001, description="Min absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
-        abs_tol_scale: float = Query(default=0.00001, description="Scale for absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
+        rel_tol: float = Query(default=0.0001, allow_inf_nan=False, description="Relative tolerance for proximity comparison."),
+        abs_tol_min: float = Query(default=0.001, allow_inf_nan=False, description="Min absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
+        abs_tol_scale: float = Query(default=0.00001, allow_inf_nan=False, description="Scale for absolute tolerance, where atol = max(atol_min, max(arr1,arr2)*atol_scale."),
         observables: Optional[list[str]] = Query(default=None,
                                                  description="SED-ML data set labels of interest. Validated only: "
                                                              "the request is rejected with 400 if none appear in the "

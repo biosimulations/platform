@@ -161,6 +161,32 @@ async def test_missing_ledger_rejects_before_upload_or_upstream_calls(client: As
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["runs", "omex"])
+@pytest.mark.parametrize("param", ["rel_tol", "abs_tol_min", "abs_tol_scale"])
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+async def test_non_finite_tolerance_rejects_before_any_work(client: AsyncClient, kind: str, param: str, value: str) -> None:
+    """A NaN/Infinity tolerance is a 422, not a workflow whose every score is NaN."""
+    files, omex, biosim, temporal = _verify_omex_mocks()
+    ledger = AsyncMock()
+    with ExitStack() as stack:
+        for name, service in [("get_file_service", files), ("get_omex_database_service", omex),
+                              ("get_biosim_service", biosim), ("get_temporal_client", temporal),
+                              ("get_verification_database_service", ledger)]:
+            stack.enter_context(patch(f"biosim_server.api.main.{name}", return_value=service))
+        if kind == "runs":
+            response = await client.post("/verify/runs", params={"biosimulations_run_ids": ["r1", "r2"], param: value})
+        else:
+            response = await client.post("/verify/omex", params={"simulators": "copasi", param: value},
+                                         files={"uploaded_file": ("m.omex", b"fake", "application/zip")})
+    assert response.status_code == 422
+    assert [e["loc"] for e in response.json()["detail"]] == [["query", param]]
+    files.upload_bytes.assert_not_awaited()
+    omex.insert_omex_file.assert_not_awaited()
+    assert ledger.method_calls == []
+    temporal.start_workflow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_encoded_slash_not_routable(client: AsyncClient) -> None:
     response = await client.get("/verify/bad%2Fid")
     assert response.status_code == 404

@@ -14,6 +14,7 @@ postman/
 # Machine-local MCP configs (Cursor/PyCharm loopback). Not deployable.
 /.mcp.json
 .crush/
+.perch/
 backend/.agents/
 .agents
 /backend/agents/

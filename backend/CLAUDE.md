@@ -274,6 +274,8 @@ literals, so no caller input reaches the upstream URL.
 | --- | --- | --- |
 | `CORS_EXTRA_ORIGINS` | _empty_ | Comma-separated list of additional CORS origins appended to the built-in allowlist in `api/main.py`. **Required** for every deployment so the deployed frontend host (e.g. `https://biosim.biosimulations.org`) is allowed. The built-in list only covers local-dev loopbacks and cross-org trusted services — deploy-specific URLs are not hardcoded by design. |
 
+Error responses must stay inside `CORSMiddleware`, or the browser reports a CORS error and hides the real status. Starlette renders unhandled exceptions in `ServerErrorMiddleware` — outside CORS, and where `@app.exception_handler(Exception)` is installed too — so `common/server_errors.py` renders them as a JSON 500 inside CORS (then re-raises for logging), like the 413 from `common/upload_limit.py`. Relatedly, the app's `default_response_class` (`common/json_response.py`) renders NaN/±Infinity as `null`: simulator output and verification scores can be NaN, and Starlette's strict encoder used to turn those reports into 500s.
+
 ### Legacy runs proxy
 
 Six transparent operations against `BIOSIMULATIONS_API_BASE_URL`: GET/PATCH/DELETE
