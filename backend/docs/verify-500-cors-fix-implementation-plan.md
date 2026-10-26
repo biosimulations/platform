@@ -6,6 +6,62 @@ This is a planning artifact. Evidence labels: **CONFIRMED** = reproduced or read
 
 ---
 
+## Summary: Cause and Decisions
+
+### Why the verify page showed CORS errors and 500s
+
+The CORS error hid the 500; it was not a separate problem. The CORS allowlist is correct. All of the following is **CONFIRMED** from production logs and local reproduction (§1, §2).
+
+1. **NaN in a stored report.**
+   - In run 212, COPASI 4.45.296 left one report variable entirely NaN.
+   - The comparison step (`calc_stats`) scores each variable with `np.nanmax`, which returns `nan` for an all-NaN row. So even COPASI compared with its own run scored `nan`.
+   - Temporal stored that report without complaint.
+2. **The 500.**
+   - `GET /verify/{workflow_id}` read the report successfully.
+   - Rendering the response then failed: Starlette's `JSONResponse` encodes with `json.dumps(allow_nan=False)`, which raises `ValueError: Out of range float values are not JSON compliant: nan`.
+   - Nothing handled that exception, so the API returned a 500.
+3. **The CORS error.**
+   - Starlette renders unhandled exceptions in `ServerErrorMiddleware`. That middleware sits *outside* `CORSMiddleware`, so the 500 went out without `Access-Control-Allow-Origin`.
+   - The browser therefore blocked the response and reported a CORS error, and the frontend never saw the 500 status.
+4. **"Completed" in the list, `PENDING` in the dialog.**
+   - The listing showed the run as `COMPLETED`, because `GET /verify` records the terminal status before the response renders.
+   - The dialog showed `PENDING` and kept polling, because `VerificationStatus.vue` never stops on a 5xx or on a failure that has no status.
+5. **Scope.**
+   - This was not a one-off: **six** verifications produced **127** of these 500s in 10 days.
+   - Each one later turns into a normal 404 once its Temporal history ages out (about 1 day, **INFERRED**). That is why a later sweep found no live 500s.
+
+**Fixed in PR #157, not yet deployed (production is on `0.10.2`):**
+- Fix 1: NaN and ±Inf render as `null`.
+- Fix 2: unhandled 500s now carry CORS headers.
+- §3.3: non-finite tolerances are rejected with 422.
+
+### Decision: should Fixes 3 and 4 be made?
+
+| Fix | Decision | Priority |
+|---|---|---|
+| **3. Frontend stops polling and shows the error** (§5, plan §10.1) | **Yes, make it.** It is needed to fully resolve the symptom the user saw. | High. Next after PR #157 ships. |
+| **4. Request ID on 500 responses** (§6, plan §10.2) | **Yes, but optional.** It is not needed to resolve this incident. | Low. After Fix 3, or skip it. |
+
+**Why Fix 3 should be made**
+
+- **Fixes 1 and 2 don't change the dialog.** They remove this particular 500 and make future 500s readable. But `VerificationStatus.vue` still retries forever and shows `PENDING` on *any* 5xx, and on any failure with no status.
+- **Fix 2 doesn't cover ingress errors.** ingress-nginx's own 502/503/504 pages carry no CORS headers, so they still reach the browser with no status. Any future ingress or backend outage would reproduce the "PENDING forever" symptom.
+- **It also fixes expired runs.** Today their 404 stops polling, but the badge still reads `PENDING`.
+- **The risk is low.** It touches one component plus a pure utility with unit tests. The frontend deploys as a RollingUpdate at 2 replicas, and the fix has no backend dependency.
+
+**Why Fix 4 is worth doing, but not required**
+
+- **For:** finding this incident's traceback took cluster log access and timestamp matching.
+  - With a request ID, a user can quote the 500's `request_id`, which leads straight to its traceback.
+  - The change is about 15 lines in one file (`common/server_errors.py`), with no change to middleware order.
+  - The frontend already displays the ID through Fix 3.
+- **Against:** it doesn't remove the need for log access to diagnose a 500.
+  - At one `api` replica and current traffic, a run ID plus a time already finds the traceback.
+  - Matching the ID to the ingress access log is still unverified (§10.2 step 3).
+- **Revisit** if `api` runs more than one replica, or if 500 reports become frequent enough that timestamp matching gets ambiguous. Either one makes Fix 4 more valuable.
+
+---
+
 ## 0. Revision Notes (2026-10-26)
 
 The root-cause diagnosis in the original plan was correct and is unchanged. These corrections came from a review against Cloud Logging (10 days), the code, and local reproductions:
@@ -17,6 +73,8 @@ The root-cause diagnosis in the original plan was correct and is unchanged. Thes
 5. **The catch-all middleware should re-raise after sending its 500** (§4.1).
 6. **Fixes 1 and 2 and §3.3 are implemented in PR #157** (commits `2ca6e77` and `83e461a`). What remains is §3.4 (schema annotation, optional), §5 (frontend) and §6 (optional).
 7. Evidence count corrected: all 75 errors in the original 48-hour pod window were run 212, not 74.
+8. **Implementation plans for Fixes 3 and 4 added in §10.** The TODO list moves to §11.
+9. **A summary of the cause and the Fix 3 and Fix 4 decisions is added at the top.** Fix 3: make it. Fix 4: optional, low priority.
 
 ---
 
@@ -279,7 +337,11 @@ Changes:
 
 **On the reported "retries every 50 s":** the steady-state interval is 60 s, not 50 s. **CONFIRMED** in production logs: polls for run 212 at exactly 60.0 s intervals from 20:36:31 to 20:40:32 UTC on 2026-10-23. The countdown starts when each answer arrives, so the true period is 60 s plus request latency. Several shorter intervals before 20:36 come from overlapping pollers: dialog re-opens, and the browser agent's own probing.
 
+**Implementation steps: §10.1.**
+
 ### Tests
+
+The frontend has no component-test harness. §10.1 covers these cases with unit tests of the extracted logic (step 3) plus manual checks (step 4).
 
 - Component test: 5 consecutive 500s → polling stops, error shown, badge is not `PENDING`.
 - Component test: 5 consecutive **status-less failures** (network/CORS error) → same.
@@ -302,6 +364,8 @@ If implemented, `ServerErrorCorsMiddleware` (§4.1) is the natural place:
 **No request-ID mechanism exists in the backend today** (grepped: no `X-Request-ID`, no request-id middleware). This is net-new plumbing, which is why it is ranked optional. If added, the frontend error path should surface the ID so a user can quote it in a report.
 
 **Do not** return the exception message or traceback to clients; that leaks internals. The ID is the whole point: it correlates a client report with a log line.
+
+**Implementation steps: §10.2.** That plan reuses the ingress's `X-Request-ID` when it is well-formed, and attaches the ID to the server's existing traceback with `add_note` instead of emitting a separate log line.
 
 ---
 
@@ -336,8 +400,8 @@ Backend changes require the release → tag → deploy sequence (`backend/CLAUDE
 
 1. ~~**Sentinel vs `null` for `score`**~~ **Resolved: `null`,** rendered at the response boundary (§3.1). No sentinel (§3.2).
 2. ~~**`Hdf5DataValues` validator scope**~~ **Resolved: no validators** (§3.4). The annotation-only change is optional.
-3. **Retry bound value** (§5). 5 consecutive failures is a suggestion, not a measurement. Pick it based on how long a legitimate cold start takes, and remember each poll is 2 requests unless `retry: 0` is set.
-4. **Request ID** (§6). Confirm whether the ingress or any upstream already sets `X-Request-ID` before adding generation logic.
+3. **Retry bound value** (§5). 5 consecutive failures is a suggestion, not a measurement. Pick it based on how long a legitimate cold start takes, and remember each poll is 2 requests unless `retry: 0` is set. **§10.1 proposes N = 5 with `retry: 0`,** which halts about 2 min 10 s after the API stops answering. Confirm that against a timed `api` rollout.
+4. **Request ID** (§6). Confirm whether the ingress or any upstream already sets `X-Request-ID` before adding generation logic. **§10.2 handles both cases:** it reuses a well-formed inbound ID and generates one otherwise. ingress-nginx's documented default forwards one. Confirming this cluster's ConfigMap (§10.2 step 3) only decides whether the ID also matches the ingress access log.
 5. **New: are COPASI 4.45.296's outputs correct?** In run 212 COPASI returned 2 time points where PySCeS returned 1001, plus an all-NaN variable. That suggests it isn't honoring the SED-ML time course, or is failing partially. This doesn't affect the 500 fix, but it means these comparisons can never succeed. Worth checking against the SED-ML and, if confirmed, reporting upstream.
 6. **New: Temporal retention.** Results age out after about a day (**INFERRED** from run 212's 500 → 404 transition). Confirm the namespace retention setting and whether one day is intended for verification results that users revisit.
 
@@ -383,7 +447,219 @@ Backend changes require the release → tag → deploy sequence (`backend/CLAUDE
 
 ---
 
-## 10. TODO
+## 10. Implementation Plan — Fixes 3 and 4
+
+Written 2026-10-26 against `83e461a`. Fix 3 is a frontend change; Fix 4 is a backend change plus one line of frontend display. Neither depends on the other, and neither blocks PR #157.
+
+### 10.1 Fix 3 — Frontend stops polling and shows the error (§5)
+
+**PR:** a separate frontend PR off `main`, released as `frontend-v0.3.9`.
+
+**Design decisions**
+
+- **Move the decision logic into a pure module.** The frontend has no component-test harness. Its tests run with `node --test` against plain `.ts` utilities: `tests/verification-listing.test.mjs` imports `app/utils/verification-listing.ts`, and `frontend-ci` runs these tests through `npm run test:verification`. So two things move into `app/utils/verification-polling.ts`, where those tests can reach them:
+  - the halt-or-back-off decision
+  - the error text
+
+  The component keeps only the wiring. Adding vitest and `@vue/test-utils` for real component tests is a separate decision, and this fix doesn't need it.
+- **N = 5 consecutive failures** (§8 Q3). The existing backoff doubles from 5 s, so failures land at about t = 0, 10, 30, 70 and 130 s. A dialog therefore halts about 2 min 10 s after the API stops answering. That should outlast a normal `api` restart under `Recreate` (**UNVERIFIED:** time a real rollout before settling on N).
+- **`retry: 0` on the poll.** Each poll then sends one request, so N counts requests rather than pairs.
+- **A display-only `UNAVAILABLE` badge.**
+  - `status` stays a `VerifyWorkflowStatus`, because `isDone` depends on it.
+  - A new `displayStatus` returns `'UNAVAILABLE'` when polling has halted and no data ever loaded.
+  - The existing `default:` branches of `statusBadgeColor` and `statusIcon` already map an unknown value to `neutral` / `i-lucide-help-circle`, so neither needs a new case.
+  - This also fixes expired runs. Today their 404 halts polling, but the badge still reads `PENDING`.
+
+**Step 1 — `frontend/app/utils/verification-polling.ts` (new)**
+
+```ts
+// Consecutive failed polls after which polling stops and the error is shown
+export const MAX_CONSECUTIVE_POLL_FAILURES = 5
+// The 4xx answers that can change on retry; ofetch treats the same ones as transient (moved from the component)
+export const TRANSIENT_CLIENT_ERRORS = new Set([408, 409, 425, 429])
+
+// status is undefined for a network or CORS failure; failures includes this one
+export function pollFailureAction(status: number | undefined, failures: number): 'halt' | 'backoff' {
+  if (status !== undefined && status >= 400 && status < 500 && !TRANSIENT_CLIENT_ERRORS.has(status)) return 'halt'
+  return failures >= MAX_CONSECUTIVE_POLL_FAILURES ? 'halt' : 'backoff'
+}
+
+export function pollErrorMessage(err: any): string {
+  const status: number | undefined = err?.response?.status ?? err?.statusCode
+  // No status: no readable answer at all (network failure, CORS block, or an ingress error page)
+  const text = status === undefined
+    ? 'Could not reach the verification service.'
+    : err?.data?.detail || err?.message || 'Failed to poll verification workflow'
+  // Fix 4: the ID a user can quote; absent until the backend change is deployed
+  const requestId = err?.data?.request_id
+  return requestId ? `${text} (request ID: ${requestId})` : text
+}
+```
+
+**Step 2 — `frontend/app/components/verification/VerificationStatus.vue`**
+
+- Import `pollFailureAction` and `pollErrorMessage` from `~/utils/verification-polling`, and delete the component's own `TRANSIENT_CLIENT_ERRORS` (line 26).
+- Add `let consecutiveFailures = 0` next to `inFlight` (line 42).
+- Pass `retry: 0` in the `$fetch` options (lines 95-102).
+- On success, after the aborted/`workflowId` guard (line 104), set `consecutiveFailures = 0`.
+- Replace the body of the catch block after its guard (lines 122-131) with:
+  ```ts
+  consecutiveFailures++
+  errorMsg.value = pollErrorMessage(err)
+  const status: number | undefined = err?.response?.status ?? err?.statusCode
+  if (pollFailureAction(status, consecutiveFailures) === 'halt') {
+    halted.value = true
+    stopTimers()
+  } else {
+    // Transient, server or network failure: back off rather than hammer a struggling backend
+    pollInterval.value = Math.min(pollInterval.value * 2, MAX_POLL_INTERVAL_SECONDS)
+  }
+  ```
+- Set `consecutiveFailures = 0` next to `halted.value = false` in two places:
+  - `manualRefresh` (line 167), so `Retry` gets a fresh 5 attempts
+  - the `workflowId` watcher (line 188)
+- Add `displayStatus`:
+  ```ts
+  // A dialog that gave up before any answer must not claim the run is PENDING
+  const displayStatus = computed(() => halted.value && !workflowData.value ? 'UNAVAILABLE' : status.value)
+  ```
+  Then switch `statusBadgeColor`, `statusIcon` and the badge text (line 231) to `displayStatus`.
+- Update the comment on `halted` (line 36): it is now also set after N consecutive failed polls.
+
+**Step 3 — tests: `frontend/tests/verification-polling.test.mjs` (new)**
+
+Append the file to the `test:verification` script in `package.json` so that `frontend-ci` runs it.
+
+- 401, 403 and 404 → `halt` on the first failure, unchanged from today.
+- 408, 409, 425 and 429 → `backoff` below N, `halt` at N.
+- 500, 502, 503 and 504 → `backoff` for failures 1–4, `halt` at 5.
+- `undefined` status → the same as 5xx. This is the incident's case.
+- `pollErrorMessage`:
+  - shows a FastAPI `detail` when one is present
+  - for a status-less error, returns the fixed text instead of ofetch's `[GET] "…": <no response> Failed to fetch`
+  - appends a `request_id` from the body when there is one
+
+Then run `npm run lint`, `npm run typecheck` and `npm run test:verification`.
+
+**Step 4 — manual check on the local stack**
+
+Run `docker compose up -d`, the backend and `npm run dev`, then open a verification in the dialog.
+
+- **5xx path.** Run `docker compose stop temporal`. `GET /verify/{id}` then returns a 503 that carries CORS headers (`get_verify_output` raises `HTTPException(503, "Temporal service unavailable")`). Expect:
+  - DevTools shows one request per poll.
+  - After 5 polls, polling stops.
+  - The badge reads `UNAVAILABLE`, or the last known status if data had loaded.
+  - The alert shows the 503's detail.
+  - The button reads `Retry`.
+- **Status-less path.** Stop the API process. The outcome should be the same, with "Could not reach the verification service."
+- **Recovery.** Restart the stopped service and click `Retry`. Data should load and polling resume. Stop the service again and confirm it takes another 5 failures to halt, which shows the counter was reset.
+- **Unchanged behavior.** An unknown ID still halts after one 404.
+
+**Release.** Follow the frontend flow in `frontend/CLAUDE.md` → Deploy:
+
+1. Release PR: `frontend/scripts/bump-frontend.sh patch`.
+2. Tag the merge commit `frontend-v0.3.9` and push the tag.
+3. Confirm the `release.yaml` run succeeded.
+4. Deploy PR: bump the frontend `newTag` in the `biosim-gke` overlay.
+
+`frontend` is a RollingUpdate at 2 replicas, so it doesn't carry the `api`'s `Recreate` risk. It doesn't depend on PR #157 either: failures with no status, which is what this incident looked like, are counted with or without the backend fixes.
+
+### 10.2 Fix 4 — Request ID on 500 responses (§6)
+
+**PR:** a backend PR. If it merges before the `0.10.3` release is cut, it ships with PR #157; otherwise it ships as `0.10.4`. The frontend side is just §10.1's `pollErrorMessage`, which already shows a `request_id` when one is present.
+
+**Design decisions**
+
+- **Only 500s get an ID, created in `ServerErrorCorsMiddleware`.** A 500 is the only response where a user needs something to quote. This keeps the change to one file, with no new middleware and no change to middleware order. Putting `X-Request-ID` on every response would need a separate outermost middleware; that can come later if it's wanted.
+- **Reuse the ingress's ID when one arrives.**
+  - **What the ingress does by default (ingress-nginx documentation):** with `generate-request-id: "true"`, it forwards `X-Request-ID` upstream. The value is the client's own header if it sent one, otherwise a generated 32-hex ID. The default `log-format-upstream` ends with that same `$req_id`.
+  - **Why it matters:** reusing the value makes the ID in the 500 body match the ingress access-log line.
+  - **UNVERIFIED for this cluster:** reading the `ingress-nginx-controller` ConfigMap was blocked in this session. Step 3 says how to check it. If the ingress sends nothing, the middleware generates its own ID, and the link to the pod's traceback still works.
+- **Validate before reuse.** A client can choose that header's value, because the ingress passes a client-sent value through.
+  - Accept only `[A-Za-z0-9._-]{1,128}`, and replace anything else with `uuid4().hex`.
+  - That keeps newlines and markup out of the logs and the response, and caps the length.
+- **Attach the ID to the existing traceback with `add_note`, not a second log line.**
+  - The traceback is written by uvicorn's `uvicorn.error` logger, which never reaches the root `JsonFormatter`: uvicorn's `LOGGING_CONFIG` sets `"uvicorn": {"propagate": false}`. `JsonFormatter` drops `exc_info` anyway.
+  - A note is printed at the end of a logged traceback. **CONFIRMED** on this repo's Python: `logging.Formatter.formatException` prints `request_id=abc123` after `ValueError: boom`.
+  - So the one existing traceback carries the ID. There is no duplicate traceback and no change to the `JsonFormatter` allowlist.
+  - `add_note` needs Python ≥ 3.11, and `pyproject.toml` already requires `>=3.13`.
+- **Still no exception text in the body**, as §6 requires.
+
+**Step 1 — `backend/biosim_server/common/server_errors.py`**
+
+```python
+_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def _request_id(scope: Scope) -> str:
+    """The ingress's X-Request-ID when well-formed, so the 500 matches its access log; else a new one."""
+    for name, value in scope["headers"]:
+        if name == b"x-request-id":
+            candidate = value.decode("latin-1")
+            if _REQUEST_ID.fullmatch(candidate):
+                return candidate
+            break
+    return uuid.uuid4().hex
+
+
+# in ServerErrorCorsMiddleware.__call__
+        except Exception as exc:
+            if not response_started:
+                request_id = _request_id(scope)
+                # Printed at the end of the server's traceback, which is how a quoted ID finds it
+                exc.add_note(f"request_id={request_id}")
+                response = JSONResponse(
+                    status_code=500,
+                    content={"detail": "Internal Server Error", "request_id": request_id},
+                    headers={"X-Request-ID": request_id},
+                )
+                await response(scope, receive, send)
+            raise
+```
+
+Mention the ID in the module docstring. Add one sentence to the CORS paragraph of `backend/CLAUDE.md`: a 500 body carries `request_id`, and the same value appears at the end of the server's traceback.
+
+**Step 2 — tests in `backend/tests/common/test_server_errors.py`**
+
+These reuse the `failing_get_verify` fixture.
+
+- The 500 body is exactly `{"detail": "Internal Server Error", "request_id": <id>}`. The `x-request-id` header equals the body's ID, and ACAO is still present.
+- A well-formed inbound `X-Request-ID` is echoed in both the body and the header.
+- A malformed inbound ID is replaced by a 32-character hex ID. Test one with a space or newline, and one 129 characters long.
+- The re-raised exception carries the note: `f"request_id={id}" in exc.__notes__`.
+- The existing no-leak test still passes.
+
+Then:
+- Regenerate the spec with `uv run python -m scripts.generate_openapi`. Expect no diff, because the 500 isn't in any route's documented responses.
+- Run `uv run ruff check .`, `uv run mypy biosim_server tests` and `uv run pytest -m "not integration"`.
+
+**Step 3 — check the ingress before relying on access-log correlation.** This read-only command needs cluster access:
+
+```bash
+kubectl get cm -n ingress-nginx ingress-nginx-controller -o jsonpath='{.data}'
+```
+
+The IDs will match the ingress access log only if both of these hold:
+- `generate-request-id` is absent or `"true"`
+- `log-format-upstream` is absent, or contains `$req_id`
+
+Otherwise the ID still finds the traceback, just not the ingress line. This answers §8 Q4.
+
+**Step 4 — after deploy.** There is no safe way to cause an unhandled 500 in production on purpose; Fixes 1 and 2 removed the known one. The tests are the gate. When the next real 500 happens, the Cloud Logging query `resource.labels.container_name="api" textPayload:"request_id="` should find its traceback.
+
+### 10.3 Sequencing
+
+| Order | PR | Contents | Depends on |
+|---|---|---|---|
+| 1 | #157 → `backend-v0.10.3` | Fixes 1–2, §3.3 | — |
+| 2 | Fix 4 backend PR | §10.2 | Nothing in the code. It ships in `0.10.3` if merged before that release is cut, otherwise in `0.10.4`. |
+| 3 | Fix 3 frontend PR → `frontend-v0.3.9` | §10.1 | Nothing. It shows `request_id` once order 2 is deployed. |
+
+Fixes 3 and 4 can be developed in parallel.
+
+---
+
+## 11. TODO
 
 Checked against the code on 2026-10-26: branch `fix/CORS-Error` at `83e461a`, plus uncommitted local changes. PR #157 is **open, not merged**. Production still runs `backend-0.10.2` (`GET /version` → `"0.10.2"`), so **none of these fixes is live yet**.
 
@@ -416,12 +692,15 @@ Re-run on 2026-10-26: `pytest tests/common/test_json_response.py tests/common/te
 
 ### Remaining work
 
-- [ ] **Fix 3, frontend (§5)**, as a separate frontend PR:
-  - A consecutive-failure counter that counts 5xx **and** status-less errors; halt after N.
-  - `retry: 0` on the poll `$fetch`.
-  - A badge that does not read `PENDING` when the dialog has halted with no data.
-  - Reset the counter in `manualRefresh` and in the `workflowId` watcher.
-  - The component tests listed in §5.
+- [ ] **Fix 3, frontend (§5).** Plan: §10.1. Separate frontend PR → `frontend-v0.3.9`.
+  - [ ] `app/utils/verification-polling.ts`: `pollFailureAction`, `pollErrorMessage`, N = 5.
+  - [ ] `VerificationStatus.vue`:
+    - a `consecutiveFailures` counter, reset on success, in `manualRefresh` and in the `workflowId` watcher
+    - `retry: 0`
+    - an `UNAVAILABLE` `displayStatus`
+  - [ ] `tests/verification-polling.test.mjs`, added to `test:verification`.
+  - [ ] Manual checks: stop Temporal (5xx), stop the API (no status), `Retry` recovers.
+  - [ ] Release and deploy `frontend-v0.3.9`.
 - [ ] **§3.5 `calc_stats` test.** Not present: the only `calc_stats` tests (`tests/biosim_verify/test_hdf5_compare.py`) use finite data. Add a case to `tests/biosim_verify/test_generate_statistics.py`: an all-NaN row → that variable's score is `nan` and `is_close` is `False`.
 
 ### Optional
@@ -430,10 +709,14 @@ Re-run on 2026-10-26: `pytest tests/common/test_json_response.py tests/common/te
 - [ ] §4.2 extra tests:
   - a disallowed origin → 500 **without** ACAO
   - a preflight `OPTIONS` → 200
-- [ ] Fix 4 (§6), request-ID plumbing. First check whether the ingress already sets `X-Request-ID` (§8 Q4).
+- [ ] Fix 4 (§6), request ID on 500s. Plan: §10.2.
+  - [ ] In `common/server_errors.py`, add `_request_id`: reuse a valid inbound `X-Request-ID`, else `uuid4().hex`.
+  - [ ] Return `request_id` in the 500 body and the `X-Request-ID` header, and attach it to the traceback with `exc.add_note`.
+  - [ ] Add 4 tests to `tests/common/test_server_errors.py`. Confirm the spec regeneration shows no diff, and update `backend/CLAUDE.md`.
+  - [ ] Read the `ingress-nginx-controller` ConfigMap (§10.2 step 3; this needs cluster access).
 
 ### Open questions to close (§8)
 
-- [ ] Q3: choose the retry bound N for Fix 3. With ofetch's retry still on, each poll is 2 requests.
+- [ ] Q3: confirm the retry bound for Fix 3. §10.1 proposes N = 5 with `retry: 0`, which halts after about 2 min 10 s; check that against a timed `api` rollout.
 - [ ] Q5: COPASI 4.45.296 returns 2 time points plus an all-NaN variable. Check that against the SED-ML, and report it upstream if confirmed.
 - [ ] Q6: confirm the Temporal namespace retention (≈ 1 day, inferred) is intended for verification results.
