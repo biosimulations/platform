@@ -40,7 +40,9 @@ from biosim_server.common.auth import AuthenticatedUser, get_optional_user
 from biosim_server.common.auth.auth0 import JwksCache, get_jwks_cache
 from biosim_server.common.auth.discovery import warm_discovery_cache
 from biosim_server.common.auth.roles import require_owner_or_admin, ADMIN_ROLE
+from biosim_server.common.json_response import NonFiniteSafeJSONResponse
 from biosim_server.common.ratelimit import workflow_rate_limit
+from biosim_server.common.server_errors import ServerErrorCorsMiddleware
 from biosim_server.common.upload_limit import MultipartBodyLimitMiddleware
 from biosim_server.rbac_demo.router import router as rbac_demo_router
 from biosim_server.users.router import router as users_router
@@ -113,9 +115,7 @@ APP_ORIGINS = [
     'https://biosimulations.dev',
     'https://biosimulations.org',
     'https://bio.libretexts.org',
-    'https://biochecknet.biosimulations.org',
-    "https://api.biosim.biosimulations.org",
-    "https://biosim.biosimulations.org",
+    'https://biochecknet.biosimulations.org'
 ]
 
 # Deployment-specific origins from env (comma-separated). Empty by default;
@@ -215,12 +215,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     await shutdown_standalone()
 
 
-app = FastAPI(openapi_url="/openapi.json", docs_url=None, redoc_url=None, title=APP_TITLE, version=APP_VERSION, servers=APP_SERVERS, lifespan=lifespan)
+# NonFiniteSafeJSONResponse: simulator NaN in a report renders as null instead of a 500.
+app = FastAPI(openapi_url="/openapi.json", docs_url=None, redoc_url=None, title=APP_TITLE, version=APP_VERSION, servers=APP_SERVERS, lifespan=lifespan,
+              default_response_class=NonFiniteSafeJSONResponse)
 
 # Bound multipart uploads while they are received. Registered *before* CORS:
 # the last-added middleware is outermost, so CORS stays outside and its headers
 # still reach the 413 this one returns.
 app.add_middleware(MultipartBodyLimitMiddleware)
+
+# Render unhandled exceptions as a 500 inside CORS for the same reason, so the
+# browser sees the 500 rather than a CORS error.
+app.add_middleware(ServerErrorCorsMiddleware)
 
 # add origins
 app.add_middleware(
