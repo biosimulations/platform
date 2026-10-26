@@ -1,8 +1,8 @@
-# Verification 500 / CORS Fix — Implementation Plan
+# Verification 500 / CORS Fix — Implementation Record
 
-Investigation date: 2026-10-23. **Revised: 2026-10-26** (see §0). Repository: `/Users/novrusshehaj/Github/UCHC/platform`. Branch: `fix/CORS-Error`. Originally inspected HEAD: `5e81f4d932c6301f5203ac93ed47390588f050b1`; revised against `2ca6e77` (PR #157). Deployed image at investigation time: `backend-0.10.2` (matches `backend/biosim_server/version.py`).
+Investigation date: 2026-10-23. **Reconciled: 2026-10-26** (see §0) to branch `fix/CORS-Error`, [PR #157](https://github.com/biosimulations/platform/pull/157). Code through `76f670f`. The previous draft of this file is `0a05995`. Production at reconciliation time: image `backend-0.10.2` (`backend/biosim_server/version.py` and `kustomize/overlays/biosim-gke`). **The fix is not deployed.** PR #157 is open.
 
-This is a planning artifact. Evidence labels: **CONFIRMED** = reproduced or read from current code/logs; **INFERRED** = consequence of inspected behavior, not reproduced end-to-end; **UNVERIFIED** = needs runtime or external confirmation.
+This file is the record that ships with PR #157: the incident, the commits in the diff, and the follow-ups the PR leaves out. Evidence labels: **CONFIRMED** = reproduced or read from current code/logs; **INFERRED** = consequence of inspected behavior, not reproduced end-to-end; **UNVERIFIED** = needs runtime or external confirmation.
 
 ---
 
@@ -16,6 +16,7 @@ The CORS error hid the 500; it was not a separate problem. The CORS allowlist is
    - In run 212, COPASI 4.45.296 left one report variable entirely NaN.
    - The comparison step (`calc_stats`) scores each variable with `np.nanmax`, which returns `nan` for an all-NaN row. So even COPASI compared with its own run scored `nan`.
    - Temporal stored that report without complaint.
+   - The NaN itself comes from upstream: the stored data carries the **string** `"nan"`, which Pydantic silently coerces to a float. Full detail in §2.5.
 2. **The 500.**
    - `GET /verify/{workflow_id}` read the report successfully.
    - Rendering the response then failed: Starlette's `JSONResponse` encodes with `json.dumps(allow_nan=False)`, which raises `ValueError: Out of range float values are not JSON compliant: nan`.
@@ -30,10 +31,34 @@ The CORS error hid the 500; it was not a separate problem. The CORS allowlist is
    - This was not a one-off: **six** verifications produced **127** of these 500s in 10 days.
    - Each one later turns into a normal 404 once its Temporal history ages out (about 1 day, **INFERRED**). That is why a later sweep found no live 500s.
 
-**Fixed in PR #157, not yet deployed (production is on `0.10.2`):**
-- Fix 1: NaN and ±Inf render as `null`.
+**In PR #157, not yet deployed (production is on `backend-0.10.2`):**
+- Fix 1: NaN and ±Inf render as `null`, including the cycle-safe walk (`76f670f`).
 - Fix 2: unhandled 500s now carry CORS headers.
 - §3.3: non-finite tolerances are rejected with 422.
+- The two production origins added in `5e81f4d` are removed again. The allowlist was already correct.
+- `.perch/` is gitignored. `backend/CLAUDE.md` records why error responses stay inside CORS.
+
+**Left for later PRs:** §3.4 (schema annotation), the `calc_stats` characterization test, Fix 3 (frontend), Fix 4 (request ID), and the optional §4.2 cases. Details in §10 and §11.
+
+### Files in the diff
+
+Against `main`, the branch changes these paths and no others:
+
+| Path | In the PR |
+|---|---|
+| `.gitignore` | Ignores `.perch/` (`5e81f4d`). |
+| `backend/CLAUDE.md` | CORS section: unhandled errors are rendered inside CORS, and NaN/±Inf render as `null`. |
+| `backend/biosim_server/api/main.py` | `default_response_class` (`:220`), `ServerErrorCorsMiddleware` (`:229`, inside CORS and outside the multipart limit), and `allow_inf_nan=False` on all six tolerance queries (`:350-352`, `:830-832`). The two origins added in `5e81f4d` are gone; `APP_ORIGINS` matches `main`. |
+| `backend/biosim_server/common/json_response.py` | New. `NonFiniteSafeJSONResponse`. |
+| `backend/biosim_server/common/server_errors.py` | New. `ServerErrorCorsMiddleware`. |
+| `backend/tests/common/test_json_response.py` | 8 tests, including the 4 cycle cases. |
+| `backend/tests/common/test_server_errors.py` | 3 tests. |
+| `backend/tests/api/test_verification_completion.py` | `test_non_finite_tolerance_rejects_before_any_work`, 18 cases. |
+| `backend/docs/verify-500-cors-fix-implementation-plan.md` | This file. |
+
+No OpenAPI artifact changes. Frontend, kustomize, and `version.py` are unchanged, so merging does not deploy.
+
+Commits on the branch, oldest first: `5e81f4d` (gitignore and the origins that `2ca6e77` removes), `2ca6e77` (Fixes 1 and 2), `83e461a` (§3.3), `76f670f` (cycle-safe walk), `0a05995` (first draft of this file). This reconciliation is the edit after `0a05995`.
 
 ### Decision: should Fixes 3 and 4 be made?
 
@@ -53,8 +78,8 @@ The CORS error hid the 500; it was not a separate problem. The CORS allowlist is
 
 - **For:** finding this incident's traceback took cluster log access and timestamp matching.
   - With a request ID, a user can quote the 500's `request_id`, which leads straight to its traceback.
-  - The change is about 15 lines in one file (`common/server_errors.py`), with no change to middleware order.
-  - The frontend already displays the ID through Fix 3.
+  - The response change stays in `common/server_errors.py` (§10.2), with no new middleware and no change to middleware order.
+  - §10.1's `pollErrorMessage` appends `request_id` when the body has one, so Fix 4 needs no further frontend change once Fix 3 exists.
 - **Against:** it doesn't remove the need for log access to diagnose a 500.
   - At one `api` replica and current traffic, a run ID plus a time already finds the traceback.
   - Matching the ID to the ingress access log is still unverified (§10.2 step 3).
@@ -71,10 +96,11 @@ The root-cause diagnosis in the original plan was correct and is unchanged. Thes
 3. **Field validators (old §3.2) are withdrawn.** They covered only `score` and `values`. Other float fields can also carry NaN, including a user-controlled one (`rel_tol=nan` is accepted). The fix belongs at the response boundary (§2.3, §3).
 4. **The frontend retry bound (§5) must count failures that have no status,** not only 5xx. During the incident the browser saw no status at all.
 5. **The catch-all middleware should re-raise after sending its 500** (§4.1).
-6. **Fixes 1 and 2 and §3.3 are implemented in PR #157** (commits `2ca6e77` and `83e461a`). What remains is §3.4 (schema annotation, optional), §5 (frontend) and §6 (optional).
+6. **Fixes 1 and 2, the cycle-safe walk, and §3.3 are implemented in PR #157** (`2ca6e77`, `83e461a`, `76f670f`). What remains is §3.4 (schema annotation, optional), the `calc_stats` test, §5 (frontend), and §6 (optional).
 7. Evidence count corrected: all 75 errors in the original 48-hour pod window were run 212, not 74.
 8. **Implementation plans for Fixes 3 and 4 added in §10.** The TODO list moves to §11.
 9. **A summary of the cause and the Fix 3 and Fix 4 decisions is added at the top.** Fix 3: make it. Fix 4: optional, low priority.
+10. **Later the same day, this file was reconciled to the committed branch.** The cycle-safe walk is in `76f670f`; an earlier draft still called it uncommitted. `compare_arrays` is reached from its own module and from tests; the verification workflow uses `calc_stats`. `backend-ci` on `0a05995` reported 1547 passed, 17 skipped. `frontend-ci` and `smoke` succeeded on that push. The commit list for the diff is in the summary above.
 
 ---
 
@@ -94,8 +120,8 @@ The root-cause diagnosis in the original plan was correct and is unchanged. Thes
 
 **Fix order (revised):**
 
-1. **Render non-finite floats as `null` at the response boundary.** App-wide, covers every field and already-stored results. **Done in PR #157.** No sentinel, no per-field validators.
-2. **Defense in depth: unhandled errors carry CORS headers.** Middleware inside CORS that re-raises. **Done in PR #157.**
+1. **Render non-finite floats as `null` at the response boundary.** App-wide, covers every field and already-stored results. **Done in PR #157** (`2ca6e77`, cycle walk in `76f670f`). No sentinel, no per-field validators.
+2. **Defense in depth: unhandled errors carry CORS headers.** Middleware inside CORS that re-raises. **Done in PR #157** (`2ca6e77`).
 3. **Reject non-finite tolerances at the request** (`allow_inf_nan=False`). **Done in PR #157** (`83e461a`).
 4. **Optional: schema honesty.** Annotate `score`/`values` as `list[float | None]`.
 5. **Frontend:** stop polling after repeated failures, **including status-less ones**, and surface the error instead of `PENDING` forever.
@@ -151,7 +177,7 @@ Two other routes to NaN:
 
 The caller then does `score.tolist()` (line 133) and assigns it to `ComparisonStatistics.score` (line 138), an `Optional[list[float]]` that accepts `nan` and `inf`.
 
-`hdf5_compare.compare_arrays` (`hdf5_compare.py:42-43`) does guard (`return False, 1e10`), but **nothing in `biosim_server` calls it**. It is dead code, referenced only in `calc_stats`' docstring. It is not a live "legacy path" and not a convention the workflow follows.
+`hdf5_compare.compare_arrays` (`hdf5_compare.py:42-43`) does guard NaN (`return False, 1e10`). `compare_datasets` in the same file calls it, and `tests/biosim_verify/test_hdf5_compare.py` calls both. The verification workflow does not: `generate_statistics_activity` uses `calc_stats`, and the only mention on that path is the docstring at `activities.py:161`. Stored reports therefore do not carry this `1e10` sentinel.
 
 **Side observation (CONFIRMED, out of scope):** in run 212, COPASI's datasets had shape `(3, 2)` / `(18, 2)` while PySCeS had `(3, 1001)` / `(18, 1001)`. So the cross-simulator comparisons failed on shape mismatch, and COPASI produced only two time points plus a NaN variable. See §8.
 
@@ -185,13 +211,67 @@ ServerErrorMiddleware  (outermost)
 
 Handled errors behave differently: `HTTPException` is caught by `ExceptionMiddleware` (inside CORS), which builds a normal response that then passes **through** CORS and gets decorated. That is why 401/404 carry the header and this 500 does not (confirmed live: run 212's current 404 carries ACAO).
 
+### 2.5 Where the NaN comes from: upstream data, and the other routes
+
+§2.2 describes how `calc_stats` propagates a NaN. This section records what put the NaN there in the first place, and which other inputs can produce a non-finite score. **CONFIRMED** 2026-10-26 by fetching the stored data for the two runs whose worker logs show a NaN self-comparison, and by running the repo's own `calc_stats` against constructed inputs.
+
+#### The upstream payload carries the string `'nan'`
+
+For run 212, `GET https://simdata.api.biosimulations.org/datasets/6ada6fdc041d31202095031d/data?dataset_name=BIOMD0000000155_url.sedml/autogen_report_for_task1` returns `shape: [18, 2]` and a `values` array whose element types are **`float` and `str`**: eight entries across seven variables are the JSON string `"nan"`, not a number. JSON has no NaN literal, so the upstream service serializes it as a string.
+
+| Variable (0-indexed) | Values | Note |
+|---|---|---|
+| 1 | `[0.0, "nan"]` | |
+| 2 | `[0.9, "nan"]` | |
+| 9 | `[0.0, "nan"]` | |
+| 14 | `[0.0, "nan"]` | |
+| 15 | `[0.0, "nan"]` | |
+| 16 | `["nan", "nan"]` | **all-NaN**: this is the row that scored `nan` |
+| 17 | `[0.63, "nan"]` | |
+
+Run 82 is the same shape: `shape: [9, 2]`, seven string entries, variable 6 `["nan", "nan"]`.
+
+#### Pydantic converts the string to a float NaN, silently
+
+`BiosimServiceRest.get_hdf5_data` (`biosim_runs/biosim_service.py:167`) constructs `Hdf5DataValues(shape=..., values=...)`, whose `values` field is `list[float]`. Pydantic coerces the string: `[0.0, 0.01, 0.0, "nan", 0.9, "nan"]` becomes `[0.0, 0.01, 0.0, nan, 0.9, nan]`, every element typed `float`. Nothing warns. That coercion is the step that turns an upstream serialization choice into a non-finite float inside the pipeline, and it is why `calc_stats` sees a NaN row rather than a parse error.
+
+#### Why the simulator emitted NaN
+
+The same payload shows COPASI 4.45.296 did not complete a normal time course for this dataset:
+
+- **Two time points, not 1001.** PySCeS, on the same dataset of the same archive, returns `shape: [18, 1001]` with 1001 distinct time values. COPASI returns `shape: [18, 2]`.
+- **Identical values at both points.** COPASI's rows read `[0.9, 0.9]`, `[1.0, 1.0]`, `[1.4, 1.4]`: a steady-state or truncated-run signature, not a trajectory.
+
+So the NaN is a symptom of a partial or failed simulation, not a numerical artifact of the comparison. This is the concern raised in the PR review ("why was there NaN or Inf in the first place") and it is tracked as §8 Q5. It is upstream of this repository and is not fixed by PR #157.
+
+#### Other inputs that produce a non-finite score
+
+Running the repo's `calc_stats` against constructed inputs gives eight distinct outcomes. Only the first is the observed incident; the rest are reachable but unobserved:
+
+| Input | `score` | Reachable today |
+|---|---|---|
+| All-NaN row | `nan` | **Yes**: the observed case |
+| NaN at one time point only | finite (`nanmax` ignores it) | Not a problem |
+| `0/0`: `abs_tol_min=0` with all-zero data | `nan` | **Yes** |
+| `x/0`: `abs_tol_min=0` with non-zero data | `inf` | **Yes** |
+| `rel_tol` negative enough to cancel `atol` | `inf` | **Yes** |
+| `inf` in the data, both sides | finite | Not a problem |
+| `inf` in the data, one side | finite | Not a problem |
+| A NaN tolerance | `nan` | **No**: blocked by §3.3 |
+
+#### Residual gap: zero and negative tolerances are still accepted
+
+§3.3 rejects `nan` and `±inf` tolerances with 422. It does not constrain the sign or magnitude, and `allow_inf_nan=False` has no opinion about `0` or `-1`. Verified against `fastapi 0.115.14`: `abs_tol_min=0` → **200**, `abs_tol_min=-1` → **200**, `abs_tol_min=nan` → **422**.
+
+So a caller can still request a comparison whose scores are `nan` or `inf` through a zero or negative tolerance. After PR #157 that renders as `null` instead of a 500, so it is a data-quality issue rather than an outage. Closing it would mean a bound on the tolerance parameters (for example `gt=0`), which is a contract change and is not part of this PR.
+
 ---
 
 ## 3. Fix 1 — Non-Finite Floats Never Fail a Response (Primary)
 
 ### 3.1 Recommended (implemented): render non-finite floats as `null` at the response boundary
 
-**Status: DONE in PR #157** (`2ca6e77`). **File:** `backend/biosim_server/common/json_response.py`.
+**Status: DONE in PR #157** (`2ca6e77`, cycle walk in `76f670f`). **File:** `backend/biosim_server/common/json_response.py`. Wired as `default_response_class` at `api/main.py:220`.
 
 `NonFiniteSafeJSONResponse` subclasses Starlette's `JSONResponse` and is the app's `default_response_class` (`api/main.py`):
 
@@ -208,10 +288,10 @@ How it behaves:
 - **Already-stored results** in Temporal are covered too, with no data migration.
 - **Zero cost on ordinary responses.** The content is walked only after the strict encoder has rejected it.
 - **Same output as Pydantic.** `null` is what Pydantic's `model_dump_json` emits for these values.
-- **The frontend already handles `null`.** `formatScore` shows `—` (`VerificationTable.vue:67-69`), `useVerificationAnalytics.ts:298` uses `?? null`, and a `null` in chart data renders as a gap.
+- **The frontend already handles `null`.** `formatScore` shows `—` (`VerificationTable.vue:67-70`), `useVerificationAnalytics.ts:298` uses `?? null`, and a `null` in chart data renders as a gap.
 - **Other failures still raise.** A `TypeError` for a non-JSON type, or a circular reference, raises exactly as before.
 
-At revision time the walk's cycle detection, which raises `ValueError("Circular reference detected")` instead of recursing to `RecursionError`, and its tests are **uncommitted local changes**. Commit them to PR #157.
+The walk is `_finite_or_none` / `_finite_or_none_walk` (`76f670f`). It tracks containers on the current path. A self-reference raises `ValueError("Circular reference detected")` instead of recursing to `RecursionError`. A value shared by two siblings is walked twice and kept, which is what `json.dumps` does. The four tests are `test_circular_content_raises_value_error_not_recursion_error`, `test_cycle_through_a_list_raises_value_error`, `test_cycle_with_non_finite_values_still_raises_cleanly`, and `test_shared_references_are_not_mistaken_for_cycles`.
 
 ### 3.2 Rejected: a finite sentinel in `calc_stats`
 
@@ -220,7 +300,7 @@ The original §3.1 proposed `score = np.where(np.isfinite(score), score, 1e10)`.
 - **It pre-empts `null`.** It runs before storage, so new runs never reach the boundary that would render `null`, and consumers see `1e10` instead. That contradicts the plan's own recommendation (`null`) in the original §3.2 and §8.
 - **It is a visible UI regression.** `formatScore(1e10)` renders **"1000000000000.0%"** in the Score column (**CONFIRMED**), where the boundary fix shows `—`. The CSV export is worse in a different way: it writes the raw value (`r.score !== null ? r.score : ''`, `VerificationTable.vue:79`), so a sentinel would export as **`10000000000`** — an unformatted magnitude a reader would have to interpret.
 - **It buys nothing.** `is_close` is already `False` for `nan`, because `np.less(nan, 1.0)` is False. And §3.1 already makes the value serializable.
-- **The precedent it cited is dead code** (`hdf5_compare.compare_arrays` is unused; §2.2).
+- **The precedent it cited is off the verification path** (`compare_arrays` is tested, and `compare_datasets` calls it, but stored reports come from `calc_stats`; §2.2).
 
 Leave `calc_stats` returning `nan`. A NaN score honestly means "not comparable", and the response layer renders it as `null`.
 
@@ -255,12 +335,13 @@ They add a shared-model behavior change (`Hdf5DataValues` is used by `biosim_ser
 
 ### 3.5 Tests
 
-**Done in PR #157** (`backend/tests/common/test_json_response.py`):
-- Run-212-shaped report (NaN/Inf in `score`, NaN in `sim_run_data` values) → `GET /verify/{id}` **200**, `null`s in place, ACAO present.
-- Finite content renders byte-for-byte as Starlette does.
-- Non-JSON types still raise `TypeError`.
-- Circular references still raise `ValueError`; shared, non-cyclic references are kept (uncommitted, see §3.1).
-- Verified to **fail without the fix** with the production `ValueError … nan`.
+**Done in PR #157** (`backend/tests/common/test_json_response.py`, 8 tests):
+- Run-212-shaped report (NaN/Inf in `score`, NaN in `sim_run_data` values) → `GET /verify/{id}` **200**, `null`s in place, ACAO present (`test_get_verify_with_nan_in_report_is_200`).
+- Finite content renders byte-for-byte as Starlette does (`test_finite_content_renders_exactly_like_starlette`).
+- Non-finite floats at any depth, including a tuple nested in a list, render as `null` (`test_non_finite_floats_render_as_null_at_any_depth`).
+- Non-JSON types still raise `TypeError` (`test_other_render_errors_still_raise`).
+- A self-referential dict, a self-referential list, and a cycle that also contains NaN each raise `ValueError("Circular reference detected")`. A list shared by two keys is kept, with its NaN rendered as `null` (the four tests named in §3.1, commit `76f670f`).
+- The NaN-report test was verified to **fail without the fix** with the production `ValueError … nan`.
 
 **Done in PR #157** (`backend/tests/api/test_verification_completion.py::test_non_finite_tolerance_rejects_before_any_work`):
 - Each of `nan`, `inf` and `-inf`, in each of the three tolerances, on both POST endpoints (18 cases) → 422 with `loc == ["query", <param>]`, no upload, no OMEX insert, no ledger call, no workflow start.
@@ -296,7 +377,7 @@ app.add_middleware(CORSMiddleware, ...)          # outermost user middleware: de
 
 Two corrections to the original sketch:
 
-- **Re-raise after sending the 500.** Don't swallow the exception, and don't log it yourself. Mirror `ServerErrorMiddleware` (`errors.py:155-187`): track `response_started`, send `{"detail": "Internal Server Error"}` only if nothing has been sent, then `raise`. The exception then still reaches `ServerErrorMiddleware` and uvicorn, which log the full traceback once. Test clients with `raise_server_exceptions=True` still see it: the full backend suite passed unchanged (1525 tests at `2ca6e77`, before the tolerance cases and cycle tests added below). And the 500 already went out through CORS, so `ServerErrorMiddleware` doesn't send a second response.
+- **Re-raise after sending the 500.** Don't swallow the exception, and don't log it yourself. Mirror `ServerErrorMiddleware` (`errors.py:155-187`): track `response_started`, send `{"detail": "Internal Server Error"}` only if nothing has been sent, then `raise`. The exception then still reaches `ServerErrorMiddleware` and uvicorn, which log the full traceback once. Test clients with `raise_server_exceptions=True` still see it. The suite at `2ca6e77` was 1525 passed, before the 18 tolerance cases (`83e461a`) and the 4 cycle tests (`76f670f`). On `0a05995`, `backend-ci` reported 1547 passed, 17 skipped. The 500 already went out through CORS, so `ServerErrorMiddleware` doesn't send a second response.
 - **Place it outside `MultipartBodyLimitMiddleware`,** not innermost. That middleware can itself re-raise (`upload_limit.py`, its `except _BodyLimitExceeded: … raise` path), and an innermost catch-all would miss that.
 
 `HTTPException` never reaches this middleware: `ExceptionMiddleware`, further in, handles it. So there is nothing to special-case.
@@ -353,7 +434,7 @@ The frontend has no component-test harness. §10.1 covers these cases with unit 
 
 ## 6. Fix 4 — Optional: Diagnosable 500 Bodies
 
-Before PR #157, the 500 body was Starlette's plain-text `Internal Server Error` with no detail. It is now JSON, `{"detail": "Internal Server Error"}`, but still carries nothing to correlate. Even a working `curl` would not have revealed the cause: the traceback existed only in pod and Cloud Logging logs. That is why this took cluster access to diagnose.
+Before PR #157, the 500 body was Starlette's plain-text `Internal Server Error` with no detail. On this branch it is JSON, `{"detail": "Internal Server Error"}`, and it still carries nothing to correlate. Production is unchanged until the release in §11. Even a working `curl` would not have revealed the cause: the traceback existed only in pod and Cloud Logging logs. That is why this took cluster access to diagnose.
 
 If implemented, `ServerErrorCorsMiddleware` (§4.1) is the natural place:
 
@@ -373,22 +454,21 @@ If implemented, `ServerErrorCorsMiddleware` (§4.1) is the natural place:
 
 | Step | Change | Risk | Status |
 |---|---|---|---|
-| 1 | Response-boundary `null` rendering (§3.1) | Low | **Done** (PR #157); commit the cycle-safe walk |
-| 2 | Catch-all middleware inside CORS, re-raising (§4.1) | Medium (middleware ordering) | **Done** (PR #157); full suite green |
-| 3 | `allow_inf_nan=False` on tolerance params (§3.3) | Low | **Done** (PR #157, `83e461a`) |
+| 1 | Response-boundary `null` rendering, including the cycle-safe walk (§3.1) | Low | **Done** (`2ca6e77`, `76f670f`) |
+| 2 | Catch-all middleware inside CORS, re-raising (§4.1) | Medium (middleware ordering) | **Done** (`2ca6e77`); full suite green on `0a05995` |
+| 3 | `allow_inf_nan=False` on tolerance params (§3.3) | Low | **Done** (`83e461a`) |
 | 4 | `score`/`values` annotated `list[float \| None]` + regenerated spec (§3.4) | Low | Optional |
 | 5 | Frontend retry bound, counting status-less failures (§5) | Low | To do; separate frontend PR |
 | 6 | Request-ID plumbing (§6) | Low | Optional; net-new |
 
-Steps 1–2 fix the reported bug and its class: a non-finite float can no longer fail a response, and any other unhandled error is now an honest, CORS-visible 500. Step 3 closes the user-controlled NaN input. Steps 4–6 are quality-of-life. Steps 1 and 2 ship together in PR #157, so the original "do not ship the CORS fix alone" concern no longer applies.
+Steps 1–2 fix the reported bug and its class: a non-finite float can no longer fail a response, and any other unhandled error is an honest, CORS-visible 500. Step 3 closes the user-controlled NaN input. Steps 4–6 are follow-ups. Steps 1–3 ship together in PR #157, so the original "do not ship the CORS fix alone" concern does not apply to this branch.
 
 ### Verification gates
 
-- Backend: `uv run python -m pytest` (PR #157 plus the uncommitted cycle-safe walk: 1547 passed, 17 skipped — 1525 at `2ca6e77`, plus 18 tolerance cases from `83e461a` and 4 cycle tests still uncommitted), `uv run ruff check`, `uv run mypy biosim_server tests`.
-- New tests from §3.5, §4.2 and §5 pass.
+- Backend CI on `0a05995` ([run 40383379204](https://github.com/biosimulations/platform/actions/runs/40383379204)): **1547 passed, 17 skipped**. That is 1525 at `2ca6e77`, plus 18 tolerance cases from `83e461a`, plus 4 cycle tests from `76f670f`. The same job runs `ruff` and `mypy`. `frontend-ci` ([run 40383378776](https://github.com/biosimulations/platform/actions/runs/40383378776): lint, typecheck, `test:auth`, `test:verification`) and `smoke` ([run 40383378684](https://github.com/biosimulations/platform/actions/runs/40383378684)) succeeded on that push. GitGuardian and Snyk (`security/snyk (jcschaff)`) also succeeded. This documentation correction does not change the suite; re-check those checks after it is pushed, before merge.
+- The tests marked done in §3.5 and §4.2 are part of that 1547. The `calc_stats` case in §3.5, the optional §4.2 cases, and the §5 frontend tests are not written yet. They gate those follow-ups, not this PR.
 - Manual, after deploy: `curl -i -H "Origin: https://biosim.biosimulations.org" https://api.biosim.biosimulations.org/verify/<id>` against a live run with a NaN score → **200** with `Access-Control-Allow-Origin` and `null` scores. Run 212 can no longer be used: its history has aged out and it returns 404. Pick a fresh COPASI comparison or reproduce locally.
 - Cloud Logging, after deploy: no new `Out of range float values are not JSON compliant` lines from the `api` container.
-- CI: `backend-ci` (pytest, ruff, mypy), `frontend-ci` (lint, typecheck) and `smoke` green.
 
 ### Deploy note
 
@@ -402,7 +482,7 @@ Backend changes require the release → tag → deploy sequence (`backend/CLAUDE
 2. ~~**`Hdf5DataValues` validator scope**~~ **Resolved: no validators** (§3.4). The annotation-only change is optional.
 3. **Retry bound value** (§5). 5 consecutive failures is a suggestion, not a measurement. Pick it based on how long a legitimate cold start takes, and remember each poll is 2 requests unless `retry: 0` is set. **§10.1 proposes N = 5 with `retry: 0`,** which halts about 2 min 10 s after the API stops answering. Confirm that against a timed `api` rollout.
 4. **Request ID** (§6). Confirm whether the ingress or any upstream already sets `X-Request-ID` before adding generation logic. **§10.2 handles both cases:** it reuses a well-formed inbound ID and generates one otherwise. ingress-nginx's documented default forwards one. Confirming this cluster's ConfigMap (§10.2 step 3) only decides whether the ID also matches the ingress access log.
-5. **New: are COPASI 4.45.296's outputs correct?** In run 212 COPASI returned 2 time points where PySCeS returned 1001, plus an all-NaN variable. That suggests it isn't honoring the SED-ML time course, or is failing partially. This doesn't affect the 500 fix, but it means these comparisons can never succeed. Worth checking against the SED-ML and, if confirmed, reporting upstream.
+5. **New: are COPASI 4.45.296's outputs correct?** In run 212 COPASI returned 2 time points where PySCeS returned 1001, plus an all-NaN variable. That suggests it isn't honoring the SED-ML time course, or is failing partially. This doesn't affect the 500 fix, but it means these comparisons can never succeed. Worth checking against the SED-ML and, if confirmed, reporting upstream. **§2.5 confirms the raw payload**: 2 time points with identical values at both, and the NaN arriving as the string `"nan"`. What remains open is the cause on the simulator side, and whether the string form is intended by the upstream serializer.
 6. **New: Temporal retention.** Results age out after about a day (**INFERRED** from run 212's 500 → 404 transition). Confirm the namespace retention setting and whether one day is intended for verification results that users revisit.
 
 ---
@@ -425,31 +505,39 @@ Backend changes require the release → tag → deploy sequence (`backend/CLAUDE
 | Four-way handler comparison (table §4) | local reproduction, repo venv (`starlette 0.46.2`, `fastapi 0.115.14`), re-run 2026-10-26 |
 | NaN in `response_model` → 500, no ACAO; `model_dump(mode="json")` keeps `nan`, `model_dump_json` emits `null` | local reproduction with real models |
 | `calc_stats` unguarded `np.nanmax`; `np.max` on tolerances | `backend/biosim_server/biosim_verify/activities.py:176-189` |
-| `hdf5_compare.compare_arrays` guards with `1e10` but is never called | `hdf5_compare.py:42-43`; `grep -rn compare_arrays biosim_server` |
+| `hdf5_compare.compare_arrays` returns `False, 1e10` on NaN; the verification workflow does not call it | `hdf5_compare.py:42-43`. Callers: `compare_datasets` in the same file, and `tests/biosim_verify/test_hdf5_compare.py`. Outside that module, `grep` of `biosim_server` finds only the `calc_stats` docstring (`activities.py:161`) |
 | `rel_tol=nan` accepted as NaN; `allow_inf_nan=False` → 422 for `nan`/`inf` | local reproduction, `fastapi 0.115.14` |
 | `HDF5Attribute.value` admits floats | `backend/biosim_server/biosim_runs/models.py:8,11-13` |
 | Score validator runs on Temporal decode, not on assignment or on a returned instance | local reproduction with `pydantic_data_converter` and FastAPI `response_model` |
-| `formatScore(1e10)` → "1000000000000.0%" | `frontend/app/components/verification/VerificationTable.vue:67-69`, evaluated in Node |
+| `formatScore(1e10)` → "1000000000000.0%" | `frontend/app/components/verification/VerificationTable.vue:67-70`, evaluated in Node |
 | CSV export writes the raw score, so a `1e10` sentinel would export as `10000000000` | `VerificationTable.vue:79` (`r.score !== null ? r.score : ''`) |
-| Frontend already handles `null` scores | `VerificationTable.vue:67-69,79`; `useVerificationAnalytics.ts:298` |
+| Frontend already handles `null` scores | `VerificationTable.vue:67-70,79`; `useVerificationAnalytics.ts:298` |
 | Frontend `PENDING` fallback; status-less and 5xx failures never halt | `frontend/app/components/verification/VerificationStatus.vue:45,120-131` |
 | Poll cap 60 s, observed exactly 60.0 s; 2 GETs per poll (ofetch retry) | same, line 24; API access log for run 212, 2026-10-23 20:36–20:41 UTC |
 | No request-ID mechanism exists | grep of `backend/biosim_server/**` for `request_id`/`X-Request-ID` |
 | Spec regeneration command and freshness test | `backend/scripts/generate_openapi.py`; `backend/tests/api/test_openapi_endpoints.py` |
-| Fixes 1–2 implemented and tested | PR #157, commit `2ca6e77`: `common/json_response.py`, `common/server_errors.py`, `tests/common/test_json_response.py`, `tests/common/test_server_errors.py` |
-| §3.3 implemented and tested; spec unchanged | PR #157, commit `83e461a`: `api/main.py`, `tests/api/test_verification_completion.py`; `scripts.generate_openapi` → no diff |
-| Deployed image `backend-0.10.2` | `kubectl get deploy api -n biosim-gke -o jsonpath`; `GET /version` |
+| Fixes 1–2, the cycle-safe walk, and §3.3 are implemented and tested | PR #157. `2ca6e77`: `common/json_response.py`, `common/server_errors.py`, `api/main.py` wiring, `tests/common/test_json_response.py`, `tests/common/test_server_errors.py`, `backend/CLAUDE.md` CORS note; reverts the two origins added in `5e81f4d`. `83e461a`: `allow_inf_nan=False` and `tests/api/test_verification_completion.py`. `76f670f`: cycle-safe walk and its 4 tests. `5e81f4d` also adds `.perch/` to `.gitignore`, which remains. |
+| §3.3 spec unchanged | `scripts.generate_openapi` produced no diff at `83e461a`; no OpenAPI file is in the PR diff |
+| Full suite on the PR head before this documentation correction | `backend-ci` run 40383379204 on `0a05995`: 1547 passed, 17 skipped. `frontend-ci` run 40383378776 and `smoke` run 40383378684 succeeded |
+| Deployed image `backend-0.10.2` | `kustomize/overlays/biosim-gke/kustomization.yaml` `newTag`; `backend/biosim_server/version.py` is `"0.10.2"` |
+| Run 212's stored COPASI data carries the **string** `"nan"` in 8 of 36 entries across 7 variables; variable 16 is `["nan", "nan"]` | `GET https://simdata.api.biosimulations.org/datasets/6ada6fdc041d31202095031d/data?dataset_name=BIOMD0000000155_url.sedml/autogen_report_for_task1` (2026-10-26); element types `['float', 'str']` |
+| Run 82's stored COPASI data is the same shape: 7 string entries, variable 6 `["nan", "nan"]` | same endpoint, dataset `6ada6ebc6028002364377a2a`, `BIOMD0000000024_url.sedml/autogen_report_for_task1` |
+| Pydantic coerces `"nan"` → float `nan` silently through `list[float]` | local reproduction: `Hdf5DataValues(shape=[18, 2], values=[0.0, 0.01, 0.0, "nan", 0.9, "nan"])` → all elements `float`, indices 3 and 5 NaN |
+| COPASI returned 2 time points where PySCeS returned 1001, with identical values at both points | same endpoint, PySCeS run `6ada6fdc60280023643783c3`: `shape: [18, 1001]`, all `float` |
+| `calc_stats` produces `nan`/`inf` for 5 of 8 constructed inputs; `inf` in data is harmless | local reproduction against `biosim_verify/activities.py:calc_stats`, 2026-10-26 |
+| Zero and negative tolerances are still accepted after §3.3 | local reproduction, `fastapi 0.115.14`: `abs_tol_min=0` → 200, `abs_tol_min=-1` → 200, `abs_tol_min=nan` → 422 |
 
 **Not verified / out of scope:**
 - **Which carrier failed for runs 253, 211, 92 and 83.** Their histories have aged out, and the worker's multi-line log entries split the score array from the line carrying the workflow ID. All four failed with the same `ValueError`.
 - **Whether `HDF5Attribute` floats ever carry NaN in practice.**
+- **Whether the string `"nan"` appears in other runs' stored data.** Only runs 212 and 82 were fetched; the other four failing runs' histories have aged out. The upstream serializer's behavior for a non-finite value is the same code path, but it was not sampled.
 - **The original browser sweep** (34×200 / 66×404 / 0×500 across 100 listed runs) reflected only live histories at that moment. It did not show the six earlier failures, because those had already aged out to 404.
 
 ---
 
 ## 10. Implementation Plan — Fixes 3 and 4
 
-Written 2026-10-26 against `83e461a`. Fix 3 is a frontend change; Fix 4 is a backend change plus one line of frontend display. Neither depends on the other, and neither blocks PR #157.
+**Not in PR #157.** Written 2026-10-26 and rechecked the same day against `76f670f` and the current `VerificationStatus.vue` (the line numbers below still match; the frontend is not in this diff). Fix 3 is a frontend change. Fix 4 is a backend change; the only frontend piece is the `request_id` line already in §10.1's `pollErrorMessage`. Neither depends on the other, and neither blocks PR #157. Current frontend version is `0.3.8`, so the next patch tag is `frontend-v0.3.9` unless another frontend release lands first.
 
 ### 10.1 Fix 3 — Frontend stops polling and shows the error (§5)
 
@@ -651,7 +739,7 @@ Otherwise the ID still finds the traceback, just not the ingress line. This answ
 
 | Order | PR | Contents | Depends on |
 |---|---|---|---|
-| 1 | #157 → `backend-v0.10.3` | Fixes 1–2, §3.3 | — |
+| 1 | #157 → `backend-v0.10.3` | Fixes 1–2, the cycle-safe walk, §3.3 | — |
 | 2 | Fix 4 backend PR | §10.2 | Nothing in the code. It ships in `0.10.3` if merged before that release is cut, otherwise in `0.10.4`. |
 | 3 | Fix 3 frontend PR → `frontend-v0.3.9` | §10.1 | Nothing. It shows `request_id` once order 2 is deployed. |
 
@@ -661,24 +749,25 @@ Fixes 3 and 4 can be developed in parallel.
 
 ## 11. TODO
 
-Checked against the code on 2026-10-26: branch `fix/CORS-Error` at `83e461a`, plus uncommitted local changes. PR #157 is **open, not merged**. Production still runs `backend-0.10.2` (`GET /version` → `"0.10.2"`), so **none of these fixes is live yet**.
+Checked against the branch on 2026-10-26 at code commit `76f670f`. The edit that produced this section is documentation only. PR #157 is **open, not merged**. Source version and the `biosim-gke` overlay are both `backend-0.10.2`. The live `GET /version` check from the original investigation was not repeated for this reconciliation. **None of these fixes is live yet.**
 
 ### Status of the four fixes
 
 | Fix | Section | Status | Evidence |
 |---|---|---|---|
-| 1. Non-finite floats render as `null` | §3 | **Implemented** (only the optional §3.4 is not done) | `common/json_response.py` is the app's `default_response_class` (`api/main.py:220`). All 6 tolerance `Query` declarations have `allow_inf_nan=False` (§3.3). Tests pass: 8 in `tests/common/test_json_response.py`, 18 tolerance cases. The cycle-safe walk and its 4 tests are **uncommitted**. |
-| 2. CORS headers on unhandled 500s | §4 | **Implemented** | `common/server_errors.py`, registered at `api/main.py:229`: inside `CORSMiddleware`, outside `MultipartBodyLimitMiddleware`. All 3 tests in `tests/common/test_server_errors.py` pass. |
+| 1. Non-finite floats render as `null` | §3 | **Implemented** (only the optional §3.4 is not done) | `common/json_response.py` is the app's `default_response_class` (`api/main.py:220`). Cycle-safe walk is in `76f670f`. All 6 tolerance `Query` declarations have `allow_inf_nan=False` (§3.3). Tests in the branch: 8 in `tests/common/test_json_response.py` (4 of them are the cycle cases), plus 18 tolerance cases. |
+| 2. CORS headers on unhandled 500s | §4 | **Implemented** | `common/server_errors.py`, registered at `api/main.py:229`: inside `CORSMiddleware`, outside `MultipartBodyLimitMiddleware`. All 3 tests in `tests/common/test_server_errors.py` are in the branch. |
 | 3. Frontend: stop polling, show the error | §5 | **Not implemented** | `VerificationStatus.vue` is unchanged. 5xx and status-less failures still back off forever (lines 124-131). There is no failure counter and no `retry: 0`. The badge still falls back to `PENDING` (line 45). |
 | 4. Request ID in 500 bodies (optional) | §6 | **Not implemented** | No `request_id` or `X-Request-ID` anywhere in `backend/biosim_server` or `frontend/app`. |
 
-Re-run on 2026-10-26: `pytest tests/common/test_json_response.py tests/common/test_server_errors.py tests/api/test_verification_completion.py::test_non_finite_tolerance_rejects_before_any_work` → 29 passed.
+Those focused tests are 8 + 3 + 18 = 29 cases. They are included in the `backend-ci` run on `0a05995`: 1547 passed, 17 skipped (§7).
 
-### Ship Fixes 1–2 (PR #157)
+### Ship PR #157
 
-- [ ] Commit and push the cycle-safe walk in `common/json_response.py` and its 4 tests in `tests/common/test_json_response.py` (§3.1).
-- [ ] Merge PR #157. CI was green and `CLEAN` at `83e461a`; re-check after the commit above.
-- [ ] Release PR: `bash backend/scripts/bump-backend.sh patch` (→ `0.10.3`), version files only. Merge it.
+- [x] Cycle-safe walk and its 4 tests are committed (`76f670f`) and pushed.
+- [ ] Push this documentation correction. CI on the previous head `0a05995` was green: `backend-ci`, `frontend-ci`, `smoke`, GitGuardian, and Snyk. Wait for the same checks on the new head before merging. This edit does not change runtime behavior.
+- [ ] Merge PR #157.
+- [ ] Release PR: `bash backend/scripts/bump-backend.sh patch` (→ `0.10.3` from the current `0.10.2`), version files only. Merge it. That release also carries #126 (`17e213a`), which is on `main` and is not in tag `backend-v0.10.2`.
 - [ ] Tag the merge commit on `main` as `backend-v0.10.3` and push the tag.
 - [ ] Confirm the `release.yaml` run succeeded: `gh run list --workflow release.yaml --limit 1`. **Do not open the deploy PR until it has**, because `api` is `Recreate` at one replica.
 - [ ] Check the rendered config: `kubectl kustomize kustomize/overlays/biosim-gke | grep -E 'AUTH0_DOMAIN|AUTH0_AUDIENCE|AUTH_REQUIRED'`.
