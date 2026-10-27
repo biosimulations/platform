@@ -25,6 +25,7 @@ from jose import jwk, jwt  # type: ignore[import-untyped]
 
 from biosim_server.api.main import app
 from biosim_server.common.auth import AuthenticatedUser, get_current_user
+from biosim_server.common.auth.auth0_management import ResendOutcome
 from biosim_server.config import Auth0Settings, get_settings
 from tests.fixtures.auth_fixtures import make_authenticated_user
 
@@ -288,13 +289,9 @@ def test_patch_me_only_forwards_reviewed_profile_fields(
         "/api/v1/me",
         json={"name": "New Name", "email": "new@example.com", "email_verified": True, "roles": ["admin"]},
     )
-    assert resp.status_code == 200
-    mock_update.assert_awaited_once_with(
-        authenticated_user.sub, name="New Name", email="new@example.com", verify_email=True
-    )
-    call = mock_update.await_args
-    assert call is not None
-    assert set(call.kwargs) == {"name", "email", "verify_email"}
+    assert resp.status_code == 422
+    mock_update.assert_not_awaited()
+    mock_get.assert_not_awaited()
 
 
 def test_delete_me_requires_authentication() -> None:
@@ -439,7 +436,7 @@ def test_patch_me_rejects_email_change_for_non_database_accounts(
     finally:
         app.dependency_overrides.pop(get_current_user, None)
     assert resp.status_code == 400
-    assert sub.split("|", 1)[0] in resp.json()["detail"]
+    assert "email/password accounts" in resp.json()["detail"]
     # Rejected outright -- no partial write of the name either.
     mock_update.assert_not_awaited()
 
@@ -483,11 +480,11 @@ def test_resend_verification_success(
     authenticated_user: AuthenticatedUser,
 ) -> None:
     assert authenticated_user.sub.startswith("auth0|")
-    mock_resend.return_value = {"type": "verification_email", "status": "pending", "id": "job_abc123"}
+    mock_resend.return_value = ResendOutcome.ACCEPTED
     resp = client.post("/api/v1/me/resend-verification")
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     mock_resend.assert_awaited_once_with(authenticated_user.sub)
-    assert resp.json()["message"] == "Verification email resent successfully"
+    assert resp.json()["message"] == "Verification email request accepted. Check your inbox."
 
 
 @pytest.mark.parametrize("sub", NON_DATABASE_SUBS)
@@ -503,7 +500,7 @@ def test_resend_verification_rejects_non_database_accounts(
     finally:
         app.dependency_overrides.pop(get_current_user, None)
     assert resp.status_code == 400
-    assert sub.split("|", 1)[0] in resp.json()["detail"]
+    assert "email/password accounts" in resp.json()["detail"]
     # Must not fall through to the database-identity job (no `identity` payload).
     mock_resend.assert_not_awaited()
 

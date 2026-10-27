@@ -299,6 +299,18 @@ class Auth0ManagementError(Exception):
     """A Management API call failed after the retry budget was exhausted."""
 
 
+class Auth0ManagementConflict(Auth0ManagementError):
+    """Auth0 definitively refused an email update because it conflicts."""
+
+
+class Auth0ManagementValidationError(Auth0ManagementError):
+    """Auth0 definitively rejected the allowed profile fields."""
+
+
+class Auth0ManagementIneligible(Auth0ManagementError):
+    """A well-formed live account cannot use database verification email."""
+
+
 class Auth0ManagementRateLimited(Auth0ManagementError):
     """Auth0 kept returning 429 through every retry. Carries a Retry-After hint
     (seconds) so the caller can surface a 503 the client can act on."""
@@ -501,24 +513,46 @@ async def update_auth0_user(
     settings = get_settings().auth0
     fields: dict[str, Any] = {"name": name} if name is not None else {}
     if email is not None:
-        fields["email"] = email
-    if verify_email is not None:
+        # Verification state is server-owned. Never carry an old verified flag
+        # onto a new address, even if the caller omits verification controls.
+        fields.update(email=email, email_verified=False, verify_email=True)
+    elif verify_email is not None:
         fields["verify_email"] = verify_email
     deadline = _operation_deadline()
     headers = await _auth_headers(deadline=deadline)
     client = get_auth0_http_client()
-    resp = await _send_with_retry(
-        lambda: client.patch(
+
+    async def send() -> httpx.Response:
+        return await client.patch(
             _user_url(settings.domain, user_id),
             headers=headers,
             json=fields,
             timeout=_MGMT_HTTP_TIMEOUT_SECONDS,
             follow_redirects=False,
-        ),
-        op="PATCH user",
-        deadline=deadline,
-    )
-    resp.raise_for_status()
+        )
+
+    if email is not None or verify_email is True:
+        # Either operation may send mail. A lost response or 5xx can follow a
+        # successful write; never replay it automatically.
+        remaining = deadline - _monotonic()
+        if remaining <= 0:
+            raise Auth0ManagementUnavailable("Profile update budget exhausted")
+        try:
+            resp = await asyncio.wait_for(send(), timeout=remaining)
+        except (TimeoutError, httpx.TransportError):
+            raise Auth0ManagementUnavailable(
+                "Profile update outcome is uncertain"
+            ) from None
+        if resp.status_code == 429:
+            raise Auth0ManagementRateLimited(_rate_limit_hint(resp))
+    else:
+        resp = await _send_with_retry(send, op="PATCH user", deadline=deadline)
+    if email is not None and resp.status_code == 409:
+        raise Auth0ManagementConflict("Email update conflicts with an existing account")
+    if resp.status_code in {400, 422}:
+        raise Auth0ManagementValidationError("Auth0 rejected the profile fields")
+    if resp.status_code != 200:
+        raise Auth0ManagementError("Auth0 profile update failed")
     return _json_object(resp, op="PATCH user")
 
 
@@ -681,8 +715,10 @@ def _validate_resend_eligibility(user: dict[str, Any], user_id: str) -> None:
             "Verification-email account has an invalid verification state"
         )
     email = user.get("email")
-    if not isinstance(email, str) or not email.strip():
-        raise Auth0ManagementError(
+    if email is not None and not isinstance(email, str):
+        raise Auth0ManagementError("Invalid verification-email address")
+    if email is None or not email.strip():
+        raise Auth0ManagementIneligible(
             "Verification-email account has no usable email address"
         )
     identities = user.get("identities")
@@ -693,11 +729,11 @@ def _validate_resend_eligibility(user: dict[str, Any], user_id: str) -> None:
     ):
         raise Auth0ManagementError("Verification-email account has no primary identity")
     primary = identities[0]
-    if (
-        primary.get("provider") != "auth0"
-        or not isinstance(primary.get("connection"), str)
-        or not primary["connection"]
-    ):
-        raise Auth0ManagementError(
+    if not isinstance(primary.get("provider"), str) or not primary["provider"]:
+        raise Auth0ManagementError("Invalid verification-email identity provider")
+    if not isinstance(primary.get("connection"), str) or not primary["connection"]:
+        raise Auth0ManagementError("Invalid verification-email identity connection")
+    if primary["provider"] != "auth0":
+        raise Auth0ManagementIneligible(
             "Verification-email account is not a database account"
         )

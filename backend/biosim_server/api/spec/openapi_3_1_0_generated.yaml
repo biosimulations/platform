@@ -908,34 +908,128 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserProfile'
+        '409':
+          description: Auth0 reports that the email address conflicts with an existing
+            account.
+        '422':
+          description: Invalid email, explicit null email, unknown field, or Auth0
+            profile validation failure.
+        '502':
+          description: Auth0 failure; an uncertain email update is never automatically
+            retried.
+        '503':
+          description: Management API unconfigured or throttled; throttling includes
+            Retry-After.
         '403':
           description: The token's issuer is not the configured Auth0 tenant, so its
             subject must not be resolved against that tenant's directory. No Management
             API call is made.
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
   /api/v1/me/resend-verification:
     post:
       tags:
       - Users
-      summary: Resend verification email to the authenticated user
+      summary: Request verification email for the authenticated database account
+      description: 'Accepts no body or query parameters. Reads the configured tenant''s
+        live account; a 202 confirms job acceptance, not delivery. An already-verified
+        account returns 200 without sending. Submission is never automatically retried.
+        All responses have Cache-Control: no-store. The dedicated quota is per issuer/subject
+        and process.'
       operationId: resend-verification-email
       responses:
-        '200':
-          description: Successful Response
+        '202':
+          description: Job accepted; delivery is not confirmed.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
           content:
             application/json:
               schema:
-                additionalProperties:
-                  type: string
-                type: object
-                title: Response Resend-Verification-Email
+                $ref: '#/components/schemas/VerificationEmailResponse'
+        '200':
+          description: Already verified; no email job submitted.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationEmailResponse'
+        '400':
+          description: Unsupported account.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+        '401':
+          description: Missing or invalid bearer token.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+            WWW-Authenticate:
+              schema:
+                type: string
+        '403':
+          description: Account is not from the configured tenant.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+        '422':
+          description: A body or query was supplied; neither is accepted.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+        '429':
+          description: Verification quota exhausted; no upstream call.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1.0
+        '502':
+          description: Upstream failure; an uncertain submission is not retried.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+        '503':
+          description: Management API unconfigured, authentication unavailable, or
+            Auth0 throttled.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1.0
       security:
       - HTTPBearer: []
   /api/v1/me/password-reset:
@@ -3420,12 +3514,13 @@ components:
           - type: 'null'
           title: Name
         email:
-          anyOf:
-          - type: string
-            maxLength: 255
-            minLength: 3
-          - type: 'null'
+          type: string
+          maxLength: 255
+          minLength: 3
+          format: email
           title: Email
+          description: New email address; omit to leave unchanged. Null is not accepted.
+      additionalProperties: false
       type: object
       title: UpdateUserProfileRequest
     UserProfile:
@@ -3506,6 +3601,22 @@ components:
       - count
       title: ValueFrequency
       description: One facet value and how many matching projects carry it.
+    VerificationEmailResponse:
+      properties:
+        outcome:
+          type: string
+          enum:
+          - accepted
+          - already_verified
+          title: Outcome
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - outcome
+      - message
+      title: VerificationEmailResponse
     VerificationIdsResponse:
       properties:
         verification_ids:

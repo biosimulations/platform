@@ -190,6 +190,17 @@ with the application's `Authorization` header).
 
 ---
 
+## Profile updates
+
+`PATCH /api/v1/me` accepts only `name` and `email`; unknown fields and invalid or
+explicit-null email values are 422. Email writes require a configured-tenant
+primary database account and make one provider PATCH attempt, with server-owned
+`email_verified=false` and `verify_email=true`. Name-only updates retain bounded
+retry, including social accounts. Provider conflicts are sanitized 409; provider
+field rejection is 422; credentials/scope failures remain upstream 502 rather
+than tenant 403. See the [profile email contract](../../docs/profile-email-api.md)
+for payload, response, retry, and validation details.
+
 ## Which endpoint?
 
 All protected routes take the **access token** in `Authorization: Bearer`. ID tokens
