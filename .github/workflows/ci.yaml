@@ -12,6 +12,12 @@ jobs:
         defaults:
             run:
                 working-directory: backend
+        env:
+            # Temporal dev server for tests/fixtures/temporal_fixtures.py. Installed here
+            # rather than downloaded by the SDK at test time, which intermittently failed
+            # ("Failed starting Temporal dev server: error decoding response body").
+            TEMPORAL_CLI_VERSION: 1.9.1
+            TEMPORAL_CLI_SHA256: 09a0326a51db84d02735e53542b9ebd8c4758daf47482a9ab0abce15844e60d5
         steps:
         - name: checkout repo
           uses: actions/checkout@v4
@@ -22,5 +28,23 @@ jobs:
             enable-cache: true
         - name: Install dependencies
           run: uv sync --frozen --all-groups
+        - name: Restore Temporal CLI
+          uses: actions/cache@v4
+          with:
+            path: ~/.temporal-cli
+            key: temporal-cli-${{ env.TEMPORAL_CLI_VERSION }}-linux-amd64
+        - name: Install Temporal CLI
+          run: |
+            cli="$HOME/.temporal-cli/temporal"
+            if [ ! -x "$cli" ]; then
+              archive="$RUNNER_TEMP/temporal_cli.tar.gz"
+              curl -fsSL --retry 5 --retry-all-errors -o "$archive" \
+                "https://github.com/temporalio/cli/releases/download/v${TEMPORAL_CLI_VERSION}/temporal_cli_${TEMPORAL_CLI_VERSION}_linux_amd64.tar.gz"
+              echo "${TEMPORAL_CLI_SHA256}  $archive" | sha256sum -c -
+              mkdir -p "$HOME/.temporal-cli"
+              tar -xzf "$archive" -C "$HOME/.temporal-cli" temporal
+            fi
+            "$cli" --version
+            echo "TEMPORAL_CLI_PATH=$cli" >> "$GITHUB_ENV"
         - name: Run tests
           run: uv run python -m pytest

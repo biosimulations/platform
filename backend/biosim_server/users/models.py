@@ -23,3 +23,7 @@ class UpdateUserProfileRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     # Email/password (Auth0 database) accounts only; other providers get a 400.
     email: str | None = Field(default=None, min_length=3, max_length=255)
+
+
+class PasswordResetResponse(BaseModel):
+    url: str

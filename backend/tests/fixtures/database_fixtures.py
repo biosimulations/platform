@@ -9,17 +9,20 @@ from biosim_server.biosim_runs import DatabaseServiceMongo
 from biosim_server.config import get_settings
 from biosim_server.dependencies import set_database_service, get_database_service, set_omex_database_service, \
     get_omex_database_service, set_simulation_run_database_service, get_simulation_run_database_service, \
-    set_project_database_service, get_project_database_service
+    set_project_database_service, get_project_database_service, \
+    set_verification_database_service, get_verification_database_service
 from biosim_server.biosim_omex import OmexDatabaseServiceMongo
 from biosim_server.simulations import SimulationRunDatabaseServiceMongo
 from biosim_server.projects import ProjectDatabaseServiceMongo, ProjectSearchServiceMongo
+from biosim_server.biosim_verify.database import VerificationDatabaseServiceMongo
 
 MONGODB_DATABASE_NAME = "mydatabase"
 MONGODB_COLLECTION_NAME = "mycollection"
 
 @pytest.fixture(scope="session")
 def mongodb_container() -> MongoDbContainer:
-    with MongoDbContainer() as container:
+    # MongoDB 8 cannot start on Linux 6.19+ (SERVER-121912); keep CI deterministic.
+    with MongoDbContainer("mongo:7") as container:
         container.start()
         yield container
 
@@ -148,3 +151,19 @@ async def project_search_service_mongo(
     await database.get_collection(settings.mongodb_collection_biosimulations_runs).delete_many({})
     await search_col.drop()
     set_project_database_service(old_projects_db_service)
+
+
+
+@pytest_asyncio.fixture(scope="function")
+async def verification_database_service_mongo(
+    mongo_test_client: AsyncIOMotorClient,
+) -> AsyncGenerator[VerificationDatabaseServiceMongo, None]:
+    verification_db_service = VerificationDatabaseServiceMongo(db_client=mongo_test_client)
+    await verification_db_service.ensure_indexes()
+    old_service = get_verification_database_service()
+    set_verification_database_service(verification_db_service)
+
+    yield verification_db_service
+
+    await verification_db_service.delete_all_verifications()
+    set_verification_database_service(old_service)

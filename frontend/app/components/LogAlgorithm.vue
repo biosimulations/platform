@@ -1,7 +1,10 @@
 <template>
   <div v-if="algorithmTerm" class="mt-2 text-sm">
     <h4 class="font-bold">
-      Executed algorithm: {{ algorithmTerm.name }} (<a :href="algorithmTerm.url" class="text-blue-500 hover:underline" rel="noopener" target="_blank">{{ algorithmTerm.id }}</a>)
+      Executed algorithm: {{ algorithmTerm.name || algorithmTerm.id }}
+      <template v-if="algorithmTerm.id">
+        (<a :href="algorithmTerm.url || `https://www.ebi.ac.uk/ols4/ontologies/kisao/terms?obo_id=${algorithmTerm.id.replace('_', ':')}`" class="text-blue-500 hover:underline" rel="noopener" target="_blank">{{ algorithmTerm.id }}</a>)
+      </template>
     </h4>
     <p v-if="algorithmTerm.description" class="mt-1 text-neutral-700 whitespace-pre-wrap">
       {{ algorithmTerm.description }}
@@ -11,30 +14,46 @@
     <UIcon name="i-lucide-loader-2" class="w-4 h-4 animate-spin" />
     Loading algorithm details...
   </div>
-  <div v-else-if="kisaoId" class="mt-2 text-sm text-neutral-700">
+  <div v-else-if="rawKisaoId" class="mt-2 text-sm text-neutral-700">
     <h4 class="font-bold">
-      Executed algorithm: <a :href="`https://www.ebi.ac.uk/ols4/ontologies/kisao/terms?obo_id=${kisaoId.replace('_', ':')}`" class="text-blue-500 hover:underline" rel="noopener" target="_blank">{{ kisaoId }}</a>
+      Executed algorithm: <a :href="`https://www.ebi.ac.uk/ols4/ontologies/kisao/terms?obo_id=${rawKisaoId.replace('_', ':')}`" class="text-blue-500 hover:underline" rel="noopener" target="_blank">{{ rawKisaoId }}</a>
     </h4>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import {computed, onMounted, ref} from 'vue'
+import type {AlgorithmDetails} from '~/models/page'
 
 const props = defineProps<{
-  kisaoId?: string;
+  kisaoId?: string | AlgorithmDetails | any
+  algorithm?: AlgorithmDetails | string | any
 }>()
 
-const algorithmTerm = ref<any>(null)
+const algorithmTerm = ref<AlgorithmDetails | null>(null)
 const isLoading = ref(false)
 const runtimeConfig = useRuntimeConfig()
 
+const rawKisaoId = computed<string | undefined>(() => {
+  if (typeof props.kisaoId === 'string') return props.kisaoId
+  if (typeof props.algorithm === 'string') return props.algorithm
+  return undefined
+})
+
 onMounted(async () => {
-  if (props.kisaoId) {
+  const directObj = (typeof props.algorithm === 'object' && props.algorithm)
+    || (typeof props.kisaoId === 'object' && props.kisaoId)
+
+  if (directObj && directObj.id) {
+    algorithmTerm.value = directObj
+    return
+  }
+
+  const idToFetch = rawKisaoId.value
+  if (idToFetch) {
     isLoading.value = true
     try {
-      const res = await $fetch(`${runtimeConfig.public.legacy_api_url}/ontologies/KISAO/${props.kisaoId}`)
-      algorithmTerm.value = res
+      algorithmTerm.value = await $fetch<AlgorithmDetails>(`${runtimeConfig.public.legacy_api_url}/ontologies/KISAO/${idToFetch}`)
     } catch (e) {
       console.error('Failed to fetch algorithm term', e)
     } finally {

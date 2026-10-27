@@ -1,21 +1,33 @@
-"""Worked example of Auth0-role-based access control for REST endpoints.
+"""Worked example of Auth0 role- and permission-based access control.
 
-Three endpoints, in increasing order of restriction:
-  - GET /api/v1/demo/public        -- no auth required
-  - GET /api/v1/demo/private/me    -- any authenticated user; echoes back who the token identifies
-  - GET /api/v1/demo/private/animal -- authenticated *and* holding one of admin/publisher/user
+Endpoints, in increasing order of restriction:
+  - GET /api/v1/demo/public             -- no auth required
+  - GET /api/v1/demo/private/me         -- any authenticated user
+  - GET /api/v1/demo/private/animal     -- authenticated and holding admin/publisher/user
+  - GET /api/v1/demo/private/permission -- authenticated and holding demo:read
 
-Role membership is read from AuthenticatedUser.roles, which get_current_user
-populates from a custom claim on the access token (see Auth0Settings.roles_claim
-in config.py) -- gating happens via the require_roles(...) dependency factory in
-common/auth/roles.py, not by hand-checking user.roles in each handler body.
+Role membership is read from AuthenticatedUser.roles (namespaced access-token
+claim). Permissions are read from AuthenticatedUser.permissions (Auth0 `permissions`
+claim plus OAuth `scope`). Gating uses require_roles / require_permissions in
+common/auth/roles.py, not hand-checks in each handler.
 """
 
 from fastapi import APIRouter, Depends
 
 from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user
-from biosim_server.common.auth.roles import ADMIN_ROLE, PUBLISHER_ROLE, USER_ROLE, require_roles
-from biosim_server.rbac_demo.models import PublicMessage, RoleAnimalResponse, WhoAmIResponse
+from biosim_server.common.auth.roles import (
+    ADMIN_ROLE,
+    PUBLISHER_ROLE,
+    USER_ROLE,
+    require_permissions,
+    require_roles,
+)
+from biosim_server.rbac_demo.models import (
+    PermissionCheckResponse,
+    PublicMessage,
+    RoleAnimalResponse,
+    WhoAmIResponse,
+)
 
 router = APIRouter(prefix="/api/v1/demo", tags=["RBAC Demo"])
 
@@ -62,3 +74,17 @@ async def animal_endpoint(
             return RoleAnimalResponse(role=role, animal=animal)
     # Unreachable: require_roles already guarantees one of the roles above is present.
     raise AssertionError("require_roles let through a user without admin/publisher/user role")
+
+
+@router.get(
+    "/private/permission",
+    response_model=PermissionCheckResponse,
+    operation_id="demo-private-permission",
+    summary="Private endpoint -- requires the demo:read permission on the access token",
+)
+async def permission_endpoint(
+    user: AuthenticatedUser = Depends(require_permissions("demo:read")),
+) -> PermissionCheckResponse:
+    return PermissionCheckResponse(
+        permission="demo:read", granted="demo:read" in user.permissions
+    )

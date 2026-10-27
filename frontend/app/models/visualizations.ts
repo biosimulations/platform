@@ -1,5 +1,5 @@
 import type {PlotlyDataLayout} from "~/models/plotly";
-import type {SimulationRunSedDocument} from "~/models/simulation";
+import type {PageSimulationRunSedDocument} from "~/models/page";
 
 export interface VegaVisualization {
   _type: 'VegaVisualization';
@@ -30,7 +30,7 @@ export interface UserDesignedVisualization {
   renderer: 'Plotly';
   userDesigned: true;
   simulationRunId: string;
-  sedDocs: SimulationRunSedDocument[];
+  sedDocs: PageSimulationRunSedDocument[];
   uriSedDataSetMap: any;
 }
 

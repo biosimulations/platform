@@ -21,6 +21,7 @@ defineProps<{
       <!-- Case: Vega Renderer -->
       <VegaVisualization
         v-if="visualization.renderer === 'Vega'"
+        :key="visualization.name"
         :spec="visualization.vegaSpec"
         :name="`${visualization.name}_vega`"
       />

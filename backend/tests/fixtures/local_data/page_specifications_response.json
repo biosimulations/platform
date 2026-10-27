@@ -1,0 +1,72 @@
+[
+  {
+    "id": "simulation.sedml",
+    "models": [
+      {
+        "id": "m1",
+        "language": "urn:sedml:language:sbml.level-3.version-1"
+      },
+      {
+        "id": "m2",
+        "language": {
+          "acronym": "CELLML",
+          "name": "CellML"
+        }
+      },
+      {
+        "id": "m3",
+        "language": "urn:sedml:language:sbml"
+      }
+    ],
+    "outputs": [
+      {
+        "_type": "SedPlot2D",
+        "id": "plot",
+        "name": "Plot",
+        "xScale": "linear",
+        "yScale": "log",
+        "curves": [
+          {
+            "id": "curve",
+            "name": "Curve",
+            "xDataGenerator": "time",
+            "yDataGenerator": {
+              "id": "value",
+              "name": "Value",
+              "ignored": true
+            },
+            "style": {
+              "base": "base",
+              "line": {
+                "color": "ff0000",
+                "thickness": 2,
+                "type": "solid"
+              },
+              "marker": {
+                "fillColor": "ffffff",
+                "lineColor": "000000",
+                "lineThickness": 1,
+                "size": 3,
+                "type": "circle"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "_type": "SedReport",
+        "id": "report",
+        "name": "Report",
+        "dataSets": [
+          {
+            "id": "dataset",
+            "name": "Dataset",
+            "label": "Value",
+            "ignored": true
+          }
+        ]
+      }
+    ],
+    "ignored": true
+  }
+]

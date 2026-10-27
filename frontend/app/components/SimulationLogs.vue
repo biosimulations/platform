@@ -11,7 +11,7 @@
           </span>
         </div>
 
-        <LogAlgorithm v-if="docLog.algorithm" :kisao-id="docLog.algorithm" />
+        <LogAlgorithm v-if="docLog.algorithm" :algorithm="docLog.algorithm" />
 
         <div v-if="docLog.skipReason" class="mt-2 text-sm text-neutral-600">
           <span class="font-bold">Skipped:</span> {{ docLog.skipReason.message || docLog.skipReason.type || 'No details provided.' }}
@@ -37,7 +37,7 @@
             {{ t.task.status }}
           </span>
         </div>
-        <LogAlgorithm v-if="t.task.algorithm" :kisao-id="t.task.algorithm" />
+        <LogAlgorithm v-if="t.task.algorithm" :algorithm="t.task.algorithm" />
         <div v-if="t.task.skipReason" class="mt-2 text-sm text-neutral-600">
           <span class="font-bold">Skipped:</span> {{ t.task.skipReason.message || t.task.skipReason.type || 'No details provided.' }}
         </div>
@@ -60,7 +60,7 @@
             {{ r.report.status }}
           </span>
         </div>
-        <LogAlgorithm v-if="r.report.algorithm" :kisao-id="r.report.algorithm" />
+        <LogAlgorithm v-if="r.report.algorithm" :algorithm="r.report.algorithm" />
         <div v-if="r.report.skipReason" class="mt-2 text-sm text-neutral-600">
           <span class="font-bold">Skipped:</span> {{ r.report.skipReason.message || r.report.skipReason.type || 'No details provided.' }}
         </div>
@@ -83,7 +83,7 @@
             {{ p.plot.status }}
           </span>
         </div>
-        <LogAlgorithm v-if="p.plot.algorithm" :kisao-id="p.plot.algorithm" />
+        <LogAlgorithm v-if="p.plot.algorithm" :algorithm="p.plot.algorithm" />
         <div v-if="p.plot.skipReason" class="mt-2 text-sm text-neutral-600">
           <span class="font-bold">Skipped:</span> {{ p.plot.skipReason.message || p.plot.skipReason.type || 'No details provided.' }}
         </div>
@@ -107,7 +107,7 @@
           </span>
         </div>
 
-        <LogAlgorithm v-if="logs.algorithm" :kisao-id="logs.algorithm" />
+        <LogAlgorithm v-if="logs.algorithm" :algorithm="logs.algorithm" />
 
         <div v-if="logs.skipReason" class="mt-2 text-sm text-neutral-600">
           <span class="font-bold">Skipped:</span> {{ logs.skipReason.message || logs.skipReason.type || 'No details provided.' }}
@@ -130,66 +130,67 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import Anser from 'anser'
+import type { PageSimulationLog } from '~/models/page'
 
 function formatLogOutput(output: string) {
-  if (!output) return '';
-  return Anser.ansiToHtml(output, { use_classes: false });
+  if (!output) return ''
+  return Anser.ansiToHtml(output, { use_classes: false })
 }
 
 const props = defineProps<{
-  logs: any;
+  logs?: PageSimulationLog | any
 }>()
 
 const taskLogs = computed(() => {
-  if (!props.logs?.sedDocuments) return [];
-  const tasks: any[] = [];
+  if (!props.logs?.sedDocuments) return []
+  const tasks: any[] = []
   props.logs.sedDocuments.forEach((docLog: any) => {
     if (docLog.tasks) {
       docLog.tasks.forEach((taskLog: any) => {
-        tasks.push({ docLocation: docLog.location, task: taskLog });
-      });
+        tasks.push({ docLocation: docLog.location, task: taskLog })
+      })
     }
-  });
-  return tasks;
-});
+  })
+  return tasks
+})
 
 const reportLogs = computed(() => {
-  if (!props.logs?.sedDocuments) return [];
-  const reports: any[] = [];
+  if (!props.logs?.sedDocuments) return []
+  const reports: any[] = []
   props.logs.sedDocuments.forEach((docLog: any) => {
     if (docLog.outputs) {
       docLog.outputs.forEach((outputLog: any) => {
-        if ('dataSets' in outputLog) {
-          reports.push({ docLocation: docLog.location, report: outputLog });
+        if (outputLog.dataSets != null) {
+          reports.push({ docLocation: docLog.location, report: outputLog })
         }
-      });
+      })
     }
-  });
-  return reports;
-});
+  })
+  return reports
+})
 
 const plotLogs = computed(() => {
-  if (!props.logs?.sedDocuments) return [];
-  const plots: any[] = [];
+  if (!props.logs?.sedDocuments) return []
+  const plots: any[] = []
   props.logs.sedDocuments.forEach((docLog: any) => {
     if (docLog.outputs) {
       docLog.outputs.forEach((outputLog: any) => {
-        if (!('dataSets' in outputLog)) {
-          plots.push({ docLocation: docLog.location, plot: outputLog });
+        if (outputLog.dataSets == null) {
+          plots.push({ docLocation: docLog.location, plot: outputLog })
         }
-      });
+      })
     }
-  });
-  return plots;
-});
+  })
+  return plots
+})
 
 function statusColor(status: string) {
-  if (!status) return 'bg-neutral-500';
-  const s = status.toUpperCase();
-  if (s === 'SUCCEEDED') return 'bg-green-500';
-  if (s === 'RUNNING') return 'bg-yellow-500';
-  if (s === 'FAILED') return 'bg-red-500';
-  if (s === 'QUEUED') return 'bg-blue-500';
-  return 'bg-neutral-500';
+  if (!status) return 'bg-neutral-500'
+  const s = status.toUpperCase()
+  if (s === 'SUCCEEDED') return 'bg-green-500'
+  if (s === 'RUNNING') return 'bg-yellow-500'
+  if (s === 'FAILED') return 'bg-red-500'
+  if (s === 'QUEUED') return 'bg-blue-500'
+  return 'bg-neutral-500'
 }
 </script>

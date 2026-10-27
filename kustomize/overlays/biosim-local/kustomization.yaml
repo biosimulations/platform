@@ -23,7 +23,6 @@ replicas:
 
 resources:
 - ingress.yaml
-- secret-ghcr.yaml
 - secret-shared.yaml
 - api-pvc.yaml
 - worker-pvc.yaml
