@@ -188,6 +188,14 @@ password-change ticket. The returned URL is a bearer capability: it is returned 
 `Cache-Control: no-store`, and the browser must navigate to it directly (never fetch it
 with the application's `Authorization` header).
 
+`POST /api/v1/me/resend-verification` reads the live account (`read:users`) and, when
+it is unverified, submits one verification-email job (`update:users`). The caller
+cannot choose the address, user, or redirect. `202` / `outcome=accepted` means Auth0
+accepted the job. `200` / `outcome=already_verified` submits nothing. Neither response
+proves inbox delivery. Responses are `Cache-Control: no-store`. The
+`verification-email` quota is separate from password reset. See
+[verification email](../../docs/verification-email-api.md).
+
 ---
 
 ## Profile updates
@@ -222,7 +230,8 @@ return 401.
 | `GET /projects`, `GET /projects/stats` | none | public published search | n/a |
 | `POST /projects/reindex` | shared secret, **not** Auth0 | `PROJECT_REINDEX_TOKEN` | n/a |
 | `GET /api/v1/me` | `get_current_user` | any valid access token | `sub`, namespaced email (display) |
-| `PATCH` / `DELETE /api/v1/me` | `get_current_user` | same, plus Management API configured | `sub` (Management API user id) |
+| `PATCH` / `DELETE /api/v1/me` | `get_current_user` | same, plus Management API configured. PATCH accepts only `name` and `email`; unknown fields are 422. Email changes are one attempt and require a configured-tenant database subject | `sub` (Management API user id) |
+| `POST /api/v1/me/resend-verification` | `get_current_user` | configured tenant and a primary `auth0\|` database subject; no body or query. M2M needs `read:users` and `update:users`. Local quota is `RATE_LIMIT_VERIFICATION_EMAIL_*` | `sub` and `iss` only |
 | `POST /api/v1/me/password-reset` | `get_current_user` | same, plus Management API configured and authorized for `create:user_tickets`; caller's `iss` must be exactly `https://AUTH0_DOMAIN/` and `sub` must be a primary `auth0\|<id>` database user; when `AUTH0_PASSWORD_RESET_REQUIRE_RECENT_AUTH=true`, the token must also carry an `auth_time` no older than `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` (otherwise **403**) | `sub` only — caller-supplied email/user id/`result_url` are never forwarded; returns an Auth0-hosted ticket URL and sends no email |
 | `GET /api/v1/demo/private/me` | `get_current_user` | any valid access token | email or `sub` (gated by `ENABLE_RBAC_DEMO`) |
 | `GET /api/v1/demo/private/animal` | `get_current_user` | `require_roles(admin, publisher, user)` | namespaced **roles** |
