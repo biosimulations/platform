@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from aiohttp import ClientResponseError
 from pydantic import BaseModel
@@ -213,6 +213,15 @@ async def poll_biosim_run_activity(input: PollBiosimRunActivityInput) -> Biosimu
             activity.heartbeat("Polling simulation run status")
             simulation_run = await biosim_service.get_sim_run(input.biosimulations_run_id)
 
+        # biosimulations.org leaves a failed run's `error` empty; the reason is in its logs. Best effort: a run that
+        # failed is reported as failed whether or not its logs can be read.
+        if simulation_run.status == BiosimSimulationRunStatus.FAILED and not simulation_run.error_message:
+            try:
+                logs = await biosim_service.get_sim_run_logs(simulation_run.id)
+                simulation_run.error_message = error_from_run_logs(logs)
+            except Exception as e:
+                activity.logger.warning(f"Could not read the logs of failed run {simulation_run.id}: {e}")
+
         # simdata API may lag behind the run status, so retry HDF5 on 404
         hdf5_file: HDF5File | None = None
         if simulation_run.status == BiosimSimulationRunStatus.SUCCEEDED:
@@ -258,3 +267,23 @@ async def poll_biosim_run_activity(input: PollBiosimRunActivityInput) -> Biosimu
     except Exception as e:
         activity.logger.exception(f"Failed to poll biosim simulation run: {str(e)}", exc_info=e)
         raise e
+
+
+def error_from_run_logs(logs: dict[str, Any]) -> str | None:
+    """The reason a biosimulations.org run failed, from its logs (GET /logs/{run_id}): the archive-level exception
+    (an invalid COMBINE archive, for example), else the first SED document's or task's. None when the logs carry none."""
+    def message(node: Any) -> str | None:
+        exception = node.get("exception") if isinstance(node, dict) else None
+        if isinstance(exception, dict) and exception.get("message"):
+            kind = exception.get("type")
+            return f"{kind}: {exception['message']}" if kind else str(exception["message"])
+        return None
+
+    found = message(logs)
+    if found is None:
+        for document in logs.get("sedDocuments") or []:
+            found = message(document) or next(
+                (m for task in (document.get("tasks") or []) if (m := message(task)) is not None), None)
+            if found is not None:
+                break
+    return found[:2000] if found is not None else None

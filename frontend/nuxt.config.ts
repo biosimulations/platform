@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   modules: [
@@ -9,7 +11,76 @@ export default defineNuxtConfig({
     '@nuxtjs/seo',
     '@nuxt/image',
     'nuxt-easy-lightbox',
-    'nuxt-og-image'
+    'nuxt-og-image',
+    // Automatically guarantee that all routes listed in user.global.ts (or using user middleware) are rendered client-only (ssr: false)
+    (_options, nuxt) => {
+      const markClientOnly = (routePath: string) => {
+        nuxt.options.routeRules = nuxt.options.routeRules || {}
+        nuxt.options.routeRules[routePath] = {
+          ...nuxt.options.routeRules[routePath],
+          ssr: false,
+        }
+      }
+
+      nuxt.hook('pages:extend', (pages) => {
+        // 1. Read routes from app/middleware/user.global.ts
+        try {
+          const middlewareContent = fs.readFileSync('app/middleware/user.global.ts', 'utf-8')
+          const extractRoutes = (varName: string) => {
+            const match = middlewareContent.match(new RegExp(`(?:export\\s+)?const\\s+${varName}\\s*(?::\\s*[^=]+)?=\\s*\\[([\\s\\S]*?)\\]`))
+            if (!match || !match[1]) return []
+            return Array.from(match[1].matchAll(/(?:target:\s*)?['"](\/[^'"]*)['"]/g), m => m[1]).filter((r): r is string => Boolean(r))
+          }
+
+          const routes = [
+            ...extractRoutes('authenticatedRoutes'),
+            ...extractRoutes('guestOnlyRoutes'),
+          ]
+
+          for (const route of routes) {
+            if (route) {
+              markClientOnly(route)
+            }
+          }
+        } catch {
+          // Ignore read errors
+        }
+
+        // 2. Also check pages defining inline middleware in definePageMeta
+        const enforcePageList = (pageList: Array<{ path: string, file?: string, children?: any[] }>) => {
+          for (const page of pageList) {
+            if (page.file) {
+              try {
+                const content = fs.readFileSync(page.file, 'utf-8')
+                const hasUserMiddleware
+                  = /middleware:\s*['"](?:user|guest|auth)['"]/.test(content)
+                    || /middleware:\s*\[[^\]]*['"](?:user|guest|auth)['"][^\]]*\]/.test(content)
+
+                if (hasUserMiddleware) {
+                  markClientOnly(page.path)
+                }
+              } catch {
+                // Ignore read errors
+              }
+            }
+            if (page.children) {
+              enforcePageList(page.children)
+            }
+          }
+        }
+        enforcePageList(pages)
+
+        // 3. Register route alias /simulators/:id/:version pointing to simulators/[id].vue
+        const simPage = pages.find(p => p.file && /simulators[/\\]\[id\]\.vue$/.test(p.file))
+        if (simPage) {
+          pages.push({
+            name: 'simulators-id-version',
+            path: '/simulators/:id/:version',
+            file: simPage.file,
+          })
+        }
+      })
+    },
   ],
 
   devtools: {
@@ -41,6 +112,8 @@ export default defineNuxtConfig({
       api_url: process.env.API_URL,
       biosimulations_api_url: process.env.BIOSIMULATIONS_API_URL,
       legacy_api_url: process.env.LEGACY_API_URL,
+      legacy_simulators_api_url: process.env.LEGACY_SIMULATORS_API_URL || 'https://api.biosimulators.org',
+      combine_api_url: process.env.COMBINE_API_URL || 'https://combine.api.biosimulations.org',
       auth0Domain: process.env.NUXT_PUBLIC_AUTH0_DOMAIN,
       auth0ClientId: process.env.NUXT_PUBLIC_AUTH0_CLIENT_ID,
       auth0Audience: process.env.NUXT_PUBLIC_AUTH0_AUDIENCE
@@ -65,7 +138,11 @@ export default defineNuxtConfig({
     // top-level destructure throws a 500. The page is a redirect launcher with
     // nothing to server-render anyway. Only direct hits and refreshes were
     // affected -- in-app navigation to /login is client-side and always worked.
-    '/login': { ssr: false }
+    '/login': { ssr: false },
+    '/profile': { ssr: false },
+    '/verified': { ssr: false },
+    '/simulations': { ssr: false },
+    '/simulations/**': { ssr: false },
   },
 
   compatibilityDate: '2025-01-15',

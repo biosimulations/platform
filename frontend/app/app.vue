@@ -175,12 +175,6 @@ const navigation_items = ref<NavigationMenuItem[][]>([
           to: '/simulators/suggest',
           class: 'cursor-pointer',
         },
-        {
-          label: 'Validate a simulator',
-          icon: 'i-lucide-cpu',
-          to: '/simulators/validate',
-          class: 'cursor-pointer',
-        },
       ]
     },
     {
@@ -194,6 +188,12 @@ const navigation_items = ref<NavigationMenuItem[][]>([
           class: 'cursor-pointer',
         },
         {
+          label: 'Verify a model',
+          icon: 'i-lucide-shield-check',
+          to: '/utilities/verify-model',
+          class: 'cursor-pointer',
+        },
+        {
           label: 'Validate a model',
           icon: 'i-lucide-file-check',
           to: '/utilities/validate-model',
@@ -203,6 +203,12 @@ const navigation_items = ref<NavigationMenuItem[][]>([
           label: 'Validate a simulation',
           icon: 'i-lucide-activity',
           to: '/utilities/validate-simulation',
+          class: 'cursor-pointer',
+        },
+        {
+          label: 'Validate a simulator',
+          icon: 'i-lucide-cpu',
+          to: '/simulators/validate',
           class: 'cursor-pointer',
         },
         {
@@ -220,7 +226,7 @@ const navigation_items = ref<NavigationMenuItem[][]>([
         {
           label: 'Describe visualizations',
           icon: 'i-lucide-bar-chart-3',
-          to: 'utilities/describe-visualizations',
+          to: '/utilities/describe-visualizations',
           class: 'cursor-pointer',
         },
         {
@@ -268,7 +274,18 @@ const navigation_items = ref<NavigationMenuItem[][]>([
 const lenisOptions = {
   // autoRaf: false,
   // lenis options (optional)
-  prevent: (node: any) => !!node.closest('.lenis-prevent')
+  allowNestedScroll: true,
+  prevent: (node: Element) => {
+    if (!node || typeof node.closest !== 'function') return false
+    return Boolean(
+      node.closest('.lenis-prevent')
+      || node.closest('[data-lenis-prevent]')
+      || node.closest('[role="dialog"]')
+      || node.closest('[role="alertdialog"]')
+      || node.closest('[data-reka-dialog-content]')
+      || node.closest('[data-reka-portal]')
+    )
+  }
 }
 
 onMounted(() => {
@@ -314,23 +331,6 @@ onMounted(() => {
       <NuxtPage />
     </UMain>
 
-    <UFooter>
-      <template #left>
-        <p class="text-sm text-muted">
-          Built with Nuxt UI • © {{ new Date().getFullYear() }}
-        </p>
-      </template>
-
-      <template #right>
-        <UButton
-          to="https://github.com/nuxt-ui-templates/starter"
-          target="_blank"
-          icon="i-simple-icons-github"
-          aria-label="GitHub"
-          color="neutral"
-          variant="ghost"
-        />
-      </template>
-    </UFooter>
+    <AppFooter />
   </UApp>
 </template>

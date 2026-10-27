@@ -7,14 +7,7 @@ For personal iteration, `npm run dev` against the deployed API is usually faster
 ## Bootstrap (one-time, before first deploy)
 
 1. **DNS** — `biosim-dev.cam.uchc.edu` needs to resolve to the RKE ingress IP (separate DNS ticket; on-premise zone is not self-service).
-2. **Image pull secret** — sealed secrets are namespace-bound, so the `ghcr-secret` from `biosim-rke` does not apply here. Generate one for `frontend-dev`:
-   ```bash
-   kubectl create namespace frontend-dev
-   kustomize/scripts/sealed_secret_ghcr.sh frontend-dev > secret-ghcr.yaml
-   # then add `- secret-ghcr.yaml` to the resources list in kustomization.yaml
-   ```
-   (Not committed here because the encrypted blob is bound to the cluster's sealed-secrets controller key.)
-3. **CORS** — the RKE prod-tier `api` allows this host via `CORS_EXTRA_ORIGINS` in `kustomize/config/biosim-rke/api.env`. If you rename or add a preview host, update that file (not this overlay) and re-apply `biosim-rke`.
+2. **CORS** — the RKE prod-tier `api` allows this host via `CORS_EXTRA_ORIGINS` in `kustomize/config/biosim-rke/api.env`. If you rename or add a preview host, update that file (not this overlay) and re-apply `biosim-rke`.
 
 ## Deploy
 

@@ -19,14 +19,14 @@ async def test_ssh_command(ssh_service: SSHService) -> None:
 @pytest.mark.skipif(len(get_settings().slurm_submit_key) == 0,
                     reason="slurm ssh key file not supplied")
 @pytest.mark.asyncio
-async def test_scp_upload_download(ssh_service: SSHService) -> None:
+async def test_scp_upload_download(ssh_service: SSHService, tmp_path: Path) -> None:
     # create local temp text file with content "hello world"
-    local_path = Path("temp.txt")
+    local_path = tmp_path / "upload.txt"
     with open(local_path, "w") as f:
         f.write("hello world")
 
     remote_path = Path(f"remote_temp_{uuid.uuid4().hex}.txt")
-    local_path_2 = Path("temp2.txt")
+    local_path_2 = tmp_path / "download.txt"
 
     await ssh_service.scp_upload(local_file=local_path, remote_path=remote_path)
     await ssh_service.scp_download(remote_path=remote_path, local_file=local_path_2)
@@ -36,7 +36,5 @@ async def test_scp_upload_download(ssh_service: SSHService) -> None:
 
     return_code, stdout, stderr = await ssh_service.run_command(f"rm {remote_path}")
     assert return_code == 0
-    local_path.unlink()
-    local_path_2.unlink()
 
 

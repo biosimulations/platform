@@ -1,0 +1,93 @@
+{
+  "status": "SUCCEEDED",
+  "output": "Execution output",
+  "algorithm": {
+    "id": "KISAO_0000019",
+    "name": "CVODE",
+    "url": "https://example.org/algorithm",
+    "description": "Algorithm"
+  },
+  "skipReason": {
+    "message": "Example message",
+    "type": "ExampleType"
+  },
+  "exception": {
+    "message": "Example message",
+    "type": "ExampleType"
+  },
+  "ignored": true,
+  "sedDocuments": [
+    {
+      "status": "SUCCEEDED",
+      "output": "Execution output",
+      "algorithm": {
+        "id": "KISAO_0000019",
+        "name": "CVODE",
+        "url": "https://example.org/algorithm",
+        "description": "Algorithm"
+      },
+      "skipReason": {
+        "message": "Example message",
+        "type": "ExampleType"
+      },
+      "exception": {
+        "message": "Example message",
+        "type": "ExampleType"
+      },
+      "ignored": true,
+      "location": "simulation.sedml",
+      "tasks": [
+        {
+          "status": "SUCCEEDED",
+          "output": "Execution output",
+          "algorithm": {
+            "id": "KISAO_0000019",
+            "name": "CVODE",
+            "url": "https://example.org/algorithm",
+            "description": "Algorithm"
+          },
+          "skipReason": {
+            "message": "Example message",
+            "type": "ExampleType"
+          },
+          "exception": {
+            "message": "Example message",
+            "type": "ExampleType"
+          },
+          "ignored": true,
+          "id": "task"
+        }
+      ],
+      "outputs": [
+        {
+          "status": "SUCCEEDED",
+          "output": "Execution output",
+          "algorithm": {
+            "id": "KISAO_0000019",
+            "name": "CVODE",
+            "url": "https://example.org/algorithm",
+            "description": "Algorithm"
+          },
+          "skipReason": {
+            "message": "Example message",
+            "type": "ExampleType"
+          },
+          "exception": {
+            "message": "Example message",
+            "type": "ExampleType"
+          },
+          "ignored": true,
+          "id": "report",
+          "dataSets": [
+            {
+              "id": "dataset",
+              "status": "SUCCEEDED",
+              "output": "Dataset output",
+              "ignored": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

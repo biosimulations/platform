@@ -2,19 +2,22 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
-# IDEs/Editors/Agentic Tools
 .idea
+.junie/
 .vscode/
 .cursor/
+.agents-new/
 .freebuff/
-.perch/
-.crush/
-.agents/
-
-
+.kilo/
+.postman
+postman/
 # Machine-local MCP configs (Cursor/PyCharm loopback). Not deployable.
 .mcp.json
+.crush/
+.perch/
+backend/.agents/
+.agents
+/backend/agents/
 
 # C extensions
 *.so
@@ -211,6 +214,7 @@ build
 
 # Claude Code local state
 /.claude/
+AGENTS.md
 
 
 .python-version
@@ -237,3 +241,6 @@ kustomize/overlays/**/secrets.dat
 # Stray poetry.lock -- this project's Python dependency manager is uv
 # (uv.lock, pyproject.toml), never poetry.
 poetry.lock
+
+# Additional exclusions retained from the local branch.
+.agents/

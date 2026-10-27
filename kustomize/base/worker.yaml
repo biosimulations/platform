@@ -47,5 +47,3 @@ spec:
               items:
                 - key: gcs_credentials.json
                   path: gcs-credentials.json
-      imagePullSecrets:
-        - name: ghcr-secret
