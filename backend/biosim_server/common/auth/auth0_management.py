@@ -123,9 +123,18 @@ def _reset_management_state() -> None:
     _token_cache["expires_at"] = 0.0
 
 
+def _monotonic() -> float:
+    """Monotonic instant used for operation budgets.
+
+    Tests replace this function. Patching ``time.monotonic`` would also move
+    the event-loop clock.
+    """
+    return time.monotonic()
+
+
 def _operation_deadline() -> float:
     """Start a monotonic whole-operation budget for one Management call."""
-    return time.monotonic() + _MGMT_OPERATION_DEADLINE_SECONDS
+    return _monotonic() + _MGMT_OPERATION_DEADLINE_SECONDS
 
 
 def _cooldown_error(now: float) -> "Auth0ManagementError":
@@ -188,7 +197,7 @@ async def _get_management_token(*, deadline: float) -> str:
         # another serialized token POST behind the lock.
         raise _cooldown_error(now)
 
-    remaining = deadline - time.monotonic()
+    remaining = deadline - _monotonic()
     if remaining <= 0:
         raise Auth0ManagementUnavailable("Auth0 token refresh budget exhausted")
     try:
@@ -209,7 +218,7 @@ async def _get_management_token(*, deadline: float) -> str:
             return str(cached)
         if now < _token_refresh_failed_until:
             raise _cooldown_error(now)
-        remaining = deadline - time.monotonic()
+        remaining = deadline - _monotonic()
         if remaining <= 0:
             raise Auth0ManagementUnavailable("Auth0 token refresh budget exhausted")
         try:
@@ -362,12 +371,12 @@ async def _send_with_retry(
     remains -- a check before sleeping alone left an in-flight request (a slow or
     stalled body stream) able to run past the nominal deadline.
     """
-    limit = min(deadline, time.monotonic() + _MGMT_TOTAL_DEADLINE_SECONDS)
+    limit = min(deadline, _monotonic() + _MGMT_TOTAL_DEADLINE_SECONDS)
     last_status: int | None = None
     exhausted_retry_after = _MGMT_EXHAUSTED_RETRY_AFTER_SECONDS
     for attempt in range(1, _MGMT_MAX_ATTEMPTS + 1):
         retry_after: float | None = None
-        remaining = limit - time.monotonic()
+        remaining = limit - _monotonic()
         if remaining <= 0:
             # Budget exhausted before this attempt: sending now could only push
             # the response past the bound the caller was promised.
@@ -396,7 +405,7 @@ async def _send_with_retry(
             if resp.status_code == 429:
                 retry_after = _retry_after_seconds(resp)
                 if retry_after is not None:
-                    exhausted_retry_after = max(1, int(retry_after))
+                    exhausted_retry_after = max(1, math.ceil(retry_after))
             logger.warning(
                 "Auth0 Management %s upstream %d (attempt %d/%d)",
                 op,
@@ -415,7 +424,7 @@ async def _send_with_retry(
                 _MGMT_BACKOFF_MULTIPLIER ** (attempt - 1)
             )
             sleep_for = random.uniform(0, ceiling)
-        if time.monotonic() + sleep_for >= limit:
+        if _monotonic() + sleep_for >= limit:
             break
         await asyncio.sleep(sleep_for)
 
@@ -536,7 +545,7 @@ async def create_password_change_ticket(user_id: str) -> str:
     settings = get_settings().auth0
     deadline = _operation_deadline()
     headers = await _auth_headers(deadline=deadline)
-    remaining = deadline - time.monotonic()
+    remaining = deadline - _monotonic()
     if remaining <= 0:
         raise Auth0ManagementUnavailable(
             "Auth0 password reset budget exhausted before the ticket request"
@@ -618,7 +627,7 @@ async def resend_auth0_verification_email(user_id: str) -> ResendOutcome:
     if user["email_verified"] is True:
         return ResendOutcome.ALREADY_VERIFIED
 
-    remaining = deadline - time.monotonic()
+    remaining = deadline - _monotonic()
     if remaining < _SIDE_EFFECT_RESERVE_SECONDS:
         # No mail-producing request was made, so refusing is safe to retry.
         raise Auth0ManagementUnavailable(
@@ -654,6 +663,7 @@ async def resend_auth0_verification_email(user_id: str) -> ResendOutcome:
         not isinstance(job_id, str)
         or not job_id.strip()
         or payload.get("type") != "verification_email"
+        or not isinstance(job_status, str)
         or job_status not in {"pending", "completed"}
     ):
         raise Auth0ManagementError("Invalid verification-email job response")

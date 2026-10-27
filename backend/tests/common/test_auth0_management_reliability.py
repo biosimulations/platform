@@ -586,9 +586,7 @@ async def test_lookup_entering_the_post_reserve_sends_no_job(
         current = 124.9
         return user
 
-    monkeypatch.setattr(
-        "biosim_server.common.auth.auth0_management.time.monotonic", monotonic
-    )
+    monkeypatch.setattr(mgmt, "_monotonic", monotonic)
     monkeypatch.setattr(mgmt, "_operation_deadline", lambda: 125.0)
     monkeypatch.setattr(mgmt, "_get_user", finish_lookup)
 
@@ -599,21 +597,94 @@ async def test_lookup_entering_the_post_reserve_sends_no_job(
 
 
 @pytest.mark.asyncio
-async def test_exhausted_resend_budget_sends_no_job(
+async def test_token_budget_already_exhausted_sends_no_lookup_or_job(
     patch_client: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A cold cache and a deadline that is already due fails before any HTTP call.
+
+    This covers token-budget exhaustion only. It does not reach the eligibility
+    read or the post-lookup reserve check. A lookup that consumes the reserve is
+    ``test_lookup_entering_the_post_reserve_sends_no_job``. A token request that
+    uses part of a still-open budget is ``test_slow_token_preserves_or_refuses_the_post_reserve``.
+    """
     endpoint = _ResendEndpoint()
     patch_client.install(endpoint)
     monkeypatch.setattr(mgmt, "_SIDE_EFFECT_RESERVE_SECONDS", 10.0)
     monkeypatch.setattr(mgmt, "_operation_deadline", lambda: 100.0)
-    monkeypatch.setattr(
-        "biosim_server.common.auth.auth0_management.time.monotonic", lambda: 100.0
-    )
+    monkeypatch.setattr(mgmt, "_monotonic", lambda: 100.0)
 
-    with pytest.raises(Auth0ManagementUnavailable):
+    with pytest.raises(
+        Auth0ManagementUnavailable, match="token refresh budget exhausted"
+    ):
         await resend_auth0_verification_email("auth0|abc")
+    assert endpoint.token_posts == 0
+    assert endpoint.user_gets == 0
     assert endpoint.job_posts == 0
+
+
+class _Clock:
+    """Module-local deadline clock. It does not replace ``time.monotonic``."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.at_job: float | None = None
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class _TimedToken(_ResendEndpoint):
+    def __init__(self, clock: _Clock, advance_to: float) -> None:
+        super().__init__()
+        self._clock = clock
+        self._advance_to = advance_to
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth/token":
+            self._clock.now = self._advance_to
+        if request.url.path == "/api/v2/jobs/verification-email":
+            self._clock.at_job = self._clock.now
+        return await super().__call__(request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "advance_to,expect_job",
+    [(5.0, True), (16.0, False)],
+    ids=["reserve-remains", "token-consumes-reserve"],
+)
+async def test_slow_token_preserves_or_refuses_the_post_reserve(
+    patch_client: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    advance_to: float,
+    expect_job: bool,
+) -> None:
+    """Token acquisition spends the shared budget; the job keeps a full phase or is not sent."""
+    clock = _Clock()
+    endpoint = _TimedToken(clock, advance_to)
+    patch_client.install(endpoint)
+    monkeypatch.setattr(mgmt, "_monotonic", clock)
+
+    if expect_job:
+        assert (
+            await resend_auth0_verification_email("auth0|abc") is ResendOutcome.ACCEPTED
+        )
+        assert endpoint.token_posts == 1
+        assert endpoint.user_gets == 1
+        assert endpoint.job_posts == 1
+        assert clock.at_job is not None
+        # The deadline was taken at t=0, so it is one full operation budget later.
+        assert (
+            mgmt._MGMT_OPERATION_DEADLINE_SECONDS - clock.at_job
+            >= mgmt._SIDE_EFFECT_RESERVE_SECONDS
+        )
+    else:
+        with pytest.raises(Auth0ManagementUnavailable, match="GET user"):
+            await resend_auth0_verification_email("auth0|abc")
+        assert endpoint.token_posts == 1
+        assert endpoint.user_gets == 0
+        assert endpoint.job_posts == 0
 
 
 @pytest.mark.asyncio

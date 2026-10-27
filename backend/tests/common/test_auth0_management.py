@@ -6,6 +6,7 @@ is involved. The success test retains the real token acquisition and
 an AsyncMock.
 """
 
+import asyncio
 import json
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -90,14 +91,14 @@ class ResendEndpoint:
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
 
-InstallResendEndpoint = Callable[[ResendEndpoint], None]
+InstallResendEndpoint = Callable[[Any], None]
 
 
 @pytest.fixture
 def install_resend_endpoint(monkeypatch: pytest.MonkeyPatch) -> InstallResendEndpoint:
     real_async_client = httpx.AsyncClient
 
-    def install(endpoint: ResendEndpoint) -> None:
+    def install(endpoint: Any) -> None:
         monkeypatch.setattr(mgmt, "get_settings", lambda: _settings())
 
         def client_factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
@@ -209,6 +210,8 @@ async def test_ineligible_live_user_sends_no_job(
         (201, _job(status="failed")),
         (201, _job(status="")),
         (201, _job(status=None)),
+        (201, _job(status=[])),
+        (201, _job(status={})),
     ],
     ids=[
         "http-200",
@@ -222,6 +225,8 @@ async def test_ineligible_live_user_sends_no_job(
         "failed",
         "empty-status",
         "missing-status",
+        "list-status",
+        "object-status",
     ],
 )
 async def test_invalid_job_acknowledgment_is_an_upstream_error(
@@ -238,6 +243,8 @@ async def test_invalid_job_acknowledgment_is_an_upstream_error(
     install_resend_endpoint(endpoint)
     with pytest.raises(Auth0ManagementError):
         await mgmt.resend_auth0_verification_email("auth0|abc123")
+    assert endpoint.token_posts == 1
+    assert endpoint.user_gets == 1
     assert endpoint.job_posts == 1
 
 
@@ -269,6 +276,48 @@ async def test_invalid_retry_after_uses_the_fallback(
     with pytest.raises(mgmt.Auth0ManagementRateLimited) as raised:
         await mgmt.resend_auth0_verification_email("auth0|abc123")
     assert raised.value.retry_after == mgmt._MGMT_EXHAUSTED_RETRY_AFTER_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_lookup_retry_after_is_rounded_up_and_sends_no_job(
+    install_resend_endpoint: InstallResendEndpoint,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An eligibility-GET 429 uses the same ceiling as token and job hints."""
+
+    class LookupThrottle:
+        def __init__(self) -> None:
+            self.token_posts = 0
+            self.user_gets = 0
+            self.job_posts = 0
+
+        async def __call__(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/oauth/token":
+                self.token_posts += 1
+                return httpx.Response(
+                    200, json={"access_token": "test-mgmt-token", "expires_in": 3600}
+                )
+            if request.url.path.startswith("/api/v2/users/"):
+                self.user_gets += 1
+                return httpx.Response(429, headers={"Retry-After": "7.5"})
+            self.job_posts += 1
+            raise AssertionError(f"job must not be posted: {request.url}")
+
+    endpoint = LookupThrottle()
+    install_resend_endpoint(endpoint)
+    monkeypatch.setattr(asyncio, "sleep", lambda _seconds: _async_none())
+
+    with pytest.raises(mgmt.Auth0ManagementRateLimited) as raised:
+        await mgmt.resend_auth0_verification_email("auth0|abc123")
+
+    assert raised.value.retry_after == 8
+    assert endpoint.token_posts == 1
+    assert endpoint.user_gets == mgmt._MGMT_MAX_ATTEMPTS
+    assert endpoint.job_posts == 0
+
+
+async def _async_none() -> None:
+    return None
 
 
 @pytest.mark.asyncio
