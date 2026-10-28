@@ -251,8 +251,7 @@ const navigation_items = ref<NavigationMenuItem[][]>([
     },
     {
       label: 'Learn',
-      // icon: 'i-lucide-book-open',
-      to: '',
+      to: 'https://docs.biosimulations.org/',
       class: 'cursor-pointer',
     },
   ],
@@ -261,10 +260,6 @@ const navigation_items = ref<NavigationMenuItem[][]>([
       label: 'GitHub',
       icon: 'i-simple-icons-github',
       class: 'cursor-pointer',
-      badge: {
-        icon: 'i-lucide-star',
-        label: '42'
-      },
       to: 'https://github.com/biosimulations/biosimulations',
       target: '_blank'
     }
