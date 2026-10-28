@@ -44,7 +44,7 @@ npm run lint
 npm run typecheck
 npm run test:auth
 npm run test:verification
-npm run test:simulators-proxy
+npm run test:legacy-proxies
 ```
 
 CI runs these checks on every PR and push to main (see `.github/workflows/frontend-ci.yaml`). Verify UI changes manually in `npm run dev`.
@@ -82,6 +82,10 @@ frontend/
 │       └── utilities/          # validate-model, validate-metadata, etc.
 ├── server/
 │   ├── routes/biosimulators-api/[...path].get.ts # Allowlisted GET proxy
+│   ├── routes/biosimulations-api/runs/[id].get.ts # Uncached run record GET
+│   ├── routes/simdata-api/datasets/[id]/metadata.get.ts # Uncached metadata GET
+│   ├── utils/upstream-passthrough.ts           # Fetch and relay without credentials
+│   ├── utils/legacy-run-id.ts                 # Single-segment run ID validation
 │   └── utils/legacy-simulators-proxy.ts         # Path rules and cache eligibility
 ├── public/                     # Static assets (images, fonts, lottie)
 ├── nuxt.config.ts
@@ -100,6 +104,8 @@ Use Nuxt's `NUXT_PUBLIC_<KEY>` (public) and `NUXT_<KEY>` (server-only) env-var n
 
 | Variable                          | Side             | Purpose |
 |-----------------------------------|------------------|---------|
+| `NUXT_LEGACY_RUNS_API_URL` | server only | Run-precheck proxy upstream; defaults to `https://api.biosimulations.org`. |
+| `NUXT_SIMDATA_API_URL` | server only | Run-precheck dataset metadata upstream; defaults to `https://simdata.api.biosimulations.org`. |
 | `NUXT_LEGACY_SIMULATORS_API_URL` | server only | Legacy simulator proxy upstream; defaults to `https://api.biosimulators.org`. |
 | `NUXT_PUBLIC_LEGACY_SIMULATORS_API_URL` | browser + server | Defaults to `/biosimulators-api`. Pointing it at the upstream breaks CORS on deployed hosts. |
 | `NUXT_PUBLIC_BASE_URL`            | browser + server | Public origin the app is served from (used by `@nuxtjs/seo`) |
@@ -137,7 +143,7 @@ The repo-root `.github/workflows/frontend-ci.yaml` runs on every PR and push to 
 3. `npm run typecheck`
 4. `npm run test:auth`
 5. `npm run test:verification`
-6. `npm run test:simulators-proxy`
+6. `npm run test:legacy-proxies`
 
 ## Deploy
 
@@ -201,5 +207,6 @@ production-build SSR bugs that `npm run dev` hides — not for personal iteratio
 ## External Services
 
 - **`../backend/` FastAPI service** — primary backend for simulations and verification.
-- **api.biosimulations.org** — project list and detail API, also linked from the footer.
+- **api.biosimulations.org** — project list and detail API, also linked from the footer. The verify-model run precheck reads `/runs/{id}` through the same-origin `/biosimulations-api/runs/{id}` proxy.
+- **simdata.api.biosimulations.org** — the run precheck reads HDF5 metadata through `/simdata-api/datasets/{id}/metadata`. Both run-precheck proxies are GET-only, validate IDs as single literal segments, and never cache responses or forward caller credentials. They relay only status, content type and body; transport failures become 502.
 - **api.biosimulators.org** — simulator registry and ontologies, reached through the same-origin `/biosimulators-api` proxy because its CORS allowlist excludes our hosts. Only the registry list and four ontology dumps are cached for 10 minutes per pod (five fixed keys, about 2 MB), with stale-while-revalidate. Simulator details are uncached; request credentials are never forwarded.
