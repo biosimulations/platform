@@ -286,8 +286,8 @@
       duration: 10000,
       associated_multimedia: {
         type: 'image',
-        src: '/images/workflow_multimedia/image.jpg',
-        alt: 'Illustration of running a simulation online'
+        src: '/images/workflow_multimedia/run.png',
+        alt: 'Screenshot of running a simulation on BioSimulations.org'
       }
     },
     {
@@ -297,8 +297,8 @@
       duration: 10000,
       associated_multimedia: {
         type: 'image',
-        src: '/images/workflow_multimedia/image.jpg',
-        alt: 'Illustration of discovering and comparing simulators'
+        src: '/images/workflow_multimedia/browse-simulators.png',
+        alt: 'Screenshot of discovering and comparing simulators on BioSimulations.org'
       }
     },
     {
@@ -308,8 +308,8 @@
       duration: 10000,
       associated_multimedia: {
         type: 'image',
-        src: '/images/workflow_multimedia/image-2.jpg',
-        alt: 'Illustration of browsing published simulations'
+        src: '/images/workflow_multimedia/browse-simulations.png',
+        alt: 'Screenshot of browsing published simulations on BioSimulations.org'
       }
     },
     {
@@ -319,8 +319,8 @@
       duration: 10000,
       associated_multimedia: {
         type: 'image',
-        src: '/images/workflow_multimedia/image-3.jpg',
-        alt: 'Illustration of submitting a simulation experiment'
+        src: '/images/workflow_multimedia/submit-simulation.png',
+        alt: 'Screenshot of submitting a simulation experiment on BioSimulations.org'
       }
     },
     {
@@ -330,8 +330,8 @@
       duration: 10000,
       associated_multimedia: {
         type: 'image',
-        src: '/images/workflow_multimedia/image-4.jpg',
-        alt: 'Illustration of file conversion and validation'
+        src: '/images/workflow_multimedia/convert-file.png',
+        alt: 'Screenshot of file conversion and validation on BioSimulations.org'
       }
     },
     {
@@ -341,8 +341,8 @@
       duration: 10000,
       associated_multimedia: {
         type: 'image',
-        src: '/images/workflow_multimedia/image-5.jpg',
-        alt: 'Illustration of BioSimulations REST API integration'
+        src: '/images/workflow_multimedia/api.png',
+        alt: 'Screenshot of BioSimulations REST API documentation page'
       }
     },
     {
@@ -352,8 +352,8 @@
       duration: 10000,
       associated_multimedia: {
         type: 'image',
-        src: '/images/workflow_multimedia/image-6.jpg',
-        alt: 'Illustration of BioSimulations documentation and user guides'
+        src: '/images/workflow_multimedia/docs.png',
+        alt: 'Screenshot of BioSimulations documentation and user guides'
       }
     }
   ])
@@ -617,9 +617,8 @@
         <template #description>
           <p class="text-lg">Generate, share, and re-use biomodels, simulations, results, and visualizations like never before with our free registry of biosimulation tools.</p>
         </template>
-        <UPageCard class="w-full h-[500px] rounded-lg" variant="subtle">
-          <div class="placeholder w-full h-full bg-black rounded-lg" />
-        </UPageCard>
+        <ImageCompare class="w-full border-2 rounded-lg border-primary-200" before_img="/images/biosimulations_before.png" after_img="/images/biosimulations_after.png" />
+
       </UPageHero>
 <!--      <canvas ref="canvas" id="hero_bg" class="absolute top-0 left-0 z-1 w-full h-full" />-->
       <div id="bottom_fade_gradient" class="absolute top-0 left-0 w-full h-full -z-1"></div>
@@ -629,7 +628,7 @@
       />
     </div>
 
-    <section id="marquees" class="w-full max-w-[1200px] px-6 mx-auto flex flex-col mt-[100px] gap-[125px]">
+    <section id="marquees" class="w-full max-w-300 px-6 mx-auto flex flex-col mt-25 gap-31.25">
       <div class="w-full flex flex-col items-center gap-6">
         <UPageLogos
           class="w-full"
@@ -638,7 +637,7 @@
           :ui="{ title: 'text-lg text-center font-bold text-highlighted', logos: 'mt-6' }"
         >
           <NuxtLink v-for="partner of partners" :key="partner.id" :to="partner.url" target="_blank" rel="noopener noreferrer">
-            <img class="max-h-[40px] max-w-[250px] w-full h-full" :alt="partner.alt" :src="partner.src"/>
+            <img class="max-h-10 max-w-62.5 w-full h-full" :alt="partner.alt" :src="partner.src"/>
           </NuxtLink>
         </UPageLogos>
         <p class="text-sm opacity-50 text-center leading-7">BioSimulations was developed by the Center for Reproducible Biomedical Modeling , the Karr Lab at the Icahn School of Medicine at Mount Sinai , and the Center for Cell Analysis & Modeling at the University of Connecticut Health Center  with support from the National Institutes of Health and the National Science Foundation.</p>
@@ -652,7 +651,7 @@
           :ui="{ title: 'text-lg text-center font-bold text-highlighted', logos: 'mt-6' }"
         >
           <NuxtLink v-for="built_item of built_using" :key="built_item.id" :to="built_item.url" target="_blank" rel="noopener noreferrer">
-            <img class="max-h-[40px] max-w-[250px] w-full h-full" :alt="built_item.alt" :src="built_item.src"/>
+            <img class="max-h-10 max-w-62.5 w-full h-full" :alt="built_item.alt" :src="built_item.src"/>
           </NuxtLink>
         </UPageLogos>
         <p class="text-sm opacity-50 text-center leading-7">BioSimulations is implemented using several open-source tools and cloud platforms. The models, simulations, and visualizations are available under the licenses specified for each resource. The code is openly available under the MIT license. The simulation tools provided are available under the licenses specified for each simulation tool at BioSimulators.</p>
@@ -661,7 +660,7 @@
 
     <UPageSection
       id="revolutionary_platform"
-      class="w-full max-w-[1200px] px-6 mx-auto py-12 mt-24"
+      class="w-full max-w-300 px-6 mx-auto py-12 mt-24"
       :ui="{
         root: 'relative isolate',
         container: 'relative overflow-hidden max-w-[1200px]! rounded-3xl border border-blue-200/60 dark:border-blue-900/40 bg-linear-to-r from-blue-500/10 via-cyan-500/5 to-amber-500/10 !p-8 sm:!p-10 lg:!p-12 shadow-xs backdrop-blur-sm flex flex-col gap-8!',
@@ -691,7 +690,7 @@
           title="Simulators"
           description="Access a registry of biosimulation tools encompassing diverse frameworks, algorithms, and model formats curated to streamline the simulation process. The registry, powered by conventions like SED-ML, offers readily available Python packages, command-line programs, and Docker images for consistent execution."
           variant="subtle"
-          class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-800/60 shadow-xs"
+          class="bg-white/80 backdrop-blur-sm border border-slate-200/60 shadow-xs"
           :ui="{
             title: 'text-xl font-bold text-slate-900 dark:text-white',
             description: 'text-slate-600 dark:text-slate-300 leading-relaxed text-sm',
@@ -715,7 +714,7 @@
                 icon="i-lucide-search"
                 to="/simulators"
                 label="Browse Simulators"
-                class="font-medium bg-white/60 dark:bg-slate-800/60"
+                class="font-medium bg-white/60"
               />
             </div>
           </template>
@@ -725,7 +724,7 @@
           title="Simulations"
           description="Access a wide range of frameworks (e.g., logical, Flux-Balance Analysis (FBA), continuous kinetic, discrete kinetic), simulation algorithms (e.g., FBA, SSA), model formats (e.g., SBML), and tools (e.g., COBRApy, COPASI, tellurium) and connect with a community of others supercharging their bio-data processing."
           variant="subtle"
-          class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-800/60 shadow-xs"
+          class="bg-white/80 backdrop-blur-sm border border-slate-200/60 shadow-xs"
           :ui="{
             title: 'text-xl font-bold text-slate-900 dark:text-white',
             description: 'text-slate-600 dark:text-slate-300 leading-relaxed text-sm',
@@ -749,7 +748,7 @@
                 icon="i-lucide-search"
                 to="/simulations"
                 label="Browse Simulation Runs"
-                class="font-medium bg-white/60 dark:bg-slate-800/60"
+                class="font-medium bg-white/60"
               />
             </div>
           </template>
@@ -777,7 +776,7 @@
               <p v-if="workflow_feature.selected">{{workflow_feature.description}}</p>
             </div>
             <!-- Static multimedia slot for mobile; renders the `associated_multimedia` of the current active WorkflowFeature -->
-            <div v-if="workflow_feature.selected" id="mobile_multimedia_wrapper" class="w-full min-h-[100px] shadow-2xl overflow-hidden rounded-xl block md:hidden">
+            <div v-if="workflow_feature.selected" id="mobile_multimedia_wrapper" class="w-full min-h-25 shadow-2xl overflow-hidden rounded-xl block md:hidden">
               <img class="object-cover" v-if="current_workflow_feature && current_workflow_feature.associated_multimedia.type == 'image'" :src="current_workflow_feature.associated_multimedia.src" :alt="current_workflow_feature.associated_multimedia.alt">
             </div>
             <UProgress
@@ -797,7 +796,7 @@
         </TransitionGroup>
 
         <!-- Static multimedia slot; renders the `associated_multimedia` of the current active WorkflowFeature -->
-        <div id="multimedia_wrapper" class="w-full min-h-[100px] shadow-2xl overflow-hidden rounded-xl hidden md:block" data-aos="fade-up" data-aos-duration="1000">
+        <div id="multimedia_wrapper" class="w-full min-h-25 shadow-2xl overflow-hidden rounded-xl hidden md:block" data-aos="fade-up" data-aos-duration="1000">
           <img class="w-full h-full object-cover object-center block" v-if="current_workflow_feature && current_workflow_feature.associated_multimedia.type == 'image'" :src="current_workflow_feature.associated_multimedia.src" :alt="current_workflow_feature.associated_multimedia.alt">
         </div>
       </div>
@@ -817,9 +816,8 @@
     }
 
     .progress_bar {
-      --duration: 3000ms;
       animation-name: fill-progress;
-      animation-duration: var(--duration);
+      animation-duration: var(--duration, 3000ms);
       animation-iteration-count: 1;
       animation-fill-mode: forwards;
       animation-timing-function: linear;
