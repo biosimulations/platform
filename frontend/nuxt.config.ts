@@ -107,12 +107,16 @@ export default defineNuxtConfig({
     // browser. Defaults to API_URL if API_URL_INTERNAL is unset, so dev
     // setups that don't have a separate internal URL still work.
     apiUrl: process.env.API_URL_INTERNAL || process.env.API_URL,
+    // Server-only upstream for /biosimulators-api; runtime override:
+    // NUXT_LEGACY_SIMULATORS_API_URL.
+    legacySimulatorsApiUrl: 'https://api.biosimulators.org',
     public: {
       base_url: process.env.BASE_URL,
       api_url: process.env.API_URL,
       biosimulations_api_url: process.env.BIOSIMULATIONS_API_URL,
       legacy_api_url: process.env.LEGACY_API_URL,
-      legacy_simulators_api_url: process.env.LEGACY_SIMULATORS_API_URL || 'https://api.biosimulators.org',
+      // Same-origin proxy: the upstream CORS allowlist excludes our hosts.
+      legacy_simulators_api_url: '/biosimulators-api',
       combine_api_url: process.env.COMBINE_API_URL || 'https://combine.api.biosimulations.org',
       auth0Domain: process.env.NUXT_PUBLIC_AUTH0_DOMAIN,
       auth0ClientId: process.env.NUXT_PUBLIC_AUTH0_CLIENT_ID,
