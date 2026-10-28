@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { $fetch } from 'ofetch'
 import { useVerificationAnalytics } from '../app/composables/useVerificationAnalytics.ts'
 
 // Nuxt normally supplies this global; individual precheck tests mock it.
-globalThis.$fetch = $fetch
+globalThis.$fetch = async () => {
+  throw new Error('$fetch must be mocked in tests')
+}
 
 const {
   extractTrajectory,
