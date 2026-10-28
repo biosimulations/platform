@@ -93,7 +93,7 @@ frontend/
 ├── package-lock.json           # Authoritative lockfile (npm)
 ├── tsconfig.json
 ├── eslint.config.mjs
-└── tests/                     # Auth, verification, and simulator proxy unit tests
+└── tests/                     # Auth, verification, simulator proxy and run-ID unit tests
 ```
 
 ## Runtime Config
@@ -104,14 +104,14 @@ Use Nuxt's `NUXT_PUBLIC_<KEY>` (public) and `NUXT_<KEY>` (server-only) env-var n
 
 | Variable                          | Side             | Purpose |
 |-----------------------------------|------------------|---------|
-| `NUXT_LEGACY_RUNS_API_URL` | server only | Run-precheck proxy upstream; defaults to `https://api.biosimulations.org`. |
-| `NUXT_SIMDATA_API_URL` | server only | Run-precheck dataset metadata upstream; defaults to `https://simdata.api.biosimulations.org`. |
-| `NUXT_LEGACY_SIMULATORS_API_URL` | server only | Legacy simulator proxy upstream; defaults to `https://api.biosimulators.org`. |
-| `NUXT_PUBLIC_LEGACY_SIMULATORS_API_URL` | browser + server | Defaults to `/biosimulators-api`. Pointing it at the upstream breaks CORS on deployed hosts. |
 | `NUXT_PUBLIC_BASE_URL`            | browser + server | Public origin the app is served from (used by `@nuxtjs/seo`) |
 | `NUXT_PUBLIC_API_URL`             | browser + server | Platform backend API base URL — points at the FastAPI service in `../backend/` |
 | `NUXT_API_URL`                    | server only      | In-cluster URL Nitro uses for SSR-time fetches to the backend (e.g., `http://api:8000`). Skips the public ingress when the frontend is deployed alongside `api`. Read via `useRuntimeConfig().apiUrl` from server-side code (`import.meta.server`); not exposed to the browser. |
 | `NUXT_PUBLIC_BIOSIMULATIONS_API_URL` | browser + server | Public biosimulations.org project DB API base URL (different service from the platform backend) — used by `pages/biosim-db.vue` |
+| `NUXT_PUBLIC_LEGACY_SIMULATORS_API_URL` | browser + server | Base URL the simulators pages fetch from; defaults to the same-origin `/biosimulators-api` proxy. Pointing it at the upstream breaks CORS on deployed hosts. |
+| `NUXT_LEGACY_SIMULATORS_API_URL`  | server only      | Upstream for the `/biosimulators-api` proxy; defaults to `https://api.biosimulators.org`. |
+| `NUXT_LEGACY_RUNS_API_URL`        | server only      | Upstream for the verify-model run-precheck proxy `/biosimulations-api/runs/{id}`; defaults to `https://api.biosimulations.org`. |
+| `NUXT_SIMDATA_API_URL`            | server only      | Upstream for the run-precheck proxy `/simdata-api/datasets/{id}/metadata`; defaults to `https://simdata.api.biosimulations.org`. |
 
 Local dev: copy `frontend/.env.example` → `frontend/.env` (or let `scripts/dev-up.sh` seed it). Loaded by Nuxt's built-in dotenv at dev-server startup. Deployed: the corresponding ConfigMap (`kustomize/config/<overlay>/frontend.env`) supplies the same names.
 
