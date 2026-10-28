@@ -46,7 +46,7 @@ in `shared.env`.**
 | `AUTH0_PASSWORD_RESET_MAX_AUTH_AGE_SECONDS` | non-secret policy number (default `300`) | `api.env` |
 | `AUTH0_PASSWORD_RESET_CLIENT_ID` | non-secret — the SPA's public client ID; blank disables ticket issuance (503) | `api.env` |
 | `AUTH0_MANAGEMENT_CLIENT_ID` | treat as secret (pairs with the secret) | **sealed secret** |
-| `AUTH0_MANAGEMENT_CLIENT_SECRET` | **SECRET** — grants `update:users`/`delete:users` (and `create:user_tickets` once authorized for password reset) on the whole tenant | **sealed secret** |
+| `AUTH0_MANAGEMENT_CLIENT_SECRET` | **SECRET** — grants `read:users` (profile enrichment and verification-email eligibility), `update:users` (profile writes and verification-email jobs), `delete:users`, and `create:user_tickets` once authorized for password reset, on the whole tenant | **sealed secret** |
 
 Auth0 **Action** secrets (`M2M_CLIENT_SECRET`, `DEFAULT_ROLE_ID`, …) are not Platform
 configuration and never enter Kubernetes. See `auth0/README.md`.
@@ -71,6 +71,8 @@ prerequisites are in `backend/CLAUDE.md` → "Password-reset enablement".
 | `RATE_LIMIT_ANONYMOUS_PER_WINDOW` | non-secret | `api.env` |
 | `RATE_LIMIT_PASSWORD_RESET_PER_WINDOW` | non-secret — password-reset budget, per pod | `api.env` |
 | `RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS` | non-secret — password-reset window, per pod | `api.env` |
+| `RATE_LIMIT_VERIFICATION_EMAIL_PER_WINDOW` | non-secret — verification-email resend budget, per pod, per issuer and subject (default `3`, positive) | `api.env` |
+| `RATE_LIMIT_VERIFICATION_EMAIL_WINDOW_SECONDS` | non-secret — verification-email window, per pod (default `600`, positive) | `api.env` |
 | `RATE_LIMIT_PAGE_PER_WINDOW` | non-secret — page-aggregation budget, per pod, per client IP | `api.env` |
 | `RATE_LIMIT_PAGE_WINDOW_SECONDS` | non-secret — page-aggregation window, per pod | `api.env` |
 | `RATE_LIMIT_LEGACY_PER_WINDOW` | non-secret — shared six-route legacy proxy budget per process per IP (default `60`, positive) | `api.env` |

@@ -158,6 +158,8 @@ backend/
 | `/verify/omex` | POST | Verify OMEX file across simulators (token optional; a valid token persists `owner_sub`) |
 | `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin) |
 | `/verify/runs` | POST | Compare existing biosimulation runs (token optional; a valid token persists `owner_sub`) |
+| `/api/v1/me` | GET, PATCH, DELETE | Read or update the authenticated profile, or delete the account. PATCH accepts only `name` and `email` (`extra=forbid`). Email changes require a configured-tenant database account, are one attempt, and set `email_verified=false` plus `verify_email=true` on the server. Needs `read:users` to enrich and `update:users` / `delete:users` to mutate |
+| `/api/v1/me/resend-verification` | POST | Ask Auth0 to send a verification email for the authenticated primary database user. No body or query. `202` means the job was accepted, not delivered; `200` with `outcome=already_verified` sends no job. Needs `read:users` and `update:users` |
 | `/api/v1/me/password-reset` | POST | Issue a short-lived Auth0-hosted password-change URL for the authenticated primary database user (New Universal Login; no email is sent; requires `create:user_tickets` on the server M2M client) |
 | `/validation/model` | POST | Validate a model document via the COMBINE API (relay; works with or without auth; rate-limited) |
 | `/validation/sed-ml` | POST | Validate a SED-ML document via the COMBINE API (relay; works with or without auth; rate-limited) |
@@ -423,7 +425,7 @@ credentials, are unset in every overlay today, and are tracked separately (TODO 
 | `AUTH0_EMAIL_VERIFIED_CLAIM` | `https://api.biosimulations.org/email_verified` | Namespaced claim carrying whether that email is verified. Stamped by the same Action. Authorization treats a missing claim as unverified (fail closed). Override only if the Action uses a different namespace. |
 | `AUTH0_PERMISSIONS_CLAIM` | `permissions` | Auth0 RBAC access-token claim (array) used by `require_permissions`. Missing/malformed → no permissions (fail closed). Roles never satisfy a permission check. See `docs/auth0-tokens-claims-endpoints.md`. |
 | `AUTH0_TRUSTED_ISSUERS` | _empty_ | Optional JSON object mapping `issuer` → `{audiences, jwks_uri}`. When set, token validation uses this **pairing** (an audience trusted for issuer A is not valid for issuer B). When unset, `AUTH0_DOMAIN`/`AUTH0_AUDIENCE` (or `AUTH0_ISSUER`/`AUTH0_JWKS_URI`) remain the single-issuer configuration. |
-| `AUTH0_MANAGEMENT_CLIENT_ID` | _empty_ | M2M credentials for the Auth0 Management API: `PATCH`/`DELETE /api/v1/me` (`update:users`/`delete:users`) and `POST /api/v1/me/password-reset` (`create:user_tickets`). **Secret** — sealed-secret path only. Unset in every cluster today, so those endpoints return 503; password reset also requires the M2M application to be authorized for the `create:user_tickets` scope. |
+| `AUTH0_MANAGEMENT_CLIENT_ID` | _empty_ | M2M credentials for the Auth0 Management API: profile enrichment and verification-email eligibility (`read:users`), `PATCH /api/v1/me` and `POST /api/v1/me/resend-verification` (`update:users`), `DELETE /api/v1/me` (`delete:users`), and `POST /api/v1/me/password-reset` (`create:user_tickets`). **Secret** — sealed-secret path only. Unset in every cluster today, so those endpoints return 503. |
 | `AUTH0_MANAGEMENT_CLIENT_SECRET` | _empty_ | See above. |
 | `AUTH0_PASSWORD_RESET_CLIENT_ID` | _empty_ | **Non-secret** SPA application client ID used as the `client_id` for the hosted password-change ticket (`POST /api/v1/me/password-reset`). Blank disables the endpoint (503). Not the M2M client ID. Configure New Universal Login and the SPA's Application Login URI in Auth0 before enabling. |
 | `AUTH0_AUTH_TIME_CLAIM` | `auth_time` | Namespaced/standard claim carrying the end-user's last **interactive** authentication time. Read into `AuthenticatedUser.auth_time`; used only by the password-reset step-up gate. Missing/malformed → no evidence (fail closed). |
@@ -649,6 +651,8 @@ distributes evenly; to target a global ceiling `G`, configure `G / N`.
 | `RATE_LIMIT_ANONYMOUS_PER_WINDOW` | `5` | Per-pod requests per window for a caller identified only by client IP. |
 | `RATE_LIMIT_PASSWORD_RESET_PER_WINDOW` | `5` | Per-pod requests per **password-reset** window, keyed by `(issuer, subject)`. Deliberately separate policy from the workflow ceilings so operators can tune a sensitive account action without changing simulation throughput. |
 | `RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS` | `300` | Fixed-window size for the password-reset budget. |
+| `RATE_LIMIT_VERIFICATION_EMAIL_PER_WINDOW` | `3` | Per-pod resend requests per verification-email window, keyed by `(issuer, subject)`. Independent of password reset and workflow starts. |
+| `RATE_LIMIT_VERIFICATION_EMAIL_WINDOW_SECONDS` | `600` | Fixed-window size for the verification-email budget. |
 | `RATE_LIMIT_PAGE_PER_WINDOW` | `60` | Per-pod requests per page window for the two public page aggregations, keyed by client IP. More generous than a workflow start because browsing is the ordinary reading path — it still bounds the 3-4-call upstream fan-out. |
 | `RATE_LIMIT_PAGE_WINDOW_SECONDS` | `60` | Fixed-window size for the page-aggregation budget. |
 | `RATE_LIMIT_LEGACY_PER_WINDOW` | `60` | Provisional shared legacy proxy budget per client IP per process; strictly positive. |
@@ -661,6 +665,16 @@ three separate ones.
 `POST /compatibility/check` stays unauthenticated (run wizard) but is rate-limited with a
 **separate** `compat:` bucket so it cannot starve workflow starts. `archive_url` is restricted
 to http/https hosts that resolve to public addresses (SSRF).
+
+`POST /api/v1/me/resend-verification` has its own `verification-email:` bucket
+(`RATE_LIMIT_VERIFICATION_EMAIL_*`), also keyed by `(issuer, subject)`. It is charged
+after input, configuration, and tenant checks, and before the database check or any
+Auth0 call. Unsupported accounts, already-verified no-ops, and failed attempts are
+not refunded. Input, configuration, and foreign-issuer failures do not spend it.
+`RATE_LIMIT_ENABLED=false` disables this bucket with the others. Counters are
+per process. The defaults are not a measured Auth0 sending capacity. A `202` means
+Auth0 accepted the job; it does not mean the message was delivered. See
+`docs/verification-email-api.md`.
 
 `POST /api/v1/me/password-reset` has its own `password-reset:` bucket with its own
 ceiling/window (`RATE_LIMIT_PASSWORD_RESET_*`) and a `(issuer, subject)` key, so it can

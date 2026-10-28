@@ -370,6 +370,19 @@ def password_reset_rate_limit(request: Request, user: AuthenticatedUser) -> None
     )
 
 
+def verification_email_rate_limit(request: Request, user: AuthenticatedUser) -> None:
+    """Dedicated per-process issuer/subject budget; attempts are never refunded."""
+    settings = get_settings().ratelimit
+    _enforce_rate_limit(
+        request,
+        user,
+        key_prefix="verification-email",
+        per_window=settings.verification_email_per_window,
+        window_seconds=settings.verification_email_window_seconds,
+        scope_issuer=True,
+    )
+
+
 def validation_rate_limit(
         request: Request,
         user: AuthenticatedUser | None = Depends(get_advisory_user),

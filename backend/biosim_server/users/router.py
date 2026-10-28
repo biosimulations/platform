@@ -1,5 +1,6 @@
 import logging
 import time
+from contextvars import ContextVar
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -8,16 +9,29 @@ from fastapi.routing import APIRoute
 
 from biosim_server.common.auth.auth0 import AuthenticatedUser, get_current_user
 from biosim_server.common.auth.auth0_management import (
+    Auth0ManagementConflict,
+    Auth0ManagementValidationError,
+    Auth0ManagementIneligible,
     Auth0ManagementRateLimited,
+    ResendOutcome,
     create_password_change_ticket,
     delete_auth0_user,
     get_auth0_user,
     management_api_configured,
+    resend_auth0_verification_email,
     update_auth0_user,
 )
-from biosim_server.common.ratelimit import password_reset_rate_limit
+from biosim_server.common.ratelimit import (
+    password_reset_rate_limit,
+    verification_email_rate_limit,
+)
 from biosim_server.config import Auth0Settings, get_settings
-from biosim_server.users.models import PasswordResetResponse, UpdateUserProfileRequest, UserProfile
+from biosim_server.users.models import (
+    PasswordResetResponse,
+    UpdateUserProfileRequest,
+    UserProfile,
+    VerificationEmailResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +45,9 @@ _NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 _AUTH_TIME_FUTURE_SKEW_SECONDS = 60
 
 router = APIRouter(prefix="/api/v1", tags=["Users"])
+
+# Database identity provider used by email changes and verification jobs.
+_DATABASE_PROVIDER = "auth0"
 
 
 class _PrivacyHeadersRoute(APIRoute):
@@ -52,7 +69,9 @@ class _PrivacyHeadersRoute(APIRoute):
 
         async def handler(request: Request) -> Response:
             try:
-                return await original(request)
+                response = await original(request)
+                response.headers.update(_NO_STORE)
+                return response
             except HTTPException as exc:
                 exc.headers = {**(exc.headers or {}), **_NO_STORE}
                 raise
@@ -65,6 +84,16 @@ def _provider_from_sub(sub: str) -> str:
     # "google-oauth2|10987654321". No '|' (shouldn't happen for Auth0-issued
     # tokens) falls back to the whole sub rather than raising.
     return sub.split("|", 1)[0]
+
+
+def _apply_auth0_user(profile: UserProfile, auth0_user: dict[str, Any]) -> UserProfile:
+    # Auth0's record wins over the token for email: after PATCH /me changes it,
+    # the caller's token keeps the old email claim until it is reissued. Keep the
+    # token's email only if Auth0 has none on file.
+    profile.email = auth0_user.get("email") or profile.email
+    profile.name = auth0_user.get("name")
+    profile.email_verified = auth0_user.get("email_verified")
+    return profile
 
 
 def _configured_tenant_issuers(settings: Auth0Settings) -> set[str]:
@@ -90,7 +119,9 @@ def _configured_tenant_issuers(settings: Auth0Settings) -> set[str]:
     return issuers
 
 
-def _is_configured_tenant_principal(user: AuthenticatedUser, settings: Auth0Settings) -> bool:
+def _is_configured_tenant_principal(
+    user: AuthenticatedUser, settings: Auth0Settings
+) -> bool:
     """True when the verified issuer is the configured Auth0 tenant's own.
 
     Signature validity inside one trust domain does not establish identity in
@@ -101,20 +132,22 @@ def _is_configured_tenant_principal(user: AuthenticatedUser, settings: Auth0Sett
     issued may be read from or written to it. A principal with no issuer is not
     proven to be the tenant's either, so it fails closed.
     """
-    return user.issuer is not None and user.issuer in _configured_tenant_issuers(settings)
+    return user.issuer is not None and user.issuer in _configured_tenant_issuers(
+        settings
+    )
 
 
 async def _build_profile(user: AuthenticatedUser) -> UserProfile:
     settings = get_settings().auth0
-    profile = UserProfile(id=user.sub, email=user.email, provider=_provider_from_sub(user.sub))
+    profile = UserProfile(
+        id=user.sub, email=user.email, provider=_provider_from_sub(user.sub)
+    )
     # JWT-only identity is returned to a principal from another trusted issuer:
     # its signature checked out for this API, but its subject must never be
     # resolved against -- or enriched from -- the configured tenant's directory.
     if management_api_configured() and _is_configured_tenant_principal(user, settings):
         try:
-            auth0_user = await get_auth0_user(user.sub)
-            profile.name = auth0_user.get("name")
-            profile.email_verified = auth0_user.get("email_verified")
+            _apply_auth0_user(profile, await get_auth0_user(user.sub))
         except Exception:
             # Best-effort enrichment -- a flaky Management API call shouldn't
             # break reading your own JWT-derived identity.
@@ -130,6 +163,27 @@ def _require_management_api() -> None:
         )
 
 
+def _require_database_account(user: AuthenticatedUser, action: str) -> None:
+    # The verified `sub` is the Auth0 user_id, whose prefix names the user's
+    # primary identity -- the one Auth0's email update and verification-email job
+    # act on. Social, enterprise and passwordless identities take their email and
+    # its verified status from the upstream provider (Auth0 overwrites root email
+    # changes on their next login), so refuse rather than run the database flow.
+    provider = _provider_from_sub(user.sub)
+    tail = user.sub.removeprefix("auth0|")
+    if (
+        provider != _DATABASE_PROVIDER
+        or user.sub.count("|") != 1
+        or not tail.strip()
+        or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in tail)
+        or user.sub.endswith("@clients")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{action} is only available for email/password accounts",
+        )
+
+
 def _require_configured_tenant(user: AuthenticatedUser) -> None:
     """403 a principal the configured tenant cannot identify. Never a Management call.
 
@@ -140,7 +194,10 @@ def _require_configured_tenant(user: AuthenticatedUser) -> None:
     if not _is_configured_tenant_principal(user, get_settings().auth0):
         logger.warning(
             "Refusing Auth0 Management call: token issuer is not the configured tenant",
-            extra={"auth_outcome": "denied", "auth_reason": "foreign_issuer_management"},
+            extra={
+                "auth_outcome": "denied",
+                "auth_reason": "foreign_issuer_management",
+            },
         )
         raise HTTPException(
             status_code=403,
@@ -148,7 +205,9 @@ def _require_configured_tenant(user: AuthenticatedUser) -> None:
         )
 
 
-def _require_recent_authentication(user: AuthenticatedUser, settings: Auth0Settings) -> None:
+def _require_recent_authentication(
+    user: AuthenticatedUser, settings: Auth0Settings
+) -> None:
     """Step-up gate for issuing a hosted password-change ticket (AUTH-MAJ-004).
 
     Possessing a valid access token is not evidence that the human behind it
@@ -198,6 +257,18 @@ async def get_me(user: AuthenticatedUser = Depends(get_current_user)) -> UserPro
     operation_id="update-current-user",
     summary="Update the authenticated user's profile",
     responses={
+        409: {
+            "description": "Auth0 reports that the email address conflicts with an existing account."
+        },
+        422: {
+            "description": "Invalid email, explicit null email, unknown field, or Auth0 profile validation failure."
+        },
+        502: {
+            "description": "Auth0 failure; an uncertain email update is never automatically retried."
+        },
+        503: {
+            "description": "Management API unconfigured or throttled; throttling includes Retry-After."
+        },
         403: {
             "description": (
                 "The token's issuer is not the configured Auth0 tenant, so its "
@@ -213,10 +284,22 @@ async def update_me(
 ) -> UserProfile:
     _require_management_api()
     _require_configured_tenant(user)
-    if not request.model_fields_set:
+    updates = request.model_dump(exclude_unset=True)
+    if not updates:
         return await _build_profile(user)
+    if "email" in updates:
+        _require_database_account(user, "Changing your email")
+        updates["verify_email"] = True
     try:
-        auth0_user = await update_auth0_user(user.sub, name=request.name)
+        auth0_user = await update_auth0_user(user.sub, **updates)
+    except Auth0ManagementConflict:
+        raise HTTPException(
+            status_code=409, detail="Email address is already in use"
+        ) from None
+    except Auth0ManagementValidationError:
+        raise HTTPException(
+            status_code=422, detail="Auth0 rejected the profile update"
+        ) from None
     except Auth0ManagementRateLimited as exc:
         logger.warning("Auth0 Management API rate-limited a profile update")
         raise HTTPException(
@@ -225,15 +308,140 @@ async def update_me(
             headers={"Retry-After": str(exc.retry_after)},
         )
     except Exception:
-        logger.exception("Failed to update profile through Auth0 Management API")
-        raise HTTPException(status_code=502, detail="Failed to update profile via Auth0 Management API")
-    return UserProfile(
-        id=user.sub,
-        email=user.email,
-        provider=_provider_from_sub(user.sub),
-        name=auth0_user.get("name"),
-        email_verified=auth0_user.get("email_verified"),
+        logger.warning("Auth0 profile update request failed")
+        raise HTTPException(
+            status_code=502, detail="Failed to update profile via Auth0 Management API"
+        )
+    return _apply_auth0_user(
+        UserProfile(
+            id=user.sub, email=user.email, provider=_provider_from_sub(user.sub)
+        ),
+        auth0_user,
     )
+
+
+# HTTPX INFO includes the user lookup URL. Filter transport records only in
+# this async context; never change a logger level for concurrent requests.
+_resend_logging_private: ContextVar[bool] = ContextVar(
+    "resend_logging_private", default=False
+)
+
+
+class _ResendTransportPrivacyFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _resend_logging_private.get()
+
+
+for _transport_logger in (
+    "httpx",
+    "httpcore.connection",
+    "httpcore.http11",
+    "httpcore.http2",
+    "httpcore.proxy",
+    "httpcore.socks",
+):
+    logging.getLogger(_transport_logger).addFilter(_ResendTransportPrivacyFilter())
+
+
+async def resend_verification(
+    request: Request,
+    response: Response,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> VerificationEmailResponse:
+    if request.scope.get("query_string"):
+        raise HTTPException(
+            status_code=422, detail="This operation accepts no body or query parameters"
+        )
+    # Stop at the first nonempty chunk; do not buffer an arbitrary request body.
+    async for chunk in request.stream():
+        if chunk:
+            raise HTTPException(
+                status_code=422,
+                detail="This operation accepts no body or query parameters",
+            )
+    _require_management_api()
+    _require_configured_tenant(user)
+    verification_email_rate_limit(request, user)
+    _require_database_account(user, "Resending the verification email")
+    privacy_token = _resend_logging_private.set(True)
+    try:
+        outcome = await resend_auth0_verification_email(user.sub)
+    except Auth0ManagementIneligible:
+        raise HTTPException(
+            status_code=400, detail="Verification email is unavailable for this account"
+        ) from None
+    except Auth0ManagementRateLimited as exc:
+        logger.warning("Auth0 verification email request throttled")
+        raise HTTPException(
+            status_code=503,
+            detail="Verification email is temporarily unavailable; retry shortly",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from None
+    except Exception:
+        logger.warning("Auth0 verification email request failed")
+        raise HTTPException(
+            status_code=502, detail="Unable to request verification email"
+        ) from None
+    finally:
+        _resend_logging_private.reset(privacy_token)
+    if outcome is ResendOutcome.ALREADY_VERIFIED:
+        response.status_code = 200
+        return VerificationEmailResponse(
+            outcome="already_verified", message="Your email is already verified."
+        )
+    response.status_code = 202
+    return VerificationEmailResponse(
+        outcome="accepted",
+        message="Verification email request accepted. Check your inbox.",
+    )
+
+
+router.add_api_route(
+    "/me/resend-verification",
+    resend_verification,
+    methods=["POST"],
+    status_code=202,
+    response_model=VerificationEmailResponse,
+    route_class_override=_PrivacyHeadersRoute,
+    operation_id="resend-verification-email",
+    summary="Request verification email for the authenticated database account",
+    description=(
+        "Accepts no body or query parameters. Reads the configured tenant's live account; "
+        "a 202 confirms job acceptance, not delivery. An already-verified account returns "
+        "200 without sending. Submission is never automatically retried. All responses "
+        "have Cache-Control: no-store. The dedicated quota is per issuer/subject and process."
+    ),
+    responses={
+        code: {
+            "description": description,
+            **({"model": VerificationEmailResponse} if code == 200 else {}),
+            "headers": {
+                "Cache-Control": {"schema": {"type": "string", "enum": ["no-store"]}},
+                **(
+                    {"Retry-After": {"schema": {"type": "integer", "minimum": 1}}}
+                    if code in {429, 503}
+                    else {}
+                ),
+                **(
+                    {"WWW-Authenticate": {"schema": {"type": "string"}}}
+                    if code == 401
+                    else {}
+                ),
+            },
+        }
+        for code, description in {
+            200: "Already verified; no email job submitted.",
+            202: "Job accepted; delivery is not confirmed.",
+            400: "Unsupported account.",
+            401: "Missing or invalid bearer token.",
+            403: "Account is not from the configured tenant.",
+            422: "A body or query was supplied; neither is accepted.",
+            429: "Verification quota exhausted; no upstream call.",
+            502: "Upstream failure; an uncertain submission is not retried.",
+            503: "Management API unconfigured, authentication unavailable, or Auth0 throttled.",
+        }.items()
+    },
+)
 
 
 @router.delete(
@@ -265,7 +473,9 @@ async def delete_me(user: AuthenticatedUser = Depends(get_current_user)) -> Resp
         )
     except Exception:
         logger.exception("Failed to delete account through Auth0 Management API")
-        raise HTTPException(status_code=502, detail="Failed to delete account via Auth0 Management API")
+        raise HTTPException(
+            status_code=502, detail="Failed to delete account via Auth0 Management API"
+        )
     return Response(status_code=204)
 
 
@@ -275,8 +485,14 @@ async def reset_my_password(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> PasswordResetResponse:
     settings = get_settings().auth0
-    if not settings.domain or not settings.password_reset_client_id or not management_api_configured():
-        raise HTTPException(status_code=503, detail="Password reset is unavailable", headers=_NO_STORE)
+    if (
+        not settings.domain
+        or not settings.password_reset_client_id
+        or not management_api_configured()
+    ):
+        raise HTTPException(
+            status_code=503, detail="Password reset is unavailable", headers=_NO_STORE
+        )
     # Quota is charged before the identity check so an ineligible principal cannot
     # hammer the 403 branch unbounded; the 503 above is config-only and free.
     try:
@@ -295,7 +511,9 @@ async def reset_my_password(
         or user.sub.endswith("@clients")
     ):
         raise HTTPException(
-            status_code=403, detail="Password reset is unavailable for this account", headers=_NO_STORE
+            status_code=403,
+            detail="Password reset is unavailable for this account",
+            headers=_NO_STORE,
         )
     if settings.password_reset_require_recent_auth:
         _require_recent_authentication(user, settings)
@@ -306,7 +524,8 @@ async def reset_my_password(
         # left of a shared token-refresh cooldown), so concurrent callers turned
         # away by one throttling event are all told the same moment to come back.
         raise HTTPException(
-            status_code=503, detail="Password reset is temporarily unavailable",
+            status_code=503,
+            detail="Password reset is temporarily unavailable",
             headers={**_NO_STORE, "Retry-After": str(exc.retry_after)},
         ) from None
     except Exception:
@@ -352,8 +571,14 @@ router.add_api_route(
                 "never persisted by the API, and not proof of a completed change."
             ),
             "headers": {
-                "Cache-Control": {"description": "Always `no-store`.", "schema": {"type": "string"}},
-                "Referrer-Policy": {"description": "Always `no-referrer`.", "schema": {"type": "string"}},
+                "Cache-Control": {
+                    "description": "Always `no-store`.",
+                    "schema": {"type": "string"},
+                },
+                "Referrer-Policy": {
+                    "description": "Always `no-referrer`.",
+                    "schema": {"type": "string"},
+                },
             },
         },
         401: {
@@ -376,7 +601,10 @@ router.add_api_route(
                 "the token carries no usable recent sign-in evidence."
             ),
             "headers": {
-                "Cache-Control": {"description": "Always `no-store`.", "schema": {"type": "string"}},
+                "Cache-Control": {
+                    "description": "Always `no-store`.",
+                    "schema": {"type": "string"},
+                },
             },
         },
         429: {
@@ -390,7 +618,10 @@ router.add_api_route(
                     "description": "Seconds until the current fixed window rolls over.",
                     "schema": {"type": "integer"},
                 },
-                "Cache-Control": {"description": "Always `no-store`.", "schema": {"type": "string"}},
+                "Cache-Control": {
+                    "description": "Always `no-store`.",
+                    "schema": {"type": "string"},
+                },
             },
         },
         502: {
@@ -399,7 +630,10 @@ router.add_api_route(
                 "it does not indicate whether the account exists."
             ),
             "headers": {
-                "Cache-Control": {"description": "Always `no-store`.", "schema": {"type": "string"}},
+                "Cache-Control": {
+                    "description": "Always `no-store`.",
+                    "schema": {"type": "string"},
+                },
             },
         },
         503: {
@@ -413,7 +647,10 @@ router.add_api_route(
                     "description": "Present for the Auth0-throttled and JWKS cases.",
                     "schema": {"type": "integer"},
                 },
-                "Cache-Control": {"description": "Always `no-store`.", "schema": {"type": "string"}},
+                "Cache-Control": {
+                    "description": "Always `no-store`.",
+                    "schema": {"type": "string"},
+                },
             },
         },
     },
