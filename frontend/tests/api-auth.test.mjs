@@ -17,6 +17,8 @@ test('only the configured API origin and path receive its token', () => {
     'https://tenant.auth0.com/dbconnections/change_password',
     'https://legacy.example/projects',
     '/biosimulators-api/simulators/latest',
+    '/biosimulations-api/runs/67817a2e1f52f47f628af971',
+    '/simdata-api/datasets/67817a2e1f52f47f628af971/metadata',
     'https://api.biosim.example.evil.test/api/v1/me',
     'https://api.biosim.example/api/v10/me',
     'https://api.biosim.example/api/v1/../../other',
@@ -85,9 +87,15 @@ test('the actual plugin attaches the right token only to Platform requests', asy
   const external = {}
   await hook({ request: 'https://compose.example/simulation/run', options: external })
   assert.deepEqual(external, {})
-  const proxy = { credentials: 'omit' }
-  await hook({ request: '/biosimulators-api/simulators/latest', options: proxy })
-  assert.deepEqual(proxy, { credentials: 'omit' })
+  for (const request of [
+    '/biosimulators-api/simulators/latest',
+    '/biosimulations-api/runs/67817a2e1f52f47f628af971',
+    '/simdata-api/datasets/67817a2e1f52f47f628af971/metadata'
+  ]) {
+    const proxy = { credentials: 'omit' }
+    await hook({ request, options: proxy })
+    assert.deepEqual(proxy, { credentials: 'omit' })
+  }
   assert.equal(tokenCalls, 1)
   const explicit = { headers: new Headers({ Authorization: 'Bearer explicit' }) }
   await hook({ request: `${api}/me`, options: explicit })

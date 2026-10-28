@@ -42,5 +42,5 @@ jobs:
       - name: Verification analytics and listing tests
         run: npm run test:verification
 
-      - name: Legacy simulators proxy tests
-        run: npm run test:simulators-proxy
+      - name: Legacy proxy tests
+        run: npm run test:legacy-proxies

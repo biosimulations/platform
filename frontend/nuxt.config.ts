@@ -110,6 +110,10 @@ export default defineNuxtConfig({
     // Server-only upstream for /biosimulators-api; runtime override:
     // NUXT_LEGACY_SIMULATORS_API_URL.
     legacySimulatorsApiUrl: 'https://api.biosimulators.org',
+    // Server-only upstreams for the verify-model run-precheck proxies.
+    // Runtime overrides: NUXT_LEGACY_RUNS_API_URL, NUXT_SIMDATA_API_URL.
+    legacyRunsApiUrl: 'https://api.biosimulations.org',
+    simdataApiUrl: 'https://simdata.api.biosimulations.org',
     public: {
       base_url: process.env.BASE_URL,
       api_url: process.env.API_URL,
