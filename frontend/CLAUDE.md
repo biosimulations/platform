@@ -42,9 +42,12 @@ Run these on every changeset before considering work complete:
 ```bash
 npm run lint
 npm run typecheck
+npm run test:auth
+npm run test:verification
+npm run test:simulators-proxy
 ```
 
-CI runs the same two commands on every push (see `.github/workflows/ci.yml`). There is no unit/E2E test suite yet — verify UI changes manually in `npm run dev`.
+CI runs these checks on every PR and push to main (see `.github/workflows/frontend-ci.yaml`). Verify UI changes manually in `npm run dev`.
 
 ## Directory Structure
 
@@ -77,23 +80,28 @@ frontend/
 │       │   └── check-status/[processing_id].vue  # Poll run status
 │       ├── simulators/         # get-started, validate, suggest, index
 │       └── utilities/          # validate-model, validate-metadata, etc.
+├── server/
+│   ├── routes/biosimulators-api/[...path].get.ts # Allowlisted GET proxy
+│   └── utils/legacy-simulators-proxy.ts         # Path rules and cache eligibility
 ├── public/                     # Static assets (images, fonts, lottie)
 ├── nuxt.config.ts
 ├── package.json
 ├── package-lock.json           # Authoritative lockfile (npm)
 ├── tsconfig.json
 ├── eslint.config.mjs
-└── .github/workflows/ci.yml    # Separate from root CI; lint + typecheck
+└── tests/                     # Auth, verification, and simulator proxy unit tests
 ```
 
 ## Runtime Config
 
-Defined in `nuxt.config.ts` → `runtimeConfig.public`. Read in components via `useRuntimeConfig().public`.
+Defined in `nuxt.config.ts` → `runtimeConfig`. Public values live under `runtimeConfig.public` and are read in components via `useRuntimeConfig().public`.
 
 Use Nuxt's `NUXT_PUBLIC_<KEY>` (public) and `NUXT_<KEY>` (server-only) env-var naming — those are the names Nuxt looks for at process startup to override the build-time `runtimeConfig` values. Bare names (`API_URL`, etc.) are only picked up at *build time* and are too early for a runtime-configured container image.
 
 | Variable                          | Side             | Purpose |
 |-----------------------------------|------------------|---------|
+| `NUXT_LEGACY_SIMULATORS_API_URL` | server only | Legacy simulator proxy upstream; defaults to `https://api.biosimulators.org`. |
+| `NUXT_PUBLIC_LEGACY_SIMULATORS_API_URL` | browser + server | Defaults to `/biosimulators-api`. Pointing it at the upstream breaks CORS on deployed hosts. |
 | `NUXT_PUBLIC_BASE_URL`            | browser + server | Public origin the app is served from (used by `@nuxtjs/seo`) |
 | `NUXT_PUBLIC_API_URL`             | browser + server | Platform backend API base URL — points at the FastAPI service in `../backend/` |
 | `NUXT_API_URL`                    | server only      | In-cluster URL Nitro uses for SSR-time fetches to the backend (e.g., `http://api:8000`). Skips the public ingress when the frontend is deployed alongside `api`. Read via `useRuntimeConfig().apiUrl` from server-side code (`import.meta.server`); not exposed to the browser. |
@@ -123,12 +131,13 @@ Backend endpoints consumed (see `../backend/CLAUDE.md` for the full list):
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push:
+The repo-root `.github/workflows/frontend-ci.yaml` runs on every PR and push to main:
 1. `npm ci`
 2. `npm run lint`
 3. `npm run typecheck`
-
-The workflow lives at `.github/workflows/frontend-ci.yaml` (repo root) and is path-filtered to `frontend/**`. Sibling to the backend's `ci.yaml`.
+4. `npm run test:auth`
+5. `npm run test:verification`
+6. `npm run test:simulators-proxy`
 
 ## Deploy
 
@@ -192,4 +201,5 @@ production-build SSR bugs that `npm run dev` hides — not for personal iteratio
 ## External Services
 
 - **`../backend/` FastAPI service** — primary backend for simulations and verification.
-- **api.biosimulations.org** — referenced from `app.vue` footer link; not currently called from app code.
+- **api.biosimulations.org** — project list and detail API, also linked from the footer.
+- **api.biosimulators.org** — simulator registry and ontologies, reached through the same-origin `/biosimulators-api` proxy because its CORS allowlist excludes our hosts. Only the registry list and four ontology dumps are cached for 10 minutes per pod (five fixed keys, about 2 MB), with stale-while-revalidate. Simulator details are uncached; request credentials are never forwarded.
