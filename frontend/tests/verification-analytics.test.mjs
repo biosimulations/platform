@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { $fetch } from 'ofetch'
 import { useVerificationAnalytics } from '../app/composables/useVerificationAnalytics.ts'
+
+// Nuxt normally supplies this global; individual precheck tests mock it.
+globalThis.$fetch = $fetch
 
 const {
   extractTrajectory,
@@ -133,4 +137,53 @@ test('variable rows combine pair statistics, trajectory errors and consensus', (
   assert.equal(row.maximum_error, 1)
   assert.equal(row.relative_error, 0.25)
   assert.equal(row.consensus_status, 'discordant')
+})
+
+test('run precheck uses credential-free same-origin requests and preserves common datasets', async (t) => {
+  const requests = []
+  t.mock.method(globalThis, '$fetch', async (url, options) => {
+    requests.push({ url, options })
+    return url.endsWith('/metadata')
+      ? { groups: [{ datasets: [{ name: 'report', shape: [2, 10], attributes: [{ key: 'sedmlDataSetIds', value: ['time', 'x'] }] }] }] }
+      : { status: 'SUCCEEDED', simulator: 'test', simulatorVersion: '1' }
+  })
+  const result = await useVerificationAnalytics().precheckRunIds([' run-1 ', 'run_2'])
+  assert.equal(result.can_proceed, true)
+  assert.deepEqual(result.valid_runs, ['run-1', 'run_2'])
+  assert.deepEqual(result.common_datasets, ['report'])
+  assert.deepEqual(result.dataset_shapes.report, [2, 10])
+  assert.deepEqual(result.dataset_var_names.report, ['time', 'x'])
+  assert.deepEqual(requests.map(r => r.url), [
+    '/biosimulations-api/runs/run-1', '/simdata-api/datasets/run-1/metadata',
+    '/biosimulations-api/runs/run_2', '/simdata-api/datasets/run_2/metadata'
+  ])
+  for (const { options } of requests) {
+    assert.deepEqual(options, { credentials: 'omit', headers: { accept: 'application/json' } })
+  }
+})
+
+test('run precheck excludes missing runs with a clear reason and blocks fewer than two', async (t) => {
+  const requests = []
+  t.mock.method(globalThis, '$fetch', async (url) => {
+    requests.push(url)
+    if (url.includes('missing%2Fid')) throw Object.assign(new Error('Not Found'), { statusCode: 404 })
+    return url.endsWith('/metadata') ? { groups: [] } : { status: 'SUCCEEDED' }
+  })
+  const result = await useVerificationAnalytics().precheckRunIds(['valid', 'missing/id'])
+  assert.equal(result.can_proceed, false)
+  assert.deepEqual(result.valid_runs, ['valid'])
+  assert.equal(result.excluded_runs[0].reason, 'Run not found in BioSimulations database')
+  assert.equal(requests.at(-1), '/biosimulations-api/runs/missing%2Fid')
+})
+
+test('run precheck retains successful runs when simdata fails and excludes unfinished runs', async (t) => {
+  t.mock.method(globalThis, '$fetch', async (url) => {
+    if (url.endsWith('/metadata')) throw Object.assign(new Error('Bad Gateway'), { statusCode: 502 })
+    return { status: url.endsWith('/running') ? 'RUNNING' : 'SUCCEEDED' }
+  })
+  const result = await useVerificationAnalytics().precheckRunIds(['first', 'second', 'running'])
+  assert.equal(result.can_proceed, true)
+  assert.deepEqual(result.valid_runs, ['first', 'second'])
+  assert.deepEqual(result.common_datasets, [])
+  assert.equal(result.excluded_runs[0].status, 'RUNNING')
 })
