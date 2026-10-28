@@ -201,6 +201,7 @@ async def test_ineligible_live_user_sends_no_job(
     [
         (200, _job()),
         (204, None),
+        (302, None),
         (201, []),
         (201, "job"),
         (201, {"type": "verification_email", "status": "pending"}),
@@ -216,6 +217,7 @@ async def test_ineligible_live_user_sends_no_job(
     ids=[
         "http-200",
         "http-204",
+        "redirect",
         "array",
         "scalar",
         "no-id",

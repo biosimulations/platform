@@ -12,7 +12,7 @@ The backend is a microservices Python application built with FastAPI and Tempora
 
 - `api`: REST endpoints (file uploads, job creation, result retrieval)
 - `common`: shared utilities (storage, temporal, ssh, hpc)
-- `users`: authenticated profile, verification-email resend, and password-reset tickets (`docs/profile-email-api.md`, `docs/verification-email-api.md`)
+- `users`: authenticated profile, verification-email resend, and password-reset tickets ([profile email](../docs/profile-email-api.md), [verification email](../docs/verification-email-api.md))
 - `biosim_runs`, `biosim_verify`, `biosim_omex`, `compatibility`, `simulations`: domain workflows and activities
 - `worker`: worker process entry point
 

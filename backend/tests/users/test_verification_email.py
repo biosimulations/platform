@@ -148,6 +148,34 @@ def test_live_eligibility(
     assert endpoint.calls == ["token", "lookup"]
 
 
+def test_missing_live_account_sends_no_job(endpoint: Endpoint) -> None:
+    endpoint.fail_at, endpoint.status = "lookup", 404
+    check(TestClient(app).post(PATH), 502)
+    assert endpoint.calls == ["token", "lookup"]
+
+
+@pytest.mark.parametrize(
+    "token_verified,live_verified,status,outcome",
+    [(False, True, 200, "already_verified"), (True, False, 202, "accepted")],
+    ids=["unverified-token-verified-account", "verified-token-unverified-account"],
+)
+def test_live_verification_state_wins_over_the_token_claim(
+    endpoint: Endpoint,
+    token_verified: bool,
+    live_verified: bool,
+    status: int,
+    outcome: str,
+) -> None:
+    app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+        sub=SUB, issuer=ISSUER, email_verified=token_verified
+    )
+    endpoint.user["email_verified"] = live_verified
+    response = TestClient(app).post(PATH)
+    check(response, status)
+    assert response.json()["outcome"] == outcome
+    assert endpoint.calls.count("job") == (0 if live_verified else 1)
+
+
 @pytest.mark.parametrize("stage", ["token", "lookup", "job"])
 def test_upstream_throttling(endpoint: Endpoint, stage: str) -> None:
     endpoint.fail_at = stage

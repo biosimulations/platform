@@ -686,8 +686,14 @@ async def resend_auth0_verification_email(user_id: str) -> ResendOutcome:
         ) from exc
     if resp.status_code == 429:
         raise Auth0ManagementRateLimited(_rate_limit_hint(resp))
-    resp.raise_for_status()
+    if resp.status_code >= 500:
+        # Auth0 may have queued the job before failing; the outcome is uncertain.
+        raise Auth0ManagementUnavailable(
+            "Auth0 verification-email request did not complete"
+        )
     if resp.status_code != 201:
+        # Every other status, including a redirect (never followed), is typed here
+        # rather than escaping as httpx.HTTPStatusError.
         raise Auth0ManagementError("Unexpected verification-email job status")
 
     payload = _json_object(resp, op="verification-email job")

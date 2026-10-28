@@ -733,7 +733,7 @@ async def test_ambiguous_resend_failures_never_replay_the_job(
         )
     patch_client.install(endpoint)
 
-    with pytest.raises((Auth0ManagementUnavailable, httpx.HTTPStatusError)):
+    with pytest.raises(Auth0ManagementUnavailable):
         await resend_auth0_verification_email("auth0|abc")
     assert endpoint.user_gets == 1
     assert endpoint.job_posts == 1
