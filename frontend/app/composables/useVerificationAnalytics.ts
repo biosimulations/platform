@@ -6,6 +6,10 @@ import type {
   VariableComparisonRow
 } from '~/models/verification'
 
+// Same-origin proxies: neither upstream CORS allowlist includes our deployed hosts.
+const RUNS_PROXY = '/biosimulations-api'
+const SIMDATA_PROXY = '/simdata-api'
+
 export function useVerificationAnalytics() {
   /**
    * Extracts a single 1D trajectory array for a specific variable name from RunData.
@@ -338,8 +342,7 @@ export function useVerificationAnalytics() {
    * Validates each run against the public REST API and checks dataset compatibility.
    */
   async function precheckRunIds(
-    runIds: string[],
-    biosimulationsApiUrl: string
+    runIds: string[]
   ): Promise<RunPrecheckResult> {
     const cleanedIds = runIds.map(id => id.trim()).filter(id => id.length > 0)
     const validRuns: string[] = []
@@ -359,7 +362,7 @@ export function useVerificationAnalytics() {
       }
     }
 
-    // Step 1: Fetch metadata for all runs directly from BioSimulations API
+    // Step 1: Fetch metadata for all runs through the same-origin BioSimulations proxy
     const runInfos: Array<{
       id: string
       status: string
@@ -369,7 +372,7 @@ export function useVerificationAnalytics() {
 
     for (const id of cleanedIds) {
       try {
-        const runRes: any = await $fetch(`${biosimulationsApiUrl}/runs/${id}`, {
+        const runRes: any = await $fetch(`${RUNS_PROXY}/runs/${encodeURIComponent(id)}`, {
           credentials: 'omit',
           headers: {
             accept: 'application/json'
@@ -396,8 +399,8 @@ export function useVerificationAnalytics() {
         // Try to fetch HDF5 metadata if available
         let datasets: Array<{ name: string, shape: number[], varNames?: string[] }> = []
         try {
-          // Check simdata service or metadata endpoint
-          const metaRes: any = await $fetch(`https://simdata.api.biosimulations.org/datasets/${id}/metadata`, {
+          // Fetch simdata metadata through the same-origin proxy
+          const metaRes: any = await $fetch(`${SIMDATA_PROXY}/datasets/${encodeURIComponent(id)}/metadata`, {
             credentials: 'omit',
             headers: {
               accept: 'application/json'
@@ -419,7 +422,7 @@ export function useVerificationAnalytics() {
             }
           }
         } catch {
-          // If simdata metadata endpoint fails or is not accessible directly, proceed with runRes
+          // If the simdata metadata proxy fails, proceed with runRes
           // Backend will validate HDF5 directly during execution
           datasets = []
         }
@@ -428,9 +431,11 @@ export function useVerificationAnalytics() {
         runInfos.push({ id, status, simulator, datasets })
       } catch (err: any) {
         const msg = err?.data?.detail || err?.message || 'Network error'
-        const reason = msg.includes('Failed to fetch')
-          ? 'Unable to reach the server to fetch run metadata. Please check your connection and try again.'
-          : `Failed to query run metadata: ${msg}`
+        const reason = err?.statusCode === 404
+          ? 'Run not found in BioSimulations database'
+          : msg.includes('Failed to fetch')
+            ? 'Unable to reach the server to fetch run metadata. Please check your connection and try again.'
+            : `Failed to query run metadata: ${msg}`
         excludedRuns.push({
           run_id: id,
           simulator: 'unknown',

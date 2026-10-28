@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "typecheck": "nuxt typecheck",
     "test:auth": "node --experimental-strip-types --test tests/api-auth.test.mjs",
-    "test:verification": "node --experimental-strip-types --test tests/verification-analytics.test.mjs tests/verification-listing.test.mjs"
+    "test:verification": "node --experimental-strip-types --test tests/verification-analytics.test.mjs tests/verification-listing.test.mjs",
+    "test:legacy-proxies": "node --experimental-strip-types --test tests/legacy-simulators-proxy.test.mjs tests/legacy-run-id.test.mjs"
   },
   "dependencies": {
     "@auth0/auth0-vue": "^2.9.0",
