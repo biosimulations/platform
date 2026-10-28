@@ -6,31 +6,9 @@
  * request headers (cookies, Authorization) are forwarded.
  */
 
-interface UpstreamResponse {
-  status: number
-  contentType: string
-  body: string
-}
-
-const UPSTREAM_TIMEOUT_MS = 15_000
-
-async function fetchUpstream(upstreamPath: string): Promise<UpstreamResponse> {
+function fetchUpstream(upstreamPath: string) {
   const base = useRuntimeConfig().legacySimulatorsApiUrl.replace(/\/+$/, '')
-  try {
-    const response = await $fetch.raw(`${base}${upstreamPath}`, {
-      headers: { accept: 'application/json' },
-      responseType: 'text',
-      timeout: UPSTREAM_TIMEOUT_MS,
-      ignoreResponseError: true
-    })
-    return {
-      status: response.status,
-      contentType: response.headers.get('content-type') || 'application/json',
-      body: String(response._data ?? '')
-    }
-  } catch (cause) {
-    throw createError({ statusCode: 502, statusMessage: 'Bad Gateway', cause })
-  }
+  return fetchUpstreamJson(`${base}${upstreamPath}`)
 }
 
 // Registry list and ontology dumps only (5 keys, ~2 MB per pod): Nitro's
@@ -54,8 +32,5 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 404, statusMessage: 'Not Found' })
   }
 
-  const upstream = await (target.cacheable ? fetchUpstreamCached : fetchUpstream)(target.upstreamPath)
-  setResponseStatus(event, upstream.status)
-  setResponseHeader(event, 'content-type', upstream.contentType)
-  return upstream.body
+  return sendUpstream(event, await (target.cacheable ? fetchUpstreamCached : fetchUpstream)(target.upstreamPath))
 })
