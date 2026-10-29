@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useClipboard } from '@vueuse/core'
 import { verificationIsDone, verificationDisplayStatus, isUnavailableVerification } from '~/utils/verification-status'
-import type { VerificationRecovery, VerifyWorkflowOutput } from '~/models/verification'
+import type { DerivedVerificationLink, VerificationRecovery, VerifyWorkflowOutput } from '~/models/verification'
 
 const props = withDefaults(defineProps<{
   workflowId: string
@@ -55,6 +55,8 @@ const reverifyDraft = ref({
   cache_buster: '0',
 })
 const linkedVerificationId = ref<string | null>(null)
+// Verifications derived from this one. Shown beside the original result, never in place of it
+const derivedVerifications = ref<DerivedVerificationLink[]>([])
 const recoveryError = ref<string | null>(null)
 const recoveryPending = ref(false)
 const recoveryKeys = new Map<string, string>()
@@ -86,7 +88,9 @@ function idempotencyKey(operation: RecoveryOperation, body: unknown): string {
   const key = `${props.workflowId}\n${operation}\n${JSON.stringify(body)}`
   const existing = recoveryKeys.get(key)
   if (existing) return existing
-  const created = `k${recoveryKeys.size}-${Math.random().toString(36).slice(2)}`
+  // Fixed length within the server's Idempotency-Key pattern; getRandomValues also works off HTTPS
+  const random = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+  const created = `recovery-${random}`
   recoveryKeys.set(key, created)
   return created
 }
@@ -94,6 +98,7 @@ function idempotencyKey(operation: RecoveryOperation, body: unknown): string {
 function resetRecovery() {
   recovery.value = null
   linkedVerificationId.value = null
+  derivedVerifications.value = []
   recoveryError.value = null
   recoveryPending.value = false
   reverifyConfirmed.value = false
@@ -219,6 +224,7 @@ async function fetchStatus() {
     if (res) {
       workflowData.value = res
       applyRecovery(res.recovery ?? null)
+      derivedVerifications.value = res.derived_verifications ?? []
       emit('update:modelValue', res)
 
       if (verificationIsDone(res) && res.workflow_status === 'COMPLETED') {
@@ -235,7 +241,10 @@ async function fetchStatus() {
     if (controller.signal.aborted || workflowId !== props.workflowId) return
     const errText = err?.data?.detail || err?.message || 'Failed to poll verification workflow'
     unavailable.value = isUnavailableVerification(err)
-    if (unavailable.value) applyRecovery(err?.data?.recovery ?? null)
+    if (unavailable.value) {
+      applyRecovery(err?.data?.recovery ?? null)
+      derivedVerifications.value = err?.data?.derived_verifications ?? []
+    }
     errorMsg.value = unavailable.value ? null : errText
     const status: number | undefined = err?.response?.status ?? err?.statusCode
     if (status !== undefined && status >= 400 && status < 500 && !TRANSIENT_CLIENT_ERRORS.has(status)) {
@@ -457,13 +466,30 @@ onUnmounted(() => {
         {{ derivationLabel(workflowData?.derivation_kind) }}
       </p>
       <p v-if="workflowData?.source_verification_id">
-        Source verification {{ workflowData.source_verification_id }}
+        Source verification
+        <NuxtLink class="font-mono text-primary underline break-all" :to="`?workflow_id=${workflowData.source_verification_id}`">
+          {{ workflowData.source_verification_id }}
+        </NuxtLink>
       </p>
-      <p v-if="workflowData?.computed_at">Computed {{ workflowData.computed_at }}</p>
+      <p v-if="workflowData?.computed_at">Computed {{ new Date(workflowData.computed_at).toLocaleString() }}</p>
       <p v-if="workflowData?.comparator_version">Comparator {{ workflowData.comparator_version }}</p>
       <p v-if="workflowData?.calculation === 'new_calculation'">
         New calculation from retained inputs. This is not an exact restoration of the original report.
       </p>
+    </div>
+
+    <div v-if="derivedVerifications.length" class="mt-4 rounded-lg border border-neutral-200 p-3 text-sm text-neutral-700 space-y-2">
+      <p class="font-medium">Derived verifications</p>
+      <p class="text-xs text-neutral-500">New verifications linked to this one. They do not replace this result.</p>
+      <ul class="space-y-1">
+        <li v-for="item in derivedVerifications" :key="item.workflow_id" class="flex flex-wrap items-center gap-2">
+          <UBadge color="warning" variant="subtle" size="sm">{{ derivationLabel(item.derivation_kind) }}</UBadge>
+          <NuxtLink class="font-mono text-primary underline break-all" :to="`?workflow_id=${item.workflow_id}`">
+            {{ item.workflow_id }}
+          </NuxtLink>
+          <span class="text-xs text-neutral-500">{{ new Date(item.created).toLocaleString() }}</span>
+        </li>
+      </ul>
     </div>
 
     <div v-if="recovery?.reconstruct.eligible" class="mt-4 rounded-lg border border-neutral-200 p-3 space-y-2">

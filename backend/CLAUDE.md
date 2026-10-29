@@ -160,7 +160,7 @@ backend/
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
 | `/verification_ids` | GET | List verification workflow IDs with summaries (type, start time, OMEX hash, terminal status), newest first, paginated (`limit` ≤ 1000, opaque `cursor`, optional `omex_hash` filter; optional auth: ownerless plus caller-owned IDs) |
 | `/verify/omex` | POST | Verify OMEX file across simulators (token optional; a valid token persists `owner_sub`) |
-| `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin). Adds `derived_verifications` and `recovery` offers; the stored report is never rewritten |
+| `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin). Adds `derived_verifications` and `recovery` offers (also on the visible "no longer retained" 404); the stored report is never rewritten |
 | `/verify/{workflow_id}/reconstruct` | POST | Compare retained numerical snapshots under a new `reconstruction-` id (requires `Idempotency-Key`; never submits a simulator job; 409 when provenance, checksums, or inputs do not match) |
 | `/verify/{workflow_id}/reverify` | POST | Start a new archive verification under a new `reverification-` id (requires `Idempotency-Key`; may submit new simulation jobs; 409 when no readable archive is stored) |
 | `/verify/runs` | POST | Compare existing biosimulation runs (token optional; a valid token persists `owner_sub`) |

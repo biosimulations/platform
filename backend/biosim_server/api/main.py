@@ -62,6 +62,7 @@ from biosim_server.biosim_verify.models import (
     OMEX_HASH_PATTERN,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
     WORKFLOW_ID_PREFIX_MAX_LENGTH,
+    DerivedVerificationLink,
     LinkedRecoveryAccepted,
     ReconstructRequest,
     ReverifyRequest,
@@ -239,11 +240,14 @@ app = FastAPI(openapi_url="/openapi.json", docs_url=None, redoc_url=None, title=
 
 
 class _ResultsNoLongerRetained(Exception):
-    """Visible expired history. ``detail`` stays a string; recovery is a sibling."""
+    """Visible expired history. ``detail`` stays a string; recovery and derived links are siblings."""
 
-    def __init__(self, detail: str, recovery: VerificationRecovery | None) -> None:
+    def __init__(
+        self, detail: str, recovery: VerificationRecovery | None, derived: list[DerivedVerificationLink],
+    ) -> None:
         self.detail = detail
         self.recovery = recovery
+        self.derived = derived
         super().__init__(detail)
 
 
@@ -262,6 +266,9 @@ async def _results_no_longer_retained(_request: Request, exc: _ResultsNoLongerRe
     headers: dict[str, str] = {}
     if exc.recovery is not None:
         body["recovery"] = exc.recovery.model_dump(mode="json")
+    if exc.derived:
+        body["derived_verifications"] = [link.model_dump(mode="json") for link in exc.derived]
+    if exc.recovery is not None or exc.derived:
         headers["Cache-Control"] = "private, no-store"
     return JSONResponse(status_code=404, content=body, headers=headers)
 
@@ -973,9 +980,12 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None)
                         recovery = await build_recovery(row)
                     except Exception:
                         logger.error("verification recovery annotation failed for %s", workflow_id)
+                    # The permalink keeps showing the original's unavailability; it
+                    # links to derived verifications instead of redirecting to one.
                     raise _ResultsNoLongerRetained(
                         f"Verification {workflow_id} exists but its results are no longer retained.",
                         recovery,
+                        await derived_links(workflow_id),
                     )
         except (HTTPException, _ResultsNoLongerRetained):
             raise

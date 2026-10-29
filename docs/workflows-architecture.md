@@ -135,7 +135,16 @@ limit is charged only when a new reservation is created, so refusals never consu
 Derived rows carry `source_verification_id` and `derivation_kind`, inherit `owner_sub` from the
 source, and record `initiator_sub` for audit and quota without exposing it in listings or public
 output. `GET /verify/{id}` overlays `derived_verifications` and `recovery` offers onto the
-response; it never rewrites the stored report.
+response; it never rewrites the stored report. When the original report is unavailable, the
+"no longer retained" 404 keeps its string `detail` and adds `recovery` and any
+`derived_verifications` as siblings for a caller who may see the row, so the permalink links to derived verifications instead of
+redirecting to one. A hidden row gets the plain not-found 404 with neither field.
+
+Storage reads in this path rely on `FileService.get_file_contents` returning `None` for a missing
+object and `get_modified_date` raising `FileNotFoundError`. gcloud-aio-storage reports a missing
+object as an HTTP 404 `ClientResponseError`; `common/storage/gcs_aio.py` maps that 404, and only
+that status, onto the contract. Without the mapping, a failed verification that never wrote a
+snapshot pointer could not persist its report on GCS.
 
 ---
 

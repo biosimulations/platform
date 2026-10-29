@@ -28,7 +28,7 @@ function mountStatus(fetch, initial = { workflowId: 'a' }) {
     },
     useRuntimeConfig: () => ({ public: { api_url: 'https://api.test' } }),
     useToast: () => ({ add() {} }), $fetch: fetch,
-    AbortController, Date, JSON, Map, Math, Set,
+    AbortController, Date, JSON, Map, Math, Set, Uint8Array, crypto,
     setInterval: (fn) => {
       timers.set(++timerId, fn)
       return timerId
@@ -219,5 +219,68 @@ test('a late recovery response does not attach to a different workflow', async (
   assert.equal(view.props.workflowId, 'b')
   assert.equal(view.state().linkedVerificationId, null)
   assert.equal(view.state().workflowData.workflow_id, 'b')
+  view.unmount()
+})
+
+const derivedLinks = [
+  { workflow_id: 'reconstruction-1', derivation_kind: 'reconstruction', created: '2026-10-29T12:00:00Z' },
+  { workflow_id: 'reverification-2', derivation_kind: 'reverification', created: '2026-10-29T13:00:00Z' },
+]
+
+test('the original permalink lists derived verifications whether its report is stored or unavailable', async () => {
+  const view = mountStatus(async (url) => {
+    if (String(url).endsWith('/stored')) return { ...output('stored'), derived_verifications: derivedLinks }
+    throw {
+      response: { status: 404 },
+      data: {
+        detail: 'Verification gone exists but its results are no longer retained.',
+        recovery: recoveryOffer, derived_verifications: [derivedLinks[1]],
+      },
+    }
+  }, { workflowId: 'stored' })
+  await flush()
+  assert.deepEqual(view.state().derivedVerifications.map(item => item.workflow_id), ['reconstruction-1', 'reverification-2'])
+  // The original result stays on screen; the links sit beside it
+  assert.equal(view.state().workflowData.workflow_id, 'stored')
+
+  view.props.workflowId = 'gone'
+  await flush()
+  assert.equal(view.state().unavailable, true)
+  assert.deepEqual(view.state().derivedVerifications.map(item => item.workflow_id), ['reverification-2'])
+  assert.equal(view.props.workflowId, 'gone')
+  view.unmount()
+})
+
+test('switching workflows clears derived links from the previous one', async () => {
+  const view = mountStatus(async url => String(url).endsWith('/a')
+    ? { ...output('a'), derived_verifications: derivedLinks }
+    : output('b'))
+  await flush()
+  assert.equal(view.state().derivedVerifications.length, 2)
+  view.props.workflowId = 'b'
+  await flush()
+  assert.equal(view.state().derivedVerifications.length, 0)
+  view.unmount()
+})
+
+test('recovery idempotency keys fit the server pattern and differ per request body', async () => {
+  const keys = []
+  const view = mountStatus((url, options = {}) => {
+    if (options.method === 'POST') {
+      keys.push(options.headers['Idempotency-Key'])
+      return Promise.resolve({ workflow_id: `reconstruction-${keys.length}` })
+    }
+    throw {
+      response: { status: 404 },
+      data: { detail: 'exists but its results are no longer retained.', recovery: recoveryOffer },
+    }
+  })
+  await flush()
+  await view.state().submitRecovery('reconstruct')
+  view.state().reverifyConfirmed = true
+  await view.state().submitRecovery('reverify')
+  assert.equal(keys.length, 2)
+  for (const key of keys) assert.match(key, /^[A-Za-z0-9._:-]{8,200}$/)
+  assert.notEqual(keys[0], keys[1])
   view.unmount()
 })
