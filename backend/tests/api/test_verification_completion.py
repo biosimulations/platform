@@ -48,7 +48,10 @@ def _assert_listing(body: dict[str, Any], workflow_ids: list[str]) -> None:
     assert body["next_cursor"] is None
     assert [v["workflow_id"] for v in body["verifications"]] == workflow_ids
     for summary in body["verifications"]:
-        assert set(summary) == {"workflow_id", "verify_type", "created", "omex_hash", "status"}
+        assert set(summary) == {
+            "workflow_id", "verify_type", "created", "omex_hash", "status",
+            "source_verification_id", "derivation_kind",
+        }
         assert summary["created"].endswith("Z")
 
 
@@ -135,7 +138,13 @@ async def test_history_purged_between_describe_and_query_is_404(
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
         response = await client.get("/verify/wf")
     assert response.status_code == 404
-    assert response.json() == {"detail": expected_detail}
+    body = response.json()
+    assert body["detail"] == expected_detail
+    if "no longer retained" in expected_detail:
+        assert body["recovery"]["reconstruct"]["eligible"] is False
+        assert body["recovery"]["reverify_archive"]["eligible"] is False
+    else:
+        assert set(body) == {"detail"}
 
 
 @pytest.mark.asyncio

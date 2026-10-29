@@ -11,6 +11,7 @@ from biosim_server.biosim_runs import get_existing_biosim_simulation_run_activit
     submit_biosim_run_activity, poll_biosim_run_activity, OmexSimWorkflow
 from biosim_server.biosim_verify.activities import generate_statistics_activity_v2, generate_statistics_activity, persist_verification_report_activity
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflow
+from biosim_server.biosim_verify.reconstruct_workflow import ReconstructComparisonWorkflow, compare_retained_snapshots_activity
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflow
 from biosim_server.simulations.activities import update_run_status_activity
 from biosim_server.simulations.workflow import SimulationRunWorkflow
@@ -56,8 +57,9 @@ async def temporal_verify_worker(temporal_client: Client) -> AsyncGenerator[Work
     async with Worker(
             temporal_client,
             task_queue="verification_tasks",
-            workflows=[OmexVerifyWorkflow, OmexSimWorkflow, RunsVerifyWorkflow, SimulationRunWorkflow],
-            activities=[generate_statistics_activity_v2, generate_statistics_activity, persist_verification_report_activity, get_existing_biosim_simulation_run_activity,
+            workflows=[OmexVerifyWorkflow, OmexSimWorkflow, RunsVerifyWorkflow, ReconstructComparisonWorkflow, SimulationRunWorkflow],
+            activities=[generate_statistics_activity_v2, generate_statistics_activity, compare_retained_snapshots_activity,
+                        persist_verification_report_activity, get_existing_biosim_simulation_run_activity,
                         submit_biosim_run_activity, poll_biosim_run_activity, update_run_status_activity],
             debug_mode=True,
             workflow_runner=UnsandboxedWorkflowRunner()

@@ -94,6 +94,49 @@ Key properties:
   record for the same `(file_hash, image_digest, cache_buster)` reuses it
   instead of re-submitting.
 
+### Linked recovery — reconstruction and re-verification
+
+Two additive entry points that never modify the source verification. Both require an
+`Idempotency-Key` header and return `202` with a **new** id; the source ledger row, its report
+bytes, content hash, status, and `GET /verify/{id}` permalink stay unchanged.
+
+| Endpoint | Workflow | Submits simulator jobs? |
+|---|---|---|
+| `POST /verify/{id}/reconstruct` | `ReconstructComparisonWorkflow` | No — compares retained snapshots only |
+| `POST /verify/{id}/reverify` | `OmexVerifyWorkflow` | Yes — this is a new verification |
+
+`ReconstructComparisonWorkflow` (`biosim_verify/reconstruct_workflow.py`) executes two activities:
+`compare_retained_snapshots_activity`, which loads numerical inputs from immutable snapshot
+objects, verifies each SHA-256 against the recorded checksum, and calls `compare_loaded_runs`
+(`biosim_verify/comparison.py`); then the shared `persist_verification_report_activity`. Its
+source contains no reference to
+`submit_biosim_run_activity`, `get_hdf5_data`, or `get_existing_biosim_simulation_run_activity`,
+so a reconstruction cannot reach upstream biosimulations.org even when that service is down.
+A missing or mismatched snapshot raises a non-retryable `ApplicationError`; the API refuses
+before reserving an id, so a refusal never leaves a workflow behind.
+
+Eligibility comes from the persisted provenance manifest, never from the saved request alone.
+`reconstruction_offer` returns `missing_provenance` when there is no manifest,
+`missing_numerical_inputs` when runs were recorded without snapshots, and `work_limit` above
+`MAX_VERIFY_RUN_IDS` / `MAX_VERIFY_SNAPSHOTS`. The client must echo the stored `run_ids`,
+`snapshot_sha256`, and `compare_settings`; any difference is `409 input_mismatch`.
+
+Snapshots are captured inside the existing statistics activity
+(`capture_input_snapshots`) and published through a per-workflow pointer. Capture failure is
+logged as `verification_snapshot_capture_failed` and does **not** fail the original report — it
+only leaves that report ineligible for reconstruction.
+
+Idempotency is scoped to caller, source, operation, and request hash, with a unique index on
+`BiosimVerifyIdempotency`. Concurrent identical requests converge on one id; a different body
+under the same key is `409 idempotency_conflict`; a lost start reply returns `503` and a retry
+of the same key reuses the reserved id without a second quota charge. The shared workflow rate
+limit is charged only when a new reservation is created, so refusals never consume budget.
+
+Derived rows carry `source_verification_id` and `derivation_kind`, inherit `owner_sub` from the
+source, and record `initiator_sub` for audit and quota without exposing it in listings or public
+output. `GET /verify/{id}` overlays `derived_verifications` and `recovery` offers onto the
+response; it never rewrites the stored report.
+
 ---
 
 ## Simulation-run workflow — evolution

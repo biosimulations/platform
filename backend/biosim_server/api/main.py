@@ -3,7 +3,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, UTC, timedelta
-from typing import Any, AsyncGenerator, Awaitable, Callable, NoReturn, Optional
+from typing import Annotated, Any, AsyncGenerator, Awaitable, Callable, NoReturn, Optional
 
 import dotenv
 import uvicorn
@@ -16,10 +16,10 @@ from temporalio.client import (
     WorkflowQueryRejectedError,
 )
 from temporalio.service import RPCError, RPCStatusCode
-from fastapi import FastAPI, File, UploadFile, Query, APIRouter, Depends, HTTPException, Response
+from fastapi import FastAPI, File, Header, Request, UploadFile, Query, APIRouter, Depends, HTTPException, Response
 from fastapi.openapi.docs import get_swagger_ui_html
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, JSONResponse
 
 from biosim_server.biosim_omex import OmexFile, get_cached_omex_file_from_upload
 from biosim_server.biosim_runs import BiosimulatorVersion, HDF5File
@@ -47,6 +47,14 @@ from biosim_server.common.upload_limit import MultipartBodyLimitMiddleware
 from biosim_server.rbac_demo.router import router as rbac_demo_router
 from biosim_server.users.router import router as users_router
 from biosim_server.validation import validation_router
+from biosim_server.biosim_verify.linked_recovery import (
+    RecoveryRejected,
+    accept_reconstruction,
+    accept_reverification,
+    annotate_output,
+    build_recovery,
+    derived_links,
+)
 from biosim_server.biosim_verify.models import (
     MAX_VERIFY_RUN_IDS,
     MAX_VERIFY_SIMULATORS,
@@ -54,17 +62,23 @@ from biosim_server.biosim_verify.models import (
     OMEX_HASH_PATTERN,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
     WORKFLOW_ID_PREFIX_MAX_LENGTH,
+    LinkedRecoveryAccepted,
+    ReconstructRequest,
+    ReverifyRequest,
     VerificationIdsResponse,
+    VerificationProvenance,
     VerificationRecord,
+    VerificationRecovery,
     VerificationType,
     VerifyWorkflowOutput,
     VerifyWorkflowStatus,
 )
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflow, OmexVerifyWorkflowInput
+from biosim_server.biosim_verify.reconstruct_workflow import ReconstructComparisonWorkflowInput
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput, RunsVerifyWorkflow
 from biosim_server.biosim_verify.report_codec import encode_report
 from biosim_server.biosim_verify.report_storage import ReportCorrupt, ReportUnavailable, ReportIntegrityConflict
-from biosim_server.biosim_verify.models import VerificationProvenance, ReportPersistenceState
+from biosim_server.biosim_verify.models import ReportPersistenceState
 from biosim_server.config import get_local_cache_dir, get_settings
 from biosim_server.dependencies import (
     get_file_service,
@@ -222,6 +236,34 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 # NonFiniteSafeJSONResponse: simulator NaN in a report renders as null instead of a 500.
 app = FastAPI(openapi_url="/openapi.json", docs_url=None, redoc_url=None, title=APP_TITLE, version=APP_VERSION, servers=APP_SERVERS, lifespan=lifespan,
               default_response_class=NonFiniteSafeJSONResponse)
+
+
+class _ResultsNoLongerRetained(Exception):
+    """Visible expired history. ``detail`` stays a string; recovery is a sibling."""
+
+    def __init__(self, detail: str, recovery: VerificationRecovery | None) -> None:
+        self.detail = detail
+        self.recovery = recovery
+        super().__init__(detail)
+
+
+@app.exception_handler(RecoveryRejected)
+async def _recovery_rejected(_request: Request, exc: RecoveryRejected) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "code": exc.code},
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@app.exception_handler(_ResultsNoLongerRetained)
+async def _results_no_longer_retained(_request: Request, exc: _ResultsNoLongerRetained) -> JSONResponse:
+    body: dict[str, object] = {"detail": exc.detail}
+    headers: dict[str, str] = {}
+    if exc.recovery is not None:
+        body["recovery"] = exc.recovery.model_dump(mode="json")
+        headers["Cache-Control"] = "private, no-store"
+    return JSONResponse(status_code=404, content=body, headers=headers)
 
 # Bound multipart uploads while they are received. Registered *before* CORS:
 # the last-added middleware is outermost, so CORS stays outside and its headers
@@ -600,7 +642,9 @@ async def _persist_and_start_verify(
 
 # Workflow type names for the two verification workflow kinds.
 # Any other type (e.g. OmexSimWorkflow, SimulationRunWorkflow) is rejected.
-_VERIFY_WORKFLOW_TYPES = frozenset({"OmexVerifyWorkflow", "RunsVerifyWorkflow"})
+_VERIFY_WORKFLOW_TYPES = frozenset({
+    "OmexVerifyWorkflow", "RunsVerifyWorkflow", "ReconstructComparisonWorkflow",
+})
 _FAILED_EXECUTION_STATUSES = frozenset({
     WorkflowExecutionStatus.FAILED,
     WorkflowExecutionStatus.TERMINATED,
@@ -613,7 +657,7 @@ async def _read_verification_input(
     client: Client,
     handle: WorkflowHandle[Any, VerifyWorkflowOutput],
     workflow_type: str,
-) -> OmexVerifyWorkflowInput | RunsVerifyWorkflowInput:
+) -> OmexVerifyWorkflowInput | RunsVerifyWorkflowInput | ReconstructComparisonWorkflowInput:
     """Read only the first history page, using the configured payload converter."""
     if workflow_type not in _VERIFY_WORKFLOW_TYPES:
         raise ValueError("Not a verification workflow")
@@ -624,7 +668,14 @@ async def _read_verification_input(
     attrs = event.workflow_execution_started_event_attributes
     if attrs.workflow_type.name != workflow_type or len(attrs.input.payloads) != 1:
         raise ValueError("Unexpected workflow start input")
-    input_type = OmexVerifyWorkflowInput if workflow_type == "OmexVerifyWorkflow" else RunsVerifyWorkflowInput
+    if workflow_type == "OmexVerifyWorkflow":
+        input_type: type[OmexVerifyWorkflowInput | RunsVerifyWorkflowInput | ReconstructComparisonWorkflowInput] = OmexVerifyWorkflowInput
+    elif workflow_type == "RunsVerifyWorkflow":
+        input_type = RunsVerifyWorkflowInput
+    elif workflow_type == "ReconstructComparisonWorkflow":
+        input_type = ReconstructComparisonWorkflowInput
+    else:
+        raise ValueError("Not a verification workflow")
     decoded = await client.data_converter.decode(attrs.input.payloads, [input_type])
     if len(decoded) != 1 or not isinstance(decoded[0], input_type):
         raise ValueError("Invalid workflow start input")
@@ -735,6 +786,31 @@ async def _publish_recovered_output(
         return output.model_copy(update={"persistence_state": ReportPersistenceState.PENDING, "report_available": False})
 
 
+async def _with_recovery_view(output: VerifyWorkflowOutput, workflow_id: str) -> VerifyWorkflowOutput:
+    """Add recovery metadata to a response. A failure here still returns the report."""
+    ledger = get_verification_database_service()
+    if ledger is None:
+        return output
+    try:
+        row = await ledger.get_verification(workflow_id)
+    except Exception:
+        logger.error("verification recovery annotation failed for %s", workflow_id)
+        return output
+    if not isinstance(row, VerificationRecord):
+        return output
+    try:
+        provenance: VerificationProvenance | None = None
+        store = get_verification_report_store()
+        if store is not None:
+            loaded = await store.get_provenance(workflow_id)
+            if isinstance(loaded, VerificationProvenance):
+                provenance = loaded
+        return annotate_output(output, row, provenance, await derived_links(workflow_id), await build_recovery(row))
+    except Exception:
+        logger.error("verification recovery annotation failed for %s", workflow_id)
+        return output
+
+
 @app.get(
     "/verify/{workflow_id}",
     response_model=VerifyWorkflowOutput,
@@ -772,7 +848,7 @@ async def get_verify_output(
                 saved = await report_store.get(workflow_id)
                 if saved is not None:
                     _authorize_verification_read(user, saved.owner_sub)
-                    return saved
+                    return await _with_recovery_view(saved, workflow_id)
         except HTTPException:
             raise
         except (ReportCorrupt, ReportUnavailable) as exc:
@@ -829,7 +905,7 @@ async def get_verify_output(
         if recovered is not None:
             recovered = await _publish_recovered_output(recovered, origin="terminal_execution_failure")
             await _record_terminal_status(recovered)
-            return recovered
+            return await _with_recovery_view(recovered, workflow_id)
         logger.error("Temporal query failed for %s: %s", workflow_id, rpc_err, exc_info=rpc_err)
         raise HTTPException(status_code=503, detail="Temporal service unavailable")
     except (WorkflowQueryFailedError, WorkflowQueryRejectedError) as e:
@@ -837,7 +913,7 @@ async def get_verify_output(
         if recovered is not None:
             recovered = await _publish_recovered_output(recovered, origin="terminal_execution_failure")
             await _record_terminal_status(recovered)
-            return recovered
+            return await _with_recovery_view(recovered, workflow_id)
         logger.warning("Workflow query failed for %s: %s", workflow_id, e, exc_info=e)
         raise HTTPException(status_code=404, detail=f"Verification not found: {workflow_id}")
     except Exception as e:
@@ -845,7 +921,7 @@ async def get_verify_output(
         if recovered is not None:
             recovered = await _publish_recovered_output(recovered, origin="terminal_execution_failure")
             await _record_terminal_status(recovered)
-            return recovered
+            return await _with_recovery_view(recovered, workflow_id)
         logger.error("Unexpected error querying workflow %s", workflow_id, exc_info=e)
         raise HTTPException(status_code=503, detail="Temporal service unavailable")
 
@@ -872,7 +948,7 @@ async def get_verify_output(
     # Step 5: remember the terminal status for the listing (after authorization).
     await _record_terminal_status(workflow_output)
 
-    return workflow_output
+    return await _with_recovery_view(workflow_output, workflow_id)
 
 
 async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None) -> NoReturn:
@@ -892,11 +968,16 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None)
                     and (ADMIN_ROLE in user.roles or row.owner_sub == user.sub)
                 )
                 if caller_may_know:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Verification {workflow_id} exists but its results are no longer retained.",
+                    recovery: VerificationRecovery | None = None
+                    try:
+                        recovery = await build_recovery(row)
+                    except Exception:
+                        logger.error("verification recovery annotation failed for %s", workflow_id)
+                    raise _ResultsNoLongerRetained(
+                        f"Verification {workflow_id} exists but its results are no longer retained.",
+                        recovery,
                     )
-        except HTTPException:
+        except (HTTPException, _ResultsNoLongerRetained):
             raise
         except Exception as ledger_err:
             logger.warning(
@@ -906,6 +987,113 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None)
             )
             raise HTTPException(status_code=503, detail="Verification ledger unavailable") from ledger_err
     raise HTTPException(status_code=404, detail=f"Verification not found: {workflow_id}")
+
+
+_IDEMPOTENCY_KEY_PATTERN = r"^[A-Za-z0-9._:-]{8,200}$"
+
+
+async def _visible_source(workflow_id: str, user: AuthenticatedUser | None) -> VerificationRecord:
+    """Return a source row the caller may know about. Hidden rows stay a plain 404."""
+    ledger = _require_verification_ledger()
+    try:
+        row = await ledger.get_verification(workflow_id)
+    except Exception as exc:
+        logger.error("verification lookup failed for %s", workflow_id)
+        raise HTTPException(status_code=503, detail="Verification database service not available") from exc
+    if not isinstance(row, VerificationRecord):
+        raise HTTPException(status_code=404, detail=f"Verification not found: {workflow_id}")
+    if row.owner_sub is not None and (
+        user is None or (ADMIN_ROLE not in user.roles and row.owner_sub != user.sub)
+    ):
+        raise HTTPException(status_code=404, detail=f"Verification not found: {workflow_id}")
+    _authorize_verification_read(user, row.owner_sub)
+    return row
+
+
+async def _resolve_reverify_simulators(names: list[str]) -> list[BiosimulatorVersion]:
+    _reject_duplicate_selections(names, label="simulators")
+    biosim = get_biosim_service()
+    if biosim is None:
+        raise HTTPException(status_code=503, detail="Biosim service not available")
+    try:
+        versions = await biosim.get_simulator_versions()
+    except Exception as exc:
+        logger.error("simulator catalog lookup failed during re-verification")
+        raise HTTPException(status_code=503, detail="Biosim service not available") from exc
+    return _resolve_requested_simulators(names, versions)
+
+
+@app.post(
+    "/verify/{workflow_id}/reconstruct",
+    status_code=202,
+    response_model=LinkedRecoveryAccepted,
+    operation_id="reconstruct-verification",
+    tags=["Verification"],
+    summary="Compare retained numerical inputs under a new verification id",
+    responses={
+        400: {"description": "Duplicate run ids."},
+        401: {"description": "Invalid bearer token."},
+        404: {"description": "Verification not found for this caller."},
+        409: {"description": "Inputs do not match retained provenance, checksums failed, or the idempotency key was reused for a different body."},
+        429: {"description": "Shared workflow rate limit."},
+        503: {"description": "Ledger, snapshot storage, or Temporal is unavailable."},
+    },
+)
+async def reconstruct_verification(
+    workflow_id: str,
+    body: ReconstructRequest,
+    request: Request,
+    response: Response,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", pattern=_IDEMPOTENCY_KEY_PATTERN)],
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> LinkedRecoveryAccepted:
+    # Charge the shared workflow budget only when creating a reservation, inside
+    # accept_reconstruction. A dependency here would reject a lost-reply retry.
+    temporal = get_temporal_client()
+    if temporal is None:
+        raise HTTPException(status_code=503, detail="Temporal service not available")
+    accepted = await accept_reconstruction(
+        request=request, user=user, source=await _visible_source(workflow_id, user),
+        body=body, idempotency_key=idempotency_key, temporal=temporal,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return accepted
+
+
+@app.post(
+    "/verify/{workflow_id}/reverify",
+    status_code=202,
+    response_model=LinkedRecoveryAccepted,
+    operation_id="reverify-verification",
+    tags=["Verification"],
+    summary="Start a new archive verification linked to an existing one",
+    responses={
+        400: {"description": "Unknown, duplicate, or empty simulator selection."},
+        401: {"description": "Invalid bearer token."},
+        404: {"description": "Verification not found for this caller."},
+        409: {"description": "No stored archive, or the idempotency key was reused for a different body."},
+        429: {"description": "Shared workflow rate limit."},
+        503: {"description": "Archive storage, simulator catalog, ledger, or Temporal is unavailable."},
+    },
+)
+async def reverify_verification(
+    workflow_id: str,
+    body: ReverifyRequest,
+    request: Request,
+    response: Response,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", pattern=_IDEMPOTENCY_KEY_PATTERN)],
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> LinkedRecoveryAccepted:
+    temporal = get_temporal_client()
+    if temporal is None:
+        raise HTTPException(status_code=503, detail="Temporal service not available")
+    accepted = await accept_reverification(
+        request=request, user=user, source=await _visible_source(workflow_id, user),
+        body=body, idempotency_key=idempotency_key, temporal=temporal,
+        resolve_simulators=_resolve_reverify_simulators,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return accepted
 
 
 @app.post(

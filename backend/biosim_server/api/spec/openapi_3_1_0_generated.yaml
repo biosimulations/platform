@@ -1266,6 +1266,115 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /verify/{workflow_id}/reconstruct:
+    post:
+      tags:
+      - Verification
+      summary: Compare retained numerical inputs under a new verification id
+      operationId: reconstruct-verification
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: workflow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Workflow Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9._:-]{8,200}$
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReconstructRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkedRecoveryAccepted'
+        '400':
+          description: Duplicate run ids.
+        '401':
+          description: Invalid bearer token.
+        '404':
+          description: Verification not found for this caller.
+        '409':
+          description: Inputs do not match retained provenance, checksums failed,
+            or the idempotency key was reused for a different body.
+        '429':
+          description: Shared workflow rate limit.
+        '503':
+          description: Ledger, snapshot storage, or Temporal is unavailable.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /verify/{workflow_id}/reverify:
+    post:
+      tags:
+      - Verification
+      summary: Start a new archive verification linked to an existing one
+      operationId: reverify-verification
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: workflow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Workflow Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9._:-]{8,200}$
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReverifyRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkedRecoveryAccepted'
+        '400':
+          description: Unknown, duplicate, or empty simulator selection.
+        '401':
+          description: Invalid bearer token.
+        '404':
+          description: Verification not found for this caller.
+        '409':
+          description: No stored archive, or the idempotency key was reused for a
+            different body.
+        '429':
+          description: Shared workflow rate limit.
+        '503':
+          description: Archive storage, simulator catalog, ledger, or Temporal is
+            unavailable.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /verify/runs:
     post:
       tags:
@@ -1743,6 +1852,29 @@ components:
       - processing_id
       - jobs
       title: ConglomerateStatus
+    DerivationKind:
+      type: string
+      enum:
+      - reconstruction
+      - reverification
+      title: DerivationKind
+    DerivedVerificationLink:
+      properties:
+        workflow_id:
+          type: string
+          title: Workflow Id
+        derivation_kind:
+          $ref: '#/components/schemas/DerivationKind'
+        created:
+          type: string
+          format: date-time
+          title: Created
+      type: object
+      required:
+      - workflow_id
+      - derivation_kind
+      - created
+      title: DerivedVerificationLink
     EligibleSimulator:
       properties:
         id:
@@ -2023,6 +2155,58 @@ components:
           title: Label
       type: object
       title: LabeledIdentifier
+    LinkedRecoveryAccepted:
+      properties:
+        workflow_id:
+          type: string
+          title: Workflow Id
+        source_verification_id:
+          type: string
+          title: Source Verification Id
+        derivation_kind:
+          $ref: '#/components/schemas/DerivationKind'
+        workflow_run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workflow Run Id
+        may_start_simulations:
+          type: boolean
+          title: May Start Simulations
+        defaults_applied:
+          items:
+            type: string
+          type: array
+          title: Defaults Applied
+        compare_settings:
+          $ref: '#/components/schemas/CompareSettings'
+        simulators:
+          items:
+            type: string
+          type: array
+          title: Simulators
+        cache_reuse:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cache Reuse
+        calculation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Calculation
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - workflow_id
+      - source_verification_id
+      - derivation_kind
+      - may_start_simulations
+      - compare_settings
+      - message
+      title: LinkedRecoveryAccepted
     ListSimulationRunsRequest:
       properties:
         type:
@@ -2914,6 +3098,66 @@ components:
       required:
       - message
       title: PublicMessage
+    ReconstructOffer:
+      properties:
+        eligible:
+          type: boolean
+          title: Eligible
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        message:
+          type: string
+          title: Message
+          default: ''
+        run_ids:
+          items:
+            type: string
+          type: array
+          title: Run Ids
+        snapshot_sha256:
+          items:
+            type: string
+          type: array
+          title: Snapshot Sha256
+        compare_settings:
+          anyOf:
+          - $ref: '#/components/schemas/CompareSettings'
+          - type: 'null'
+      type: object
+      required:
+      - eligible
+      title: ReconstructOffer
+      description: Explicit inputs a caller must send back. Empty when reconstruction
+        is not eligible.
+    ReconstructRequest:
+      properties:
+        run_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 10
+          minItems: 1
+          title: Run Ids
+        snapshot_sha256:
+          items:
+            type: string
+          type: array
+          maxItems: 200
+          minItems: 1
+          title: Snapshot Sha256
+        compare_settings:
+          $ref: '#/components/schemas/CompareSettings'
+      type: object
+      required:
+      - run_ids
+      - snapshot_sha256
+      - compare_settings
+      title: ReconstructRequest
+      description: Explicit retained inputs. They must match stored provenance; nothing
+        is inferred.
     ReportPersistenceState:
       type: string
       enum:
@@ -2922,6 +3166,105 @@ components:
       - blocked
       - unavailable
       title: ReportPersistenceState
+    ReverifyOffer:
+      properties:
+        eligible:
+          type: boolean
+          title: Eligible
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        message:
+          type: string
+          title: Message
+          default: ''
+        may_start_simulations:
+          type: boolean
+          title: May Start Simulations
+          default: true
+        cache_reuse:
+          type: string
+          title: Cache Reuse
+          default: not_guaranteed
+        defaults:
+          anyOf:
+          - $ref: '#/components/schemas/CompareSettings'
+          - type: 'null'
+        default_simulators:
+          items:
+            type: string
+          type: array
+          title: Default Simulators
+        default_cache_buster:
+          type: string
+          title: Default Cache Buster
+          default: '0'
+        suggested_simulators:
+          items:
+            type: string
+          type: array
+          title: Suggested Simulators
+          description: Versions observed on the source. A suggestion only, not the
+            original selection and not a cache guarantee.
+      type: object
+      required:
+      - eligible
+      title: ReverifyOffer
+      description: Documented defaults and the warning that re-verification can start
+        simulations.
+    ReverifyRequest:
+      properties:
+        simulators:
+          anyOf:
+          - items:
+              type: string
+            type: array
+            maxItems: 10
+          - type: 'null'
+          title: Simulators
+        include_outputs:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Include Outputs
+        user_description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Description
+        rel_tol:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Rel Tol
+        abs_tol_min:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Abs Tol Min
+        abs_tol_scale:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Abs Tol Scale
+        observables:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Observables
+        cache_buster:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cache Buster
+      type: object
+      title: ReverifyRequest
+      description: Settings for a new archive verification. Omitted fields use the
+        documented defaults.
     RoleAnimalResponse:
       properties:
         role:
@@ -3540,6 +3883,17 @@ components:
       required:
       - verification_ids
       title: VerificationIdsResponse
+    VerificationRecovery:
+      properties:
+        reconstruct:
+          $ref: '#/components/schemas/ReconstructOffer'
+        reverify_archive:
+          $ref: '#/components/schemas/ReverifyOffer'
+      type: object
+      required:
+      - reconstruct
+      - reverify_archive
+      title: VerificationRecovery
     VerificationSummary:
       properties:
         workflow_id:
@@ -3567,6 +3921,19 @@ components:
           description: 'Terminal status recorded the first time GET /verify/{workflow_id}
             saw the workflow finish. null means not yet observed as finished: still
             running, never polled, or polled only after its Temporal history expired.'
+        source_verification_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Verification Id
+          description: Original verification this row was derived from, when this
+            row is a recovery.
+        derivation_kind:
+          anyOf:
+          - $ref: '#/components/schemas/DerivationKind'
+          - type: 'null'
+          description: reconstruction (new comparison of retained inputs) or reverification
+            (new archive run).
       type: object
       required:
       - workflow_id
@@ -3635,6 +4002,41 @@ components:
           - type: boolean
           - type: 'null'
           title: Report Available
+        source_verification_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Verification Id
+        derivation_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Derivation Kind
+        computed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Computed At
+        comparator_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comparator Version
+        calculation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Calculation
+        derived_verifications:
+          items:
+            $ref: '#/components/schemas/DerivedVerificationLink'
+          type: array
+          title: Derived Verifications
+        recovery:
+          anyOf:
+          - $ref: '#/components/schemas/VerificationRecovery'
+          - type: 'null'
       type: object
       required:
       - workflow_id

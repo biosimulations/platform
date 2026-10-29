@@ -17,10 +17,12 @@ from typing import Any, Final
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from pymongo import ASCENDING, DESCENDING
+from pymongo.errors import DuplicateKeyError
 
 from biosim_server.biosim_verify.models import (
     MAX_WORKFLOW_ID_BYTES,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
+    RecoveryReservation,
     VerificationRecord,
     VerificationSummary,
     VerifyWorkflowStatus,
@@ -59,8 +61,14 @@ class VerificationIdPage:
 # Listing projection: everything a VerificationSummary needs and nothing else.
 # ``owner_sub`` is deliberately absent so it can never reach a response.
 _LISTING_PROJECTION: Final = {
-    "workflow_id": 1, "verify_type": 1, "created": 1, "omex_hash": 1, "status": 1, "_id": 0,
+    "workflow_id": 1, "verify_type": 1, "created": 1, "omex_hash": 1, "status": 1,
+    "source_verification_id": 1, "derivation_kind": 1, "_id": 0,
 }
+_IDEMPOTENCY_COLLECTION: Final = "BiosimVerifyIdempotency"
+
+
+class IdempotencyConflict(Exception):
+    """The same caller, source, operation, and idempotency key was reused for a different body."""
 
 
 def _summary_from_doc(doc: Mapping[str, Any]) -> VerificationSummary:
@@ -77,6 +85,8 @@ def _summary_from_doc(doc: Mapping[str, Any]) -> VerificationSummary:
         created=created,
         omex_hash=doc.get("omex_hash"),
         status=doc.get("status"),
+        source_verification_id=doc.get("source_verification_id"),
+        derivation_kind=doc.get("derivation_kind"),
     )
 
 
@@ -205,6 +215,27 @@ class VerificationDatabaseService(ABC):
         ...
 
     @abstractmethod
+    async def list_derived(self, source_verification_id: str) -> list[VerificationRecord]:
+        """Return verifications linked to *source_verification_id*, oldest first."""
+        ...
+
+    @abstractmethod
+    async def find_recovery(
+        self, caller_key: str, source_verification_id: str, operation: str, idempotency_key: str,
+    ) -> RecoveryReservation | None:
+        """Return the reservation for this caller scope, or None."""
+        ...
+
+    @abstractmethod
+    async def reserve_recovery(self, reservation: RecoveryReservation) -> tuple[RecoveryReservation, bool]:
+        """Insert *reservation* or return the existing one for the same scope.
+
+        The boolean is True when this call inserted the row. A stored row whose
+        request hash differs raises ``IdempotencyConflict``.
+        """
+        ...
+
+    @abstractmethod
     async def delete_verification(self, workflow_id: str) -> None:
         """Remove the record for *workflow_id*.  No-op if absent."""
         ...
@@ -231,6 +262,7 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         db = db_client.get_database(settings.mongodb_database)
         self._collection = db.get_collection(settings.mongodb_collection_compare)
         self._maintenance = db.get_collection("BiosimVerifyMaintenance")
+        self._idempotency = db.get_collection(_IDEMPOTENCY_COLLECTION)
 
     async def ensure_indexes(self) -> None:
         await self._collection.create_index("workflow_id", unique=True)
@@ -239,6 +271,14 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         await self._collection.create_index(_LISTING_SORT)
         # A hash-filtered page is served in listing order from the index, not sorted in memory.
         await self._collection.create_index([("omex_hash", ASCENDING), *_LISTING_SORT])
+        await self._collection.create_index("source_verification_id")
+        await self._idempotency.create_index(
+            [
+                ("caller_key", ASCENDING), ("source_verification_id", ASCENDING),
+                ("operation", ASCENDING), ("idempotency_key", ASCENDING),
+            ],
+            unique=True,
+        )
 
     async def insert_verification(self, record: VerificationRecord) -> VerificationRecord:
         doc = record.model_dump()
@@ -400,11 +440,53 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
             {"$set": {"workflow_run_id": workflow_run_id}},
         )
 
+    async def list_derived(self, source_verification_id: str) -> list[VerificationRecord]:
+        docs = await self._collection.find(
+            {"source_verification_id": source_verification_id}, projection={"_id": 0},
+        ).sort([("created", ASCENDING), ("workflow_id", ASCENDING)]).limit(100).to_list(100)
+        return [VerificationRecord.model_validate(doc) for doc in docs]
+
+    async def find_recovery(
+        self, caller_key: str, source_verification_id: str, operation: str, idempotency_key: str,
+    ) -> RecoveryReservation | None:
+        doc = await self._idempotency.find_one(
+            {
+                "caller_key": caller_key,
+                "source_verification_id": source_verification_id,
+                "operation": operation,
+                "idempotency_key": idempotency_key,
+            },
+            projection={"_id": 0},
+        )
+        if doc is None:
+            return None
+        return RecoveryReservation.model_validate(doc)
+
+    async def reserve_recovery(self, reservation: RecoveryReservation) -> tuple[RecoveryReservation, bool]:
+        scope = {
+            "caller_key": reservation.caller_key,
+            "source_verification_id": reservation.source_verification_id,
+            "operation": reservation.operation,
+            "idempotency_key": reservation.idempotency_key,
+        }
+        try:
+            await self._idempotency.insert_one(reservation.model_dump())
+            return reservation, True
+        except DuplicateKeyError:
+            existing = await self._idempotency.find_one(scope, projection={"_id": 0})
+            if existing is None:
+                raise
+            found = RecoveryReservation.model_validate(existing)
+            if found.request_hash != reservation.request_hash:
+                raise IdempotencyConflict
+            return found, False
+
     async def delete_verification(self, workflow_id: str) -> None:
         await self._collection.delete_one({"workflow_id": workflow_id})
 
     async def delete_all_verifications(self) -> None:
         await self._collection.delete_many({})
+        await self._idempotency.delete_many({})
 
     async def close(self) -> None:
         pass  # Motor client lifetime is managed externally

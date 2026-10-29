@@ -78,6 +78,40 @@ export interface GenerateStatisticsActivityOutput {
   sim_run_data?: RunData[] | null
 }
 
+export type DerivationKind = 'reconstruction' | 'reverification'
+
+export interface ReconstructOffer {
+  eligible: boolean
+  reason?: string | null
+  message?: string
+  run_ids?: string[]
+  snapshot_sha256?: string[]
+  compare_settings?: CompareSettings | null
+}
+
+export interface ReverifyOffer {
+  eligible: boolean
+  reason?: string | null
+  message?: string
+  may_start_simulations?: boolean
+  cache_reuse?: string
+  defaults?: CompareSettings | null
+  default_simulators?: string[]
+  default_cache_buster?: string
+  suggested_simulators?: string[]
+}
+
+export interface VerificationRecovery {
+  reconstruct: ReconstructOffer
+  reverify_archive: ReverifyOffer
+}
+
+export interface DerivedVerificationLink {
+  workflow_id: string
+  derivation_kind: DerivationKind
+  created: string
+}
+
 export interface VerifyWorkflowOutput {
   workflow_id: string
   compare_settings: CompareSettings
@@ -90,6 +124,13 @@ export interface VerifyWorkflowOutput {
   persistence_state?: ReportPersistenceState
   report_id?: string | null
   report_available?: boolean | null
+  source_verification_id?: string | null
+  derivation_kind?: DerivationKind | null
+  computed_at?: string | null
+  comparator_version?: string | null
+  calculation?: string | null
+  derived_verifications?: DerivedVerificationLink[]
+  recovery?: VerificationRecovery | null
 }
 
 // Client-side Pre-check types
@@ -178,6 +219,8 @@ export interface VerificationSummary {
   omex_hash?: string | null
   // Terminal status once the server has observed it; null means not known to be finished yet
   status?: VerifyWorkflowStatus | null
+  source_verification_id?: string | null
+  derivation_kind?: DerivationKind | null
 }
 
 export interface VerificationIdsResponse {

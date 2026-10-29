@@ -104,6 +104,10 @@ backend/
 │   │   ├── compatibility.py   # find_common_datasets — preflight overlap check
 │   │   ├── database.py        # VerificationDatabaseService + Mongo impl (BiosimCompare ledger)
 │   │   ├── models.py          # Verification models (incl. VerificationRecord, VerificationType)
+│   │   ├── linked_recovery.py # Reconstruction/re-verification offers, reservations, idempotency
+│   │   ├── reconstruct_workflow.py  # ReconstructComparisonWorkflow — compares retained snapshots only
+│   │   ├── comparison.py      # compare_loaded_runs — compares in-memory datasets, no upstream calls
+│   │   ├── snapshots.py       # Numerical-input snapshot capture, manifests, checksum verification
 │   │   ├── omex_verify_workflow.py  # Multi-simulator OMEX verification
 │   │   ├── runs_verify_workflow.py  # Compare existing runs
 │   │   └── hdf5_compare.py    # Comparison logic
@@ -156,7 +160,9 @@ backend/
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
 | `/verification_ids` | GET | List verification workflow IDs with summaries (type, start time, OMEX hash, terminal status), newest first, paginated (`limit` ≤ 1000, opaque `cursor`, optional `omex_hash` filter; optional auth: ownerless plus caller-owned IDs) |
 | `/verify/omex` | POST | Verify OMEX file across simulators (token optional; a valid token persists `owner_sub`) |
-| `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin) |
+| `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin). Adds `derived_verifications` and `recovery` offers; the stored report is never rewritten |
+| `/verify/{workflow_id}/reconstruct` | POST | Compare retained numerical snapshots under a new `reconstruction-` id (requires `Idempotency-Key`; never submits a simulator job; 409 when provenance, checksums, or inputs do not match) |
+| `/verify/{workflow_id}/reverify` | POST | Start a new archive verification under a new `reverification-` id (requires `Idempotency-Key`; may submit new simulation jobs; 409 when no readable archive is stored) |
 | `/verify/runs` | POST | Compare existing biosimulation runs (token optional; a valid token persists `owner_sub`) |
 | `/api/v1/me/password-reset` | POST | Issue a short-lived Auth0-hosted password-change URL for the authenticated primary database user (New Universal Login; no email is sent; requires `create:user_tickets` on the server M2M client) |
 | `/validation/model` | POST | Validate a model document via the COMBINE API (relay; works with or without auth; rate-limited) |
@@ -168,7 +174,9 @@ backend/
 
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
-- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created, omex_hash, status). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; `status` is written once by `GET /verify/{workflow_id}` when it first sees the workflow finished; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired.
+- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, initiator_sub, created, omex_hash, status, source_verification_id, derivation_kind, workflow_input, request_hash). Written by `POST /verify/omex`, `POST /verify/runs`, and the two recovery routes before `start_workflow`; `status` is written once by `GET /verify/{workflow_id}` when it first sees the workflow finished; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired. `initiator_sub` is stored for audit and quota but omitted from listings and public output.
+- **BiosimVerifyIdempotency** - Recovery reservations keyed by caller, source, operation, and `Idempotency-Key` with a unique index. A retry of the same key reuses the reserved workflow id and is not charged against the shared workflow budget twice; a different body under the same key is `409 idempotency_conflict`.
+- **BiosimVerifyReports** - Immutable report collection (workflow_id, content_sha256, encoding, artifact reference). Written once by `persist_verification_report_activity`; recovery never rewrites it.
 - **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns

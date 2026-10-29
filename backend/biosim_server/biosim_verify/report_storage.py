@@ -101,6 +101,12 @@ class VerificationReportStore:
             raise ReportIntegrityConflict(f"conflicting report for {output.workflow_id}")
         return envelope
 
+    async def get_provenance(self, workflow_id: str) -> VerificationProvenance | None:
+        doc = await self._collection.find_one({"workflow_id": workflow_id}, projection={"provenance": 1, "_id": 0})
+        if not doc or not isinstance(doc.get("provenance"), dict):
+            return None
+        return VerificationProvenance.model_validate(doc["provenance"])
+
     async def get(self, workflow_id: str) -> VerifyWorkflowOutput | None:
         doc = await self._collection.find_one({"workflow_id": workflow_id})
         if not doc:

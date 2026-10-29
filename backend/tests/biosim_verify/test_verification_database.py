@@ -250,7 +250,10 @@ async def test_page_read_is_bounded(owner: str | None, after: VerificationCursor
                         {"$nor": [{"created": after.created,
                                    "workflow_id": {"$lte": after.workflow_id}}]}])
     assert collection.find_calls == [(({"$and": clauses},), {
-        "projection": {"workflow_id": 1, "verify_type": 1, "created": 1, "omex_hash": 1, "status": 1, "_id": 0},
+        "projection": {
+            "workflow_id": 1, "verify_type": 1, "created": 1, "omex_hash": 1, "status": 1,
+            "source_verification_id": 1, "derivation_kind": 1, "_id": 0,
+        },
     })]
 
     assert cursor.limits == [5]
@@ -440,7 +443,10 @@ async def test_summaries_carry_no_owner_and_an_aware_utc_created(svc: Verificati
     page = await svc.list_verification_ids("alice", limit=10)
     [summary] = page.verifications
     assert isinstance(summary, VerificationSummary)
-    assert set(summary.model_dump()) == {"workflow_id", "verify_type", "created", "omex_hash", "status"}
+    assert set(summary.model_dump()) == {
+        "workflow_id", "verify_type", "created", "omex_hash", "status",
+        "source_verification_id", "derivation_kind",
+    }
     assert summary.created == _utc(2025, 3, 4, 5)
     assert summary.created.tzinfo is not None and summary.created.utcoffset() == timedelta(0)
     assert summary.status is None

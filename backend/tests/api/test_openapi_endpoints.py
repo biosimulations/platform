@@ -74,6 +74,8 @@ _OPTIONAL_AUTH_OPERATION_IDS = frozenset({
     "verify-omex",
     "get-verify-output",
     "verify-runs",
+    "reconstruct-verification",
+    "reverify-verification",
 })
 _REQUIRED_AUTH_OPERATION_IDS = frozenset({
     "delete-simulation-run",
@@ -170,6 +172,8 @@ AUTH_MODE: dict[str, AuthMode] = {
     "verify-omex": AuthMode.OPTIONAL,
     "get-verify-output": AuthMode.OPTIONAL,
     "verify-runs": AuthMode.OPTIONAL,
+    "reconstruct-verification": AuthMode.OPTIONAL,
+    "reverify-verification": AuthMode.OPTIONAL,
     "list-verification-ids": AuthMode.OPTIONAL,
     # Advisory auth: a valid token only raises the rate-limit ceiling, and one
     # that does not validate is treated as absent. NONE rather than OPTIONAL
@@ -208,6 +212,8 @@ VALIDATION_SKIP: dict[str, str] = {
     "get_version_version_get": "no request body",
     "get-verify-output": "path-only",
     "verify-runs": "all query params optional",
+    "reconstruct-verification": "covered by test_linked_recovery; this probe only checks a missing header",
+    "reverify-verification": "covered by test_linked_recovery; this probe only checks a missing header",
     "list-verification-ids": "no parameters",
     "validate-model": "raw multipart relay; no Pydantic body model to reject",
     "validate-sedml": "raw multipart relay; no Pydantic body model to reject",
@@ -307,6 +313,15 @@ def _probe_verify_runs(client: TestClient) -> None:
 def _probe_get_verify_output(client: TestClient) -> None:
     with patch("biosim_server.api.main.get_temporal_client", return_value=None):
         _assert_status(client.get("/verify/probe-id"), 503)
+
+
+def _probe_reconstruct(client: TestClient) -> None:
+    # Anonymous callers reach request validation instead of a 401.
+    _assert_status(client.post("/verify/probe-id/reconstruct", json={}), 422)
+
+
+def _probe_reverify(client: TestClient) -> None:
+    _assert_status(client.post("/verify/probe-id/reverify", json={}), 422)
 
 
 def _probe_reindex_projects(client: TestClient) -> None:
@@ -437,6 +452,8 @@ UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "verify-omex": _probe_verify_omex,
     "verify-runs": _probe_verify_runs,
     "get-verify-output": _probe_get_verify_output,
+    "reconstruct-verification": _probe_reconstruct,
+    "reverify-verification": _probe_reverify,
     "reindex-projects": _probe_reindex_projects,
     "list-project-stats": _probe_list_project_stats,
     "get-project-summary": _probe_get_project_summary,

@@ -28,7 +28,7 @@ function mountStatus(fetch, initial = { workflowId: 'a' }) {
     },
     useRuntimeConfig: () => ({ public: { api_url: 'https://api.test' } }),
     useToast: () => ({ add() {} }), $fetch: fetch,
-    AbortController, Date, Set,
+    AbortController, Date, JSON, Map, Math, Set,
     setInterval: (fn) => {
       timers.set(++timerId, fn)
       return timerId
@@ -144,4 +144,80 @@ test('actual component backs off transient errors, prevents overlap and aborts o
   pending.resolve(output('a'))
   await flush()
   assert.equal(view.events.some(e => e[0] === 'completed'), false)
+})
+
+const recoveryOffer = {
+  reconstruct: {
+    eligible: true, message: 'This starts a new calculation from the retained numerical inputs.',
+    run_ids: ['run0'], snapshot_sha256: ['abc'],
+    compare_settings: { user_description: 'kept', include_outputs: false, rel_tol: 0.0001, abs_tol_min: 0.001, abs_tol_scale: 0.00001 },
+  },
+  reverify_archive: {
+    eligible: true, may_start_simulations: true, cache_reuse: 'not_guaranteed',
+    message: 'This starts a new verification and can submit new simulation jobs.',
+    defaults: { user_description: 'reverification', include_outputs: false, rel_tol: 0.0001, abs_tol_min: 0.001, abs_tol_scale: 0.00001 },
+    default_simulators: ['amici', 'copasi', 'pysces', 'tellurium', 'vcell'],
+    default_cache_buster: '0', suggested_simulators: ['copasi:4.45.296'],
+  },
+}
+
+test('recovery shows defaults, reuses one idempotency key, and keeps the original workflow id', async () => {
+  const calls = []
+  const posted = deferred()
+  const view = mountStatus((url, options = {}) => {
+    calls.push({ url, method: options.method, headers: options.headers })
+    if (options.method === 'POST') return posted.promise
+    throw {
+      response: { status: 404 },
+      data: { detail: 'exists but its results are no longer retained.', recovery: recoveryOffer },
+    }
+  })
+  await flush()
+  assert.equal(view.state().unavailable, true)
+  assert.equal(view.state().recovery.reverify_archive.may_start_simulations, true)
+  assert.equal(view.state().reverifyDraft.user_description, 'reverification')
+  assert.equal(view.state().reverifyDraft.simulators, 'amici, copasi, pysces, tellurium, vcell')
+  view.state().reverifyConfirmed = true
+  const first = view.state().submitRecovery('reverify')
+  const second = view.state().submitRecovery('reverify')
+  await flush()
+  const posts = calls.filter(call => call.method === 'POST')
+  assert.equal(posts.length, 2)
+  assert.equal(posts[0].headers['Idempotency-Key'], posts[1].headers['Idempotency-Key'])
+  assert.match(posts[0].url, /\/verify\/a\/reverify$/)
+  view.state().reverifyDraft.user_description = 'changed'
+  view.state().submitRecovery('reverify')
+  await flush()
+  const postsAfter = calls.filter(call => call.method === 'POST')
+  assert.notEqual(postsAfter[2].headers['Idempotency-Key'], postsAfter[0].headers['Idempotency-Key'])
+  posted.resolve({ workflow_id: 'reverification-new' })
+  await first
+  await second
+  await flush()
+  assert.equal(view.props.workflowId, 'a')
+  assert.equal(view.state().linkedVerificationId, 'reverification-new')
+  view.unmount()
+})
+
+test('a late recovery response does not attach to a different workflow', async () => {
+  const late = deferred()
+  const view = mountStatus((url, options = {}) => {
+    if (options.method === 'POST') return late.promise
+    if (String(url).endsWith('/b')) return output('b')
+    throw {
+      response: { status: 404 },
+      data: { detail: 'exists but its results are no longer retained.', recovery: recoveryOffer },
+    }
+  })
+  await flush()
+  const pending = view.state().submitRecovery('reconstruct')
+  view.props.workflowId = 'b'
+  await flush()
+  late.resolve({ workflow_id: 'reconstruction-late' })
+  await pending
+  await flush()
+  assert.equal(view.props.workflowId, 'b')
+  assert.equal(view.state().linkedVerificationId, null)
+  assert.equal(view.state().workflowData.workflow_id, 'b')
+  view.unmount()
 })

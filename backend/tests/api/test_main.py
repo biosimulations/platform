@@ -1149,6 +1149,7 @@ async def test_list_verification_ids_with_omex_hash_filter() -> None:
         "verifications": [{
             "workflow_id": "wf-1", "verify_type": "omex", "created": "2025-01-01T00:00:00Z",
             "omex_hash": omex_hash, "status": "COMPLETED",
+            "source_verification_id": None, "derivation_kind": None,
         }],
         "next_cursor": None,
     }

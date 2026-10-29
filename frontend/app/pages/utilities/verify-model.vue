@@ -662,6 +662,22 @@ const activeVerifyType = computed<VerificationType | null>(() => {
   return verificationTypeOf(pastVerifications.value.find(item => item.workflow_id === id) ?? { workflow_id: id })
 })
 
+function derivationBadge(kind?: 'reconstruction' | 'reverification' | null): string | null {
+  switch (kind) {
+    case 'reconstruction':
+      return 'New calculation'
+    case 'reverification':
+      return 'Re-verification'
+    case undefined:
+    case null:
+      return null
+    default: {
+      const unexpected: never = kind
+      return unexpected
+    }
+  }
+}
+
 function getVerificationType(type?: VerificationType | null): { label: string; icon: string; color: 'primary' | 'secondary' | 'neutral' } {
   if (type === 'omex') {
     return { label: 'OMEX Archive', icon: 'i-lucide-archive', color: 'primary' }
@@ -2228,6 +2244,18 @@ onMounted(() => {
                     >
                       {{ getStatusBadge(item.status).label }}
                     </UBadge>
+                    <UBadge
+                      v-if="derivationBadge(item.derivation_kind)"
+                      color="warning"
+                      variant="subtle"
+                      size="md"
+                      class="font-medium text-xs py-1 px-2.5"
+                    >
+                      {{ derivationBadge(item.derivation_kind) }}
+                    </UBadge>
+                    <span v-if="item.source_verification_id" class="text-[11px] font-mono text-neutral-500 break-all">
+                      Source {{ item.source_verification_id }}
+                    </span>
                   </div>
                 </div>
 
