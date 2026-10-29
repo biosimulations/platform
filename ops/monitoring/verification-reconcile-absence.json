@@ -1,0 +1,16 @@
+{
+  "displayName": "Verification reconciliation heartbeat missing",
+  "documentation": {"content": "No reconciliation summary for 30 minutes. Check CronJob suspension, failed initialization, image version, storage permissions and Temporal connectivity. See docs/verification-report-retention.md.", "mimeType": "text/markdown"},
+  "combiner": "OR",
+  "conditions": [{
+    "displayName": "No reconciliation runs for 30 minutes",
+    "conditionAbsent": {
+      "filter": "resource.type=\"k8s_container\" AND metric.type=\"logging.googleapis.com/user/verification_reconcile_runs\" AND resource.labels.namespace_name=\"biosim-gke\"",
+      "duration": "1800s",
+      "aggregations": [{"alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_SUM", "crossSeriesReducer": "REDUCE_SUM"}],
+      "trigger": {"count": 1}
+    }
+  }],
+  "notificationChannels": ["projects/PROJECT_ID/notificationChannels/CHANNEL_ID"],
+  "enabled": true
+}

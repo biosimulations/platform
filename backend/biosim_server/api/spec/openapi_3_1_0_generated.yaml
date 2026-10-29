@@ -1802,6 +1802,31 @@ components:
       - sims_run_info
       - comparison_statistics
       title: GenerateStatisticsActivityOutput
+    GenerateStatisticsArtifactReference:
+      properties:
+        reference_schema_version:
+          type: integer
+          title: Reference Schema Version
+          default: 1
+        artifact_reference:
+          type: string
+          title: Artifact Reference
+        content_sha256:
+          type: string
+          title: Content Sha256
+        encoding:
+          type: string
+          title: Encoding
+        uncompressed_bytes:
+          type: integer
+          title: Uncompressed Bytes
+      type: object
+      required:
+      - artifact_reference
+      - content_sha256
+      - encoding
+      - uncompressed_bytes
+      title: GenerateStatisticsArtifactReference
     HDF5Attribute:
       properties:
         key:
@@ -2889,6 +2914,14 @@ components:
       required:
       - message
       title: PublicMessage
+    ReportPersistenceState:
+      type: string
+      enum:
+      - pending
+      - stored
+      - blocked
+      - unavailable
+      title: ReportPersistenceState
     RoleAnimalResponse:
       properties:
         role:
@@ -3580,11 +3613,28 @@ components:
           anyOf:
           - $ref: '#/components/schemas/GenerateStatisticsActivityOutput'
           - type: 'null'
+        workflow_results_reference:
+          anyOf:
+          - $ref: '#/components/schemas/GenerateStatisticsArtifactReference'
+          - type: 'null'
         owner_sub:
           anyOf:
           - type: string
           - type: 'null'
           title: Owner Sub
+        persistence_state:
+          $ref: '#/components/schemas/ReportPersistenceState'
+          default: pending
+        report_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Report Id
+        report_available:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Report Available
       type: object
       required:
       - workflow_id

@@ -87,6 +87,7 @@ async def test_get_reconciles_only_failed_terminal_states(client: AsyncClient, s
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ledger_available", [False, True])
 async def test_missing_workflow_degrades_when_ledger_unavailable(client: AsyncClient, ledger_available: bool) -> None:
+    """A missing ledger permits legacy Temporal lookup; a ledger outage is 503."""
     temporal = _temporal_with_describe()
     temporal.get_workflow_handle.return_value.describe.side_effect = RPCError("private", RPCStatusCode.NOT_FOUND, b"")
     ledger = AsyncMock()
@@ -94,8 +95,12 @@ async def test_missing_workflow_degrades_when_ledger_unavailable(client: AsyncCl
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger if ledger_available else None):
         response = await client.get("/verify/wf")
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Verification not found: wf"}
+    assert response.status_code == (503 if ledger_available else 404)
+    assert response.json() == {
+        "detail": "Verification ledger unavailable"
+        if ledger_available
+        else "Verification not found: wf"
+    }
 
 
 @pytest.mark.asyncio
@@ -271,6 +276,8 @@ async def test_post_then_list_uses_real_ledger(client: AsyncClient, kind: str, a
         handle = temporal.get_workflow_handle.return_value
         handle.describe = AsyncMock(return_value=MagicMock(workflow_type="RunsVerifyWorkflow", status=WorkflowExecutionStatus.COMPLETED))
         handle.query = AsyncMock(return_value=_make_verify_output(workflow_id=workflow_id, owner_sub=owner))
+        handle.result = AsyncMock(return_value=handle.query.return_value)
+        handle.describe.return_value.run_id = None
         retrieved = await client.get(f"/verify/{workflow_id}")
         assert retrieved.status_code == 200
         assert retrieved.json()["workflow_id"] == workflow_id
@@ -337,10 +344,12 @@ async def test_real_temporal_and_mongo_roundtrip(
     from biosim_server.biosim_omex.models import OmexFile
     from biosim_server.biosim_runs.models import BiosimSimulationRun, BiosimSimulationRunStatus, BiosimulatorWorkflowRun, Hdf5DataValues
     from biosim_server.biosim_runs.activities import GetExistingBiosimSimulationRunActivityInput, GetExistingBiosimSimulationRunActivityOutput
-    from biosim_server.biosim_verify.activities import generate_statistics_activity
+    from biosim_server.biosim_verify.activities import (
+        PersistVerificationReportActivityInput,
+        generate_statistics_activity, GenerateStatisticsActivityInput,
+    )
     from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflow
     from temporalio import activity
-    from temporalio.client import WorkflowFailureError
     from temporalio.exceptions import ApplicationError
     from temporalio.worker import Worker, UnsandboxedWorkflowRunner
 
@@ -360,8 +369,18 @@ async def test_real_temporal_and_mongo_roundtrip(
             hdf5_file=_file(arg.biosim_run_id, {"shared": ["t", "x"]}),
         ))
 
+    @activity.defn(name="generate_statistics_activity_v2")
+    async def statistics_v2(arg: GenerateStatisticsActivityInput) -> Any:
+        from biosim_server.biosim_verify.models import GenerateStatisticsActivityResult
+        return GenerateStatisticsActivityResult(output=await generate_statistics_activity(arg))
+
+    @activity.defn(name="persist_verification_report_activity")
+    async def persist_report(arg: PersistVerificationReportActivityInput) -> Any:
+        return arg.output.model_copy(update={"persistence_state": "stored", "report_available": True})
+
     async with Worker(temporal_client, task_queue="verification_tasks", workflows=[RunsVerifyWorkflow],
-                      activities=[fetch_run, generate_statistics_activity], workflow_runner=UnsandboxedWorkflowRunner()):
+                      activities=[fetch_run, generate_statistics_activity, statistics_v2, persist_report],
+                      workflow_runner=UnsandboxedWorkflowRunner()):
         with patch("biosim_server.biosim_verify.activities.BiosimServiceRest.get_hdf5_data",
                    new=AsyncMock(return_value=Hdf5DataValues(shape=[2, 3], values=[0, 1, 2, 3, 4, 5]))):
             response = await client.post("/verify/runs", params={"biosimulations_run_ids": "run1"})
@@ -369,11 +388,7 @@ async def test_real_temporal_and_mongo_roundtrip(
             workflow_id = response.json()["workflow_id"]
             _assert_listing((await client.get("/verification_ids")).json(), [workflow_id])
             handle = temporal_client.get_workflow_handle(workflow_id)
-            if outcome == "failed":
-                with pytest.raises(WorkflowFailureError):
-                    await handle.result()
-            else:
-                await handle.result()
+            await handle.result()
             response = await client.get(f"/verify/{workflow_id}")
             assert response.status_code == 200
             body = response.json()
@@ -709,3 +724,18 @@ async def test_status_reaches_the_listing_after_one_poll(
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
         assert (await client.get("/verify/wf")).status_code == 200
     assert (await client.get("/verification_ids")).json()["verifications"][0]["status"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_saved_report_readiness_survives_temporal_startup_outage() -> None:
+    from fastapi import Response
+    from biosim_server.api.main import ready
+    response = Response()
+    mongo = MagicMock()
+    mongo.admin.command = AsyncMock(return_value={'ok': 1})
+    with patch('biosim_server.api.main.get_mongo_client', return_value=mongo), \
+         patch('biosim_server.api.main.get_temporal_client', return_value=None), \
+         patch('biosim_server.api.main.get_verification_report_store', return_value=MagicMock()):
+        body = await ready(response, jwks_cache=MagicMock())
+    assert response.status_code == 200
+    assert body['status'] == 'ready' and body['checks'] == {'mongodb': True, 'temporal': False}

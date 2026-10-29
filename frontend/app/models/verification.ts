@@ -1,4 +1,5 @@
 export type VerifyWorkflowStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'RUN_ID_NOT_FOUND'
+export type ReportPersistenceState = 'pending' | 'stored' | 'blocked' | 'unavailable'
 
 export interface CompareSettings {
   user_description: string
@@ -86,6 +87,9 @@ export interface VerifyWorkflowOutput {
   workflow_error?: string | null
   workflow_results?: GenerateStatisticsActivityOutput | null
   owner_sub?: string | null
+  persistence_state?: ReportPersistenceState
+  report_id?: string | null
+  report_available?: boolean | null
 }
 
 // Client-side Pre-check types

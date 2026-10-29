@@ -9,7 +9,7 @@ from temporalio.worker import Worker, UnsandboxedWorkflowRunner
 
 from biosim_server.biosim_runs import get_existing_biosim_simulation_run_activity, \
     submit_biosim_run_activity, poll_biosim_run_activity, OmexSimWorkflow
-from biosim_server.biosim_verify.activities import generate_statistics_activity
+from biosim_server.biosim_verify.activities import generate_statistics_activity_v2, generate_statistics_activity, persist_verification_report_activity
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflow
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflow
 from biosim_server.simulations.activities import update_run_status_activity
@@ -27,7 +27,7 @@ async def temporal_env(request: pytest.FixtureRequest) -> AsyncGenerator[Workflo
         # download from temporal.download intermittently failed there with
         # "error decoding response body". Unset locally, the SDK downloads as before.
         env = await WorkflowEnvironment.start_local(
-            ui=True,
+            ui=False,  # RPC tests need no fixed UI port; concurrent suites must not collide.
             data_converter=pydantic_data_converter,
             dev_server_existing_path=os.environ.get("TEMPORAL_CLI_PATH"),
         )
@@ -57,7 +57,7 @@ async def temporal_verify_worker(temporal_client: Client) -> AsyncGenerator[Work
             temporal_client,
             task_queue="verification_tasks",
             workflows=[OmexVerifyWorkflow, OmexSimWorkflow, RunsVerifyWorkflow, SimulationRunWorkflow],
-            activities=[generate_statistics_activity, get_existing_biosim_simulation_run_activity,
+            activities=[generate_statistics_activity_v2, generate_statistics_activity, persist_verification_report_activity, get_existing_biosim_simulation_run_activity,
                         submit_biosim_run_activity, poll_biosim_run_activity, update_run_status_activity],
             debug_mode=True,
             workflow_runner=UnsandboxedWorkflowRunner()

@@ -65,6 +65,19 @@ class GenerateStatisticsActivityOutput(BaseModel):
     sim_run_data: Optional[list[RunData]] = None
 
 
+class GenerateStatisticsArtifactReference(BaseModel):
+    reference_schema_version: int = 1
+    artifact_reference: str
+    content_sha256: str
+    encoding: str
+    uncompressed_bytes: int
+
+
+class GenerateStatisticsActivityResult(BaseModel):
+    output: Optional[GenerateStatisticsActivityOutput] = None
+    reference: Optional[GenerateStatisticsArtifactReference] = None
+
+
 class SimulatorFailure(BaseModel):
     """A requested simulator that produced no results: its run failed on biosimulations.org, or could not be
     submitted. Reported instead of being dropped silently, so a verification with no usable runs says why."""
@@ -86,6 +99,13 @@ class VerifyWorkflowStatus(StrEnum):
                         VerifyWorkflowStatus.RUN_ID_NOT_FOUND]
 
 
+class ReportPersistenceState(StrEnum):
+    PENDING = "pending"
+    STORED = "stored"
+    BLOCKED = "blocked"
+    UNAVAILABLE = "unavailable"
+
+
 class VerifyWorkflowOutput(BaseModel):
     workflow_id: str
     compare_settings: CompareSettings
@@ -96,9 +116,56 @@ class VerifyWorkflowOutput(BaseModel):
     # Requested simulators that produced no results (OmexVerifyWorkflow); empty when every one ran
     failed_simulators: list[SimulatorFailure] = []
     workflow_results: Optional[GenerateStatisticsActivityOutput] = None
+    workflow_results_reference: Optional[GenerateStatisticsArtifactReference] = None
     # Auth0 `sub` of the caller who started the workflow. Optional so in-flight
     # Temporal histories that predate this field still deserialize.
     owner_sub: Optional[str] = None
+    persistence_state: ReportPersistenceState = ReportPersistenceState.PENDING
+    report_id: Optional[str] = None
+    report_available: Optional[bool] = None
+
+
+class VerificationProvenance(BaseModel):
+    schema_version: int = 1
+    verification_id: str
+    workflow_run_id: Optional[str] = None
+    owner_sub: Optional[str] = None
+    created_at: Optional[datetime] = None
+    computed_at: Optional[datetime] = None
+    requested_settings: dict[str, object] = Field(default_factory=dict)
+    workflow_input: dict[str, object] = Field(default_factory=dict)
+    origin: str = "workflow"
+    comparator_version: str | None = None
+    dependency_versions: dict[str, str] = Field(default_factory=dict)
+    actual_runs: list[SimulationRunInfo] = Field(default_factory=list)
+
+
+def sanitize_workflow_error(error: object) -> str:
+    """Keep terminal errors useful without persisting payloads, paths, or URLs."""
+    text = (str(error).splitlines() or ["verification failed"])[0]
+    text = text.replace("\\", "/")
+    text = __import__("re").sub(r"https?://\S+", "[redacted-url]", text)
+    text = __import__("re").sub(r"(?<!\w)/(?:Users|home|tmp|var)/\S+", "[redacted-path]", text)
+    return str(text[:1000])
+
+
+class VerificationReportEnvelope(BaseModel):
+    report_id: str
+    workflow_id: str
+    workflow_run_id: Optional[str] = None
+    owner_sub: Optional[str] = None
+    report_schema_version: int = 1
+    provenance_schema_version: int = 1
+    report_kind: str = "verification"
+    workflow_status: VerifyWorkflowStatus
+    computed_at: datetime
+    saved_at: datetime
+    content_sha256: str
+    encoding: str
+    uncompressed_bytes: int
+    provenance: VerificationProvenance
+    inline_payload: Optional[bytes] = None
+    artifact_reference: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +202,15 @@ class VerificationRecord(BaseModel):
     # first time it observes the workflow finished. None until then -- also for
     # verifications nobody polled and for ones whose Temporal history expired.
     status: Optional[VerifyWorkflowStatus] = None
+    request_schema_version: int = 1
+    workflow_input: dict[str, object] | None = None
+    request_hash: str | None = None
+    report_id: str | None = None
+    persistence_state: ReportPersistenceState = ReportPersistenceState.PENDING
+    persistence_attempted_at: datetime | None = None
+    persisted_at: datetime | None = None
+    workflow_run_id: str | None = None
+    persistence_error: str | None = None
 
 
 class VerificationSummary(BaseModel):

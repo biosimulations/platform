@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useClipboard } from '@vueuse/core'
-import type { VerifyWorkflowOutput, VerifyWorkflowStatus } from '~/models/verification'
+import { verificationIsDone, verificationDisplayStatus, isUnavailableVerification } from '~/utils/verification-status'
+import type { VerifyWorkflowOutput } from '~/models/verification'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   workflowId: string
   modelValue?: VerifyWorkflowOutput | null
   autoPoll?: boolean
-}>()
+}>(), { autoPoll: true })
 
 const emit = defineEmits<{
   'update:modelValue': [value: VerifyWorkflowOutput]
@@ -41,15 +42,12 @@ const nextRefreshCountdown = ref<number>(POLL_INTERVAL_SECONDS)
 let timer: ReturnType<typeof setInterval> | null = null
 let inFlight: AbortController | null = null
 
-const status = computed<VerifyWorkflowStatus>(() => {
-  return workflowData.value?.workflow_status || 'PENDING'
-})
-
-const isDone = computed(() => {
-  return status.value === 'COMPLETED' || status.value === 'FAILED' || status.value === 'RUN_ID_NOT_FOUND'
-})
+const unavailable = ref(false)
+const status = computed(() => verificationDisplayStatus(workflowData.value, halted.value))
+const isDone = computed(() => verificationIsDone(workflowData.value))
 
 const statusBadgeColor = computed(() => {
+  if (workflowData.value?.persistence_state === 'pending' && status.value !== 'PENDING') return 'warning'
   switch (status.value) {
     case 'COMPLETED':
       return 'success'
@@ -107,10 +105,10 @@ async function fetchStatus() {
       workflowData.value = res
       emit('update:modelValue', res)
 
-      if (res.workflow_status === 'COMPLETED') {
+      if (verificationIsDone(res) && res.workflow_status === 'COMPLETED') {
         stopTimers()
         emit('completed', res)
-      } else if (res.workflow_status === 'FAILED' || res.workflow_status === 'RUN_ID_NOT_FOUND') {
+      } else if (verificationIsDone(res) && (res.workflow_status === 'FAILED' || res.workflow_status === 'RUN_ID_NOT_FOUND')) {
         stopTimers()
         const err = res.workflow_error || `Verification failed with status: ${res.workflow_status}`
         errorMsg.value = err
@@ -120,7 +118,8 @@ async function fetchStatus() {
   } catch (err: any) {
     if (controller.signal.aborted || workflowId !== props.workflowId) return
     const errText = err?.data?.detail || err?.message || 'Failed to poll verification workflow'
-    errorMsg.value = errText
+    unavailable.value = isUnavailableVerification(err)
+    errorMsg.value = unavailable.value ? null : errText
     const status: number | undefined = err?.response?.status ?? err?.statusCode
     if (status !== undefined && status >= 400 && status < 500 && !TRANSIENT_CLIENT_ERRORS.has(status)) {
       halted.value = true
@@ -165,6 +164,7 @@ function stopTimers() {
 // Also the retry after a 4xx halted polling
 function manualRefresh() {
   halted.value = false
+  unavailable.value = false
   pollInterval.value = POLL_INTERVAL_SECONDS
   if (!timer) {
     timer = setInterval(tick, 1000)
@@ -186,6 +186,7 @@ watch(() => props.workflowId, (newId) => {
   workflowData.value = matchingModelValue()
   errorMsg.value = null
   halted.value = false
+  unavailable.value = false
   pollInterval.value = POLL_INTERVAL_SECONDS
   if (newId) {
     startTimers()
@@ -229,11 +230,12 @@ onUnmounted(() => {
         >
           <UIcon :name="statusIcon" class="size-4" />
           <span>{{ status }}</span>
+          <span v-if="workflowData?.persistence_state === 'pending' && workflowData?.report_available === false" class="text-xs">Saving report</span>
         </UBadge>
         <div>
           <h3 class="text-base font-semibold text-neutral-900 flex items-center gap-2">
             Verification Run
-            <span v-if="!isDone" class="text-xs font-normal text-neutral-500">
+            <span v-if="!isDone && !unavailable" class="text-xs font-normal text-neutral-500">
               ({{ secondsElapsed }}s elapsed)
             </span>
             <span
@@ -260,7 +262,7 @@ onUnmounted(() => {
 
       <div class="flex items-center gap-2">
         <UButton
-          v-if="!isDone"
+          v-if="!isDone && !unavailable"
           icon="i-lucide-refresh-cw"
           size="sm"
           variant="soft"
@@ -317,6 +319,15 @@ onUnmounted(() => {
       icon="i-lucide-alert-circle"
       title="Verification Error"
       :description="errorMsg || workflowData?.workflow_error || ''"
+      class="mt-4"
+    />
+    <UAlert
+      v-if="unavailable"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-archive-x"
+      title="Original report unavailable"
+      description="The original verification result is no longer available."
       class="mt-4"
     />
   </div>

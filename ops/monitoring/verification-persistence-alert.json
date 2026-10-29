@@ -1,0 +1,17 @@
+{
+  "displayName": "Verification report persistence requires attention",
+  "documentation": {
+    "content": "Inspect the verification-report-reconcile Job and the checkpoint. Restore storage access, resolve integrity conflicts, and rerun reconciliation before Temporal history expires. See docs/verification-report-retention.md. Never delete an original report to clear an alert.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [{
+    "displayName": "Persistence error, blocked report, or stale pending work",
+    "conditionMatchedLog": {
+      "filter": "resource.type=\"k8s_container\" AND resource.labels.namespace_name=\"biosim-gke\" AND (jsonPayload.event=\"verification_persistence_attention\" OR textPayload:\"verification_persistence_attention\" OR textPayload:\"verification_persistence_failure\" OR textPayload:\"Reconciliation scan budget exhausted\")"
+    }
+  }],
+  "alertStrategy": {"notificationRateLimit": {"period": "900s"}, "autoClose": "86400s"},
+  "notificationChannels": ["projects/PROJECT_ID/notificationChannels/CHANNEL_ID"],
+  "enabled": true
+}

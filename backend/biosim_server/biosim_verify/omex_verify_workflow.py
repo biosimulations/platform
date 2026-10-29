@@ -5,11 +5,14 @@ from typing import Any, Coroutine
 
 from pydantic import BaseModel
 from temporalio import workflow
+from temporalio.common import RetryPolicy
 from temporalio.workflow import ChildWorkflowHandle
 
 from biosim_server.biosim_omex import OmexFile
 from biosim_server.biosim_runs import BiosimulatorVersion, OmexSimWorkflow, OmexSimWorkflowInput, OmexSimWorkflowOutput, \
     BiosimulatorWorkflowRun
+from biosim_server.biosim_verify.activities import persist_verification_report_activity, PersistVerificationReportActivityInput
+from biosim_server.biosim_verify.models import VerificationProvenance
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.biosim_verify.models import SimulatorFailure, VerifyWorkflowStatus, VerifyWorkflowOutput
 from biosim_server.biosim_verify.runs_verify_workflow import generate_statistics
@@ -46,6 +49,37 @@ class OmexVerifyWorkflow:
 
     @workflow.run
     async def run(self, verify_input: OmexVerifyWorkflowInput) -> VerifyWorkflowOutput:
+        if not workflow.patched("durable-verification-report-v1"):
+            return await self._verify(verify_input)
+        try:
+            output = await self._verify(verify_input)
+        except Exception:
+            # Do not publish provider exception text, credentials, or internal paths.
+            output = self.verify_output.model_copy(update={
+                "workflow_status": VerifyWorkflowStatus.FAILED,
+                "workflow_error": "Verification computation failed",
+            })
+        # Queries keep reporting progress until immutable publication acknowledges.
+        self.verify_output = self.verify_output.model_copy(update={
+            "workflow_status": VerifyWorkflowStatus.IN_PROGRESS,
+            "workflow_results": None, "workflow_results_reference": None,
+            "workflow_error": None, "report_available": False,
+        })
+        final = await workflow.execute_activity(
+            persist_verification_report_activity,
+            PersistVerificationReportActivityInput(output=output, provenance=VerificationProvenance(
+                verification_id=output.workflow_id, workflow_run_id=output.workflow_run_id,
+                owner_sub=output.owner_sub, created_at=workflow.info().start_time,
+                computed_at=workflow.now(), requested_settings=verify_input.compare_settings.model_dump(),
+                workflow_input=verify_input.model_dump(mode="json"),
+            )), start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=RetryPolicy(maximum_attempts=20, maximum_interval=timedelta(minutes=1),
+                                     non_retryable_error_types=["ReportIntegrityConflict", "ValueError"]),
+        )
+        self.verify_output = final
+        return final
+
+    async def _verify(self, verify_input: OmexVerifyWorkflowInput) -> VerifyWorkflowOutput:
         workflow.logger.setLevel(level=logging.INFO)
         workflow.logger.info("Main workflow started.")
 
@@ -79,7 +113,8 @@ class OmexVerifyWorkflow:
         workflow.logger.info("calling activity to generate statistics")
         stats = await generate_statistics(sim_workflow_runs=simulator_workflow_runs, compare_settings=self.verify_input.compare_settings)
 
-        self.verify_output.workflow_results = stats
+        self.verify_output.workflow_results = stats.output
+        self.verify_output.workflow_results_reference = stats.reference
         self.verify_output.failed_simulators = failures
         no_results = no_results_error(verify_input.requested_simulators, simulator_workflow_runs, failures)
         if no_results is not None:

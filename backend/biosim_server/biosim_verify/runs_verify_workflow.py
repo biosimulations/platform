@@ -9,8 +9,10 @@ from temporalio.exceptions import ActivityError
 from biosim_server.biosim_runs import BiosimSimulationRunStatus, BiosimulatorWorkflowRun, \
     GetExistingBiosimSimulationRunActivityInput, get_existing_biosim_simulation_run_activity
 from biosim_server.biosim_runs.activities import GetExistingBiosimSimulationRunActivityOutput
+from biosim_server.biosim_verify.activities import persist_verification_report_activity, PersistVerificationReportActivityInput
+from biosim_server.biosim_verify.models import VerificationProvenance, GenerateStatisticsActivityResult
 from biosim_server.biosim_verify import CompareSettings
-from biosim_server.biosim_verify.activities import generate_statistics_activity, GenerateStatisticsActivityInput
+from biosim_server.biosim_verify.activities import generate_statistics_activity, generate_statistics_activity_v2, GenerateStatisticsActivityInput
 from biosim_server.biosim_verify.models import GenerateStatisticsActivityOutput, SimulationRunInfo, \
     VerifyWorkflowOutput, VerifyWorkflowStatus
 
@@ -41,6 +43,37 @@ class RunsVerifyWorkflow:
 
     @workflow.run
     async def run(self, verify_input: RunsVerifyWorkflowInput) -> VerifyWorkflowOutput:
+        if not workflow.patched("durable-verification-report-v1"):
+            return await self._verify(verify_input)
+        try:
+            output = await self._verify(verify_input)
+        except Exception:
+            # Do not publish provider exception text, credentials, or internal paths.
+            output = self.verify_output.model_copy(update={
+                "workflow_status": VerifyWorkflowStatus.FAILED,
+                "workflow_error": "Verification computation failed",
+            })
+        # Queries keep reporting progress until immutable publication acknowledges.
+        self.verify_output = self.verify_output.model_copy(update={
+            "workflow_status": VerifyWorkflowStatus.IN_PROGRESS,
+            "workflow_results": None, "workflow_results_reference": None,
+            "workflow_error": None, "report_available": False,
+        })
+        final = await workflow.execute_activity(
+            persist_verification_report_activity,
+            PersistVerificationReportActivityInput(output=output, provenance=VerificationProvenance(
+                verification_id=output.workflow_id, workflow_run_id=output.workflow_run_id,
+                owner_sub=output.owner_sub, created_at=workflow.info().start_time,
+                computed_at=workflow.now(), requested_settings=verify_input.compare_settings.model_dump(),
+                workflow_input=verify_input.model_dump(mode="json"),
+            )), start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=RetryPolicy(maximum_attempts=20, maximum_interval=timedelta(minutes=1),
+                                     non_retryable_error_types=["ReportIntegrityConflict", "ValueError"]),
+        )
+        self.verify_output = final
+        return final
+
+    async def _verify(self, verify_input: RunsVerifyWorkflowInput) -> VerifyWorkflowOutput:
         workflow.logger.setLevel(level=logging.INFO)
         workflow.logger.info("Main workflow started.")
 
@@ -73,7 +106,8 @@ class RunsVerifyWorkflow:
 
         # Generate comparison report
         stats = await generate_statistics(sim_workflow_runs=simulator_workflow_runs, compare_settings=self.verify_input.compare_settings)
-        self.verify_output.workflow_results = stats
+        self.verify_output.workflow_results = stats.output
+        self.verify_output.workflow_results_reference = stats.reference
         self.verify_output.workflow_status = VerifyWorkflowStatus.COMPLETED
         return self.verify_output
 
@@ -91,19 +125,25 @@ async def get_biosim_simulation_run(workflow_id: str, biosim_run_id: str) -> Get
         raise e
 
 
-async def generate_statistics(sim_workflow_runs: list[BiosimulatorWorkflowRun], compare_settings: CompareSettings) -> GenerateStatisticsActivityOutput:
+async def generate_statistics(sim_workflow_runs: list[BiosimulatorWorkflowRun], compare_settings: CompareSettings) -> GenerateStatisticsActivityResult:
     try:
         run_data = [SimulationRunInfo(biosim_sim_run=a.biosim_run, hdf5_file=a.hdf5_file)
                     for a in sim_workflow_runs if a.biosim_run is not None and a.hdf5_file is not None]
         generate_statistics_input = GenerateStatisticsActivityInput(sim_run_info_list=run_data, compare_settings=compare_settings)
         # Generate comparison report
+        if workflow.patched("durable-verification-statistics-v1"):
+            return await workflow.execute_activity(
+                generate_statistics_activity_v2, arg=generate_statistics_input,
+                start_to_close_timeout=timedelta(minutes=10),
+                retry_policy=RetryPolicy(maximum_attempts=100, maximum_interval=timedelta(seconds=10)),
+            )
         generate_statistics_output: GenerateStatisticsActivityOutput = await workflow.execute_activity(
             generate_statistics_activity,
             arg=generate_statistics_input,
             start_to_close_timeout=timedelta(minutes=10),
             retry_policy=RetryPolicy(maximum_attempts=100, backoff_coefficient=2.0,
                                      maximum_interval=timedelta(seconds=10)))
-        return generate_statistics_output
+        return GenerateStatisticsActivityResult(output=generate_statistics_output)
     except ActivityError as e:
         workflow.logger.exception(f"Failed to generate statistics in workflow_id {workflow.info().workflow_id}.", exc_info=e)
         raise e

@@ -20,13 +20,15 @@ services:
     restart: unless-stopped
 
   temporal:
-    # Single-binary dev mode (in-memory SQLite, no separate Postgres, no Web UI).
+    # Single-binary dev mode with a persistent SQLite database (no Web UI).
     # gRPC on 7233. If you need the workflow Web UI, swap to temporalio/auto-setup.
     image: temporalio/temporal:1.7.0
     container_name: platform-temporal
-    command: ["server", "start-dev", "--ip", "0.0.0.0"]
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
     ports:
       - "7233:7233"
+    volumes:
+      - temporal_data:/data
     restart: unless-stopped
 
   minio:
@@ -47,4 +49,5 @@ services:
 
 volumes:
   mongo_data:
+  temporal_data:
   minio_data:

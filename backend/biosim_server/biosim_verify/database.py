@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from collections.abc import Mapping
 from typing import Any, Final
 
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from pymongo import ASCENDING, DESCENDING
 
 from biosim_server.biosim_verify.models import (
@@ -24,6 +24,7 @@ from biosim_server.biosim_verify.models import (
     VerificationRecord,
     VerificationSummary,
     VerifyWorkflowStatus,
+    ReportPersistenceState,
 )
 from biosim_server.config import get_settings
 
@@ -169,6 +170,41 @@ class VerificationDatabaseService(ABC):
         ...
 
     @abstractmethod
+    async def record_report_persisted(self, workflow_id: str, report_id: str, status: VerifyWorkflowStatus) -> None:
+        ...
+
+    @abstractmethod
+    async def list_persistence_candidates(
+        self, limit: int, after_created: datetime | None = None, after_workflow_id: str | None = None,
+    ) -> list[VerificationRecord]:
+        ...
+
+    @abstractmethod
+    async def acquire_persistence_scan(self, namespace: str, owner: str) -> tuple[datetime | None, str | None] | None:
+        ...
+
+    @abstractmethod
+    async def checkpoint_persistence_scan(self, namespace: str, owner: str, created: datetime | None,
+                                          workflow_id: str | None, release: bool = False) -> None:
+        ...
+
+    @abstractmethod
+    async def mark_persistence_issue(self, workflow_id: str, blocked: bool) -> None:
+        ...
+
+    @abstractmethod
+    async def mark_persistence_unavailable(self, workflow_id: str, reason: str) -> None:
+        ...
+
+    @abstractmethod
+    async def record_workflow_input(self, workflow_id: str, workflow_input: dict[str, object]) -> None:
+        ...
+
+    @abstractmethod
+    async def record_workflow_run_id(self, workflow_id: str, workflow_run_id: str) -> None:
+        ...
+
+    @abstractmethod
     async def delete_verification(self, workflow_id: str) -> None:
         """Remove the record for *workflow_id*.  No-op if absent."""
         ...
@@ -194,6 +230,7 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         settings = get_settings()
         db = db_client.get_database(settings.mongodb_database)
         self._collection = db.get_collection(settings.mongodb_collection_compare)
+        self._maintenance = db.get_collection("BiosimVerifyMaintenance")
 
     async def ensure_indexes(self) -> None:
         await self._collection.create_index("workflow_id", unique=True)
@@ -268,6 +305,99 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         await self._collection.update_one(
             {"workflow_id": workflow_id, "status": None},
             {"$set": {"status": status.value}},
+        )
+
+    async def record_report_persisted(self, workflow_id: str, report_id: str, status: VerifyWorkflowStatus) -> None:
+        await self._collection.update_one(
+            {"workflow_id": workflow_id},
+            {"$set": {
+                "report_id": report_id, "status": status.value,
+                "persistence_state": ReportPersistenceState.STORED.value,
+                "persisted_at": datetime.now(UTC), "persistence_error": None,
+            }},
+        )
+
+    async def list_persistence_candidates(
+        self, limit: int, after_created: datetime | None = None, after_workflow_id: str | None = None,
+    ) -> list[VerificationRecord]:
+        query: dict[str, object] = {
+            "$or": [
+                {"persistence_state": {"$in": [ReportPersistenceState.PENDING.value, ReportPersistenceState.BLOCKED.value]}},
+                {"persistence_state": {"$exists": False}},
+            ]
+        }
+        if after_created is not None and after_workflow_id is not None:
+            query["$and"] = [{
+                "$or": [
+                    {"created": {"$gt": after_created}},
+                    {"created": after_created, "workflow_id": {"$gt": after_workflow_id}},
+                ]
+            }]
+        docs = await self._collection.find(
+            query, projection={"_id": 0}
+        ).sort([("created", ASCENDING), ("workflow_id", ASCENDING)]).limit(limit).to_list(limit)
+        return [VerificationRecord.model_validate(doc) for doc in docs]
+
+    def _scan_collection(self) -> AsyncIOMotorCollection:
+        return self._maintenance
+
+    async def acquire_persistence_scan(self, namespace: str, owner: str) -> tuple[datetime | None, str | None] | None:
+        from pymongo import ReturnDocument
+        from pymongo.errors import DuplicateKeyError
+        from datetime import timedelta
+        collection = self._scan_collection()
+        try:
+            await collection.update_one({"_id": namespace}, {"$setOnInsert": {"after_created": None,
+                "after_workflow_id": None, "lease_until": datetime.min.replace(tzinfo=UTC)}}, upsert=True)
+        except DuplicateKeyError:
+            pass
+        now = datetime.now(UTC)
+        doc = await collection.find_one_and_update({"_id": namespace, "lease_until": {"$lte": now}},
+            {"$set": {"owner": owner, "lease_until": now + timedelta(minutes=5)}}, return_document=ReturnDocument.AFTER)
+        return None if doc is None else (doc.get("after_created"), doc.get("after_workflow_id"))
+
+    async def checkpoint_persistence_scan(self, namespace: str, owner: str, created: datetime | None,
+                                          workflow_id: str | None, release: bool = False) -> None:
+        now = datetime.now(UTC)
+        values: dict[str, object] = {"after_created": created, "after_workflow_id": workflow_id,
+                                     "updated_at": now}
+        if release:
+            values["lease_until"] = now
+        result = await self._scan_collection().update_one({"_id": namespace, "owner": owner,
+            "lease_until": {"$gt": now}}, {"$set": values})
+        if result.matched_count != 1:
+            raise RuntimeError("Reconciliation lease was lost")
+
+    async def mark_persistence_issue(self, workflow_id: str, blocked: bool) -> None:
+        await self._collection.update_one(
+            {"workflow_id": workflow_id, "persistence_state": {"$ne": ReportPersistenceState.STORED.value}},
+            {"$set": {"persistence_state": "blocked" if blocked else "pending",
+                      "persistence_error": "Report integrity/encoding failure" if blocked else "Storage dependency unavailable",
+                      "persistence_attempted_at": datetime.now(UTC)}},
+        )
+
+    async def mark_persistence_unavailable(self, workflow_id: str, reason: str) -> None:
+        await self._collection.update_one(
+            {"workflow_id": workflow_id},
+            {"$set": {
+                "persistence_state": ReportPersistenceState.UNAVAILABLE.value,
+                "persistence_error": reason[:1000],
+                "persistence_attempted_at": datetime.now(UTC),
+            }},
+        )
+
+    async def record_workflow_input(self, workflow_id: str, workflow_input: dict[str, object]) -> None:
+        from biosim_server.biosim_verify.report_codec import encode_report
+        await self._collection.update_one(
+            {"workflow_id": workflow_id, "workflow_input": None},
+            {"$set": {"workflow_input": workflow_input, "request_schema_version": 1,
+                      "request_hash": encode_report(workflow_input)[3]}},
+        )
+
+    async def record_workflow_run_id(self, workflow_id: str, workflow_run_id: str) -> None:
+        await self._collection.update_one(
+            {"workflow_id": workflow_id, "$or": [{"workflow_run_id": None}, {"workflow_run_id": {"$exists": False}}]},
+            {"$set": {"workflow_run_id": workflow_run_id}},
         )
 
     async def delete_verification(self, workflow_id: str) -> None:

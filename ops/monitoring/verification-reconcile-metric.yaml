@@ -1,0 +1,12 @@
+name: verification_reconcile_runs
+description: Verification reconciliation runs, including runs requiring attention
+filter: >-
+  resource.type="k8s_container" AND resource.labels.namespace_name="biosim-gke"
+  AND (jsonPayload.event="verification_reconcile_success"
+  OR jsonPayload.event="verification_persistence_attention"
+  OR textPayload:"verification_reconcile_success"
+  OR textPayload:"verification_persistence_attention")
+metricDescriptor:
+  metricKind: DELTA
+  valueType: INT64
+  unit: "1"

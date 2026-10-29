@@ -7,7 +7,15 @@ from temporalio import activity
 
 from biosim_server.biosim_runs import Hdf5DataValues, BiosimServiceRest
 from biosim_server.biosim_verify import CompareSettings, ComparisonStatistics
-from biosim_server.biosim_verify.models import SimulationRunInfo, GenerateStatisticsActivityOutput, RunData
+from biosim_server.biosim_verify.models import (
+    SimulationRunInfo, GenerateStatisticsActivityOutput, GenerateStatisticsActivityResult,
+    GenerateStatisticsArtifactReference, RunData, VerifyWorkflowOutput,
+    VerificationProvenance,
+)
+from biosim_server.biosim_verify.report_codec import encode_report
+from biosim_server.dependencies import get_verification_database_service, get_verification_report_store, get_mongo_client
+from biosim_server.dependencies import get_file_service
+from biosim_server.config import get_settings
 
 NDArray1b: TypeAlias = np.ndarray[tuple[int], np.dtype[np.bool]]
 NDArray1f: TypeAlias = np.ndarray[tuple[int], np.dtype[np.float64]]
@@ -18,6 +26,12 @@ NDArray3f: TypeAlias = np.ndarray[tuple[int, int, int], np.dtype[np.float64]]
 class GenerateStatisticsActivityInput(BaseModel):
     sim_run_info_list: list[SimulationRunInfo]
     compare_settings: CompareSettings
+    workflow_id: str = ""
+
+
+class PersistVerificationReportActivityInput(BaseModel):
+    output: VerifyWorkflowOutput
+    provenance: VerificationProvenance
 
 
 @activity.defn
@@ -151,6 +165,61 @@ async def generate_statistics_activity(gen_stats_input: GenerateStatisticsActivi
     except Exception as e:
         activity.logger.exception(f"Error in generate_statistics_activity: {e}", exc_info=e)
         raise e
+
+
+@activity.defn
+async def generate_statistics_activity_v2(gen_stats_input: GenerateStatisticsActivityInput) -> GenerateStatisticsActivityResult:
+    # Externalize before returning across Temporal's uncompressed payload boundary.
+    output = await generate_statistics_activity(gen_stats_input)
+    encoded, encoding, size, digest = encode_report(output.model_dump(mode="json"))
+    if size > get_settings().verification_report_max_decompressed_bytes:
+        from temporalio.exceptions import ApplicationError
+        raise ApplicationError("Statistics exceed archival size limit", non_retryable=True)
+    file_service = get_file_service()
+    if file_service is None:
+        raise RuntimeError("statistics artifact storage is unavailable")
+    reference = await file_service.upload_bytes_immutable(encoded, f"verification-activity/{digest}.json.gz")
+    return GenerateStatisticsActivityResult(reference=GenerateStatisticsArtifactReference(
+        artifact_reference=reference, content_sha256=digest, encoding=encoding, uncompressed_bytes=size,
+    ))
+
+
+@activity.defn
+async def persist_verification_report_activity(
+    payload: PersistVerificationReportActivityInput,
+) -> VerifyWorkflowOutput:
+    store = get_verification_report_store()
+    ledger = get_verification_database_service()
+    mongo = get_mongo_client()
+    if store is None or ledger is None or mongo is None:
+        raise RuntimeError("verification report persistence is unavailable")
+    try:
+        output = await store.hydrate_activity_reference(payload.output)
+        output = output.model_copy(update={"workflow_results_reference": None})
+        from biosim_server.version import __version__
+        from importlib.metadata import version
+        provenance = payload.provenance.model_copy(update={
+            "comparator_version": __version__,
+            "dependency_versions": {name: version(name) for name in ("numpy", "pydantic")},
+            "actual_runs": output.workflow_results.sims_run_info if output.workflow_results else [],
+        })
+        envelope = await store.save(output, provenance)
+        await ledger.record_report_persisted(payload.output.workflow_id, envelope.report_id, payload.output.workflow_status)
+        return payload.output.model_copy(update={
+            "persistence_state": "stored", "report_available": True, "report_id": envelope.report_id,
+        })
+    except Exception as exc:
+        from biosim_server.biosim_verify.report_storage import ReportIntegrityConflict, ReportCorrupt
+        from temporalio.exceptions import ApplicationError
+        blocked = isinstance(exc, (ValueError, ReportIntegrityConflict, ReportCorrupt))
+        activity.logger.error("verification_persistence_failure blocked=%s", blocked)
+        try:
+            await ledger.mark_persistence_issue(payload.output.workflow_id, blocked)
+        except Exception:
+            activity.logger.error("verification_persistence_bookkeeping_failure")
+        if blocked:
+            raise ApplicationError("Report integrity/encoding failure", non_retryable=True) from exc
+        raise
 
 
 def calc_stats(arr1: NDArray[np.float64], arr2: NDArray[np.float64],

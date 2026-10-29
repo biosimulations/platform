@@ -110,7 +110,10 @@ async def test_ready_when_mongo_down(mock_get_mongo_client: MagicMock, mock_get_
 
 @patch("biosim_server.api.main.get_temporal_client")
 @patch("biosim_server.api.main.get_verification_database_service")
-def test_get_output_not_found(mock_get_ledger: MagicMock, mock_get_temporal: MagicMock) -> None:
+@patch("biosim_server.api.main.get_verification_report_store")
+def test_get_output_not_found(
+    mock_get_report_store: MagicMock, mock_get_ledger: MagicMock, mock_get_temporal: MagicMock,
+) -> None:
     """GET /verify/{workflow_id} returns 404 when Temporal returns NOT_FOUND and the ledger has no row."""
     from temporalio.service import RPCError, RPCStatusCode
 
@@ -125,6 +128,7 @@ def test_get_output_not_found(mock_get_ledger: MagicMock, mock_get_temporal: Mag
     ledger = AsyncMock()
     ledger.get_verification = AsyncMock(return_value=None)
     mock_get_ledger.return_value = ledger
+    mock_get_report_store.return_value = AsyncMock()
 
     user = AuthenticatedUser(sub="auth0|test-user-id", email="user@example.com")
     app.dependency_overrides[get_current_user] = app.dependency_overrides[get_optional_user] = lambda: user
@@ -639,9 +643,11 @@ async def test_verify_runs_anonymous_start_is_ownerless() -> None:
 async def test_get_verify_anonymous_reads_only_ownerless(owner_sub: str | None, expected: int) -> None:
     """No token: an ownerless (anonymous/legacy) verification is readable, an owned one is 401."""
     temporal = _temporal_with_describe(query_result=_make_verify_output(owner_sub=owner_sub))
-    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+    with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=None), \
+         patch("biosim_server.api.main.get_verification_report_store", return_value=None):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
-            response = await test_client.get("/verify/omex-verification-test")
+            response = await test_client.get("/verify/wf")
     assert response.status_code == expected
     if expected == 401:
         assert "auth0|owner" not in response.text
@@ -861,7 +867,7 @@ async def test_protected_route(keycloak_async_client: AsyncClient, alice_token: 
 # ---------------------------------------------------------------------------
 
 def _make_verify_output(
-    workflow_id: str = "omex-verification-test",
+    workflow_id: str = "wf",
     status: VerifyWorkflowStatus = VerifyWorkflowStatus.COMPLETED,
     owner_sub: str | None = "auth0|owner",
 ) -> VerifyWorkflowOutput:
@@ -890,12 +896,14 @@ def _temporal_with_describe(
     desc = MagicMock()
     desc.workflow_type = workflow_type
     desc.status = exec_status
+    desc.run_id = query_result.workflow_run_id if query_result else "run"
     handle = AsyncMock()
     handle.describe = AsyncMock(return_value=desc)
     if query_side_effect:
         handle.query = AsyncMock(side_effect=query_side_effect)
     else:
         handle.query = AsyncMock(return_value=query_result)
+    handle.result = AsyncMock(return_value=query_result, side_effect=query_side_effect)
     temporal = MagicMock()
     temporal.get_workflow_handle.return_value = handle
     return temporal
@@ -1024,7 +1032,7 @@ async def test_get_verify_failed_workflow_reconciled_to_failed_status() -> None:
         with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
              patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-                resp = await c.get("/verify/omex-verification-test")
+                resp = await c.get("/verify/wf")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_optional_user, None)
@@ -1042,7 +1050,7 @@ async def test_get_verify_temporal_none_is_503() -> None:
     try:
         with patch("biosim_server.api.main.get_temporal_client", return_value=None):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-                resp = await c.get("/verify/omex-verification-test")
+                resp = await c.get("/verify/wf")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_optional_user, None)
@@ -1065,7 +1073,7 @@ async def test_get_verify_temporal_unavailable_rpc_error_is_503() -> None:
         with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
              patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-                resp = await c.get("/verify/omex-verification-test")
+                resp = await c.get("/verify/wf")
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_optional_user, None)
