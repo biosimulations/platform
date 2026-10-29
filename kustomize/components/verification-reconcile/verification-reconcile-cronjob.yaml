@@ -43,12 +43,15 @@ spec:
                 - name: gcs-credentials
                   mountPath: /app/secret
                   readOnly: true
-                - name: worker-cache-pvc
+                - name: scratch
                   mountPath: /app/scratch
           volumes:
-            - name: worker-cache-pvc
-              persistentVolumeClaim:
-                claimName: worker-cache-pvc
+            # STORAGE_LOCAL_CACHE_DIR (/app/scratch) only holds temporary download
+            # files for one run. worker-cache-pvc is ReadWriteOnce and held by the
+            # worker, so a job on another node could never attach it.
+            - name: scratch
+              emptyDir:
+                sizeLimit: 1Gi
             - name: gcs-credentials
               secret:
                 secretName: shared-secrets

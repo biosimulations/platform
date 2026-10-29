@@ -846,6 +846,11 @@ the release and the deploy are no longer one commit:
 
    Edit the `newTag` lines directly; `kustomize edit set image` reorders the
    whole block and adds redundant `newName` entries.
+
+   The first deploy of a release containing `scripts/reconcile_verification_reports.py`
+   must also add `components: [../../components/verification-reconcile]` to that
+   overlay. The reconcile CronJob is opt-in because older images lack the module
+   (`docs/verification-report-retention.md` → "Reconciliation and persistence alerts").
 6. **Verify.** For biosim-gke:
    ```bash
    export KUBECONFIG=<path-to-kubeconfig>

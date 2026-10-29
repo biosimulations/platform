@@ -6,5 +6,4 @@ resources:
   - worker.yaml
   - mongodb.yaml
   - reindex-cronjob.yaml
-  - verification-reconcile-cronjob.yaml
   - frontend/

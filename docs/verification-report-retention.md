@@ -91,8 +91,15 @@ The GitOps CronJob runs `scripts.reconcile_verification_reports --apply` every f
 forbidden, a four-minute job deadline, a 150-second scan budget, and a 45-second per-row budget. A Mongo lease
 and row-by-row cursor in `BiosimVerifyMaintenance` carry progress across jobs and fence concurrent writers.
 A job killed at its deadline resumes after the last acknowledged row once its five-minute lease expires.
-A completed pass resets the cursor so old pending work is revisited. Deploy only with a backend image containing these
-modules. Local operators can run the same module without `--apply` to inspect candidates.
+A completed pass resets the cursor so old pending work is revisited. Local operators can run the same module without
+`--apply` to inspect candidates.
+
+The CronJob is the opt-in kustomize component `kustomize/components/verification-reconcile`, not part of `base`.
+No overlay enables it yet, because every deployed `platform-api` tag predates `scripts.reconcile_verification_reports`
+and the job would fail on each run. Enable it in the deploy PR that moves an overlay to a backend release containing
+the module, by adding `components: [../../components/verification-reconcile]` next to the `newTag` bump. For
+`biosim-gke`, merging that PR deploys both. Its `/app/scratch` is a per-pod `emptyDir`: the worker already holds the
+`ReadWriteOnce` `worker-cache-pvc`, so a job scheduled on another node could not attach it.
 
 Each run emits a JSON summary event with counts only. A dependency error, integrity conflict, blocked row, or
 pending row older than one hour emits `verification_persistence_attention`, logs at ERROR, and exits nonzero.

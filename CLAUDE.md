@@ -10,6 +10,7 @@ platform/
 ├── frontend/         # Nuxt 4 / Nuxt UI webapp, npm (see frontend/CLAUDE.md)
 ├── kustomize/        # Shared Kubernetes manifests + overlays
 │   ├── base/         # api.yaml, worker.yaml, mongodb.yaml, frontend/ (sub-package)
+│   ├── components/   # Opt-in pieces an overlay enables via `components:` (verification-reconcile)
 │   ├── config/       # Per-cluster ConfigMaps
 │   ├── overlays/     # biosim-gke, biosim-rke, biosim-local, biosim-rke-frontend-dev
 │   └── scripts/      # build_and_push.sh, sealed_secret_*
