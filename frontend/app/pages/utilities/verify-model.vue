@@ -2376,16 +2376,16 @@ onMounted(() => {
           <!-- Results Display when COMPLETED -->
           <div v-if="workflowOutput?.workflow_status === 'COMPLETED'" class="space-y-6">
             <!-- Dataset Selector & KPI Cards -->
-            <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+            <div class="flex flex-col items-stretch justify-between gap-4">
               <!-- Dataset Selector -->
               <div class="flex items-center gap-2">
-                <span class="text-xs font-semibold text-neutral-500 uppercase tracking-wider">Dataset / Report:</span>
-                <div class="w-72">
+                <span class="text-xs font-semibold whitespace-nowrap text-neutral-500 uppercase tracking-wider">Dataset / Report:</span>
+                <div class="flex-1">
                   <USelect
                     v-model="activeDataset"
                     :items="availableDatasets"
                     size="sm"
-                    class="font-mono text-xs"
+                    class="font-mono text-xs w-full"
                   />
                 </div>
               </div>
