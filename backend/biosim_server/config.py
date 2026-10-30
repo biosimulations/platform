@@ -379,6 +379,7 @@ class Settings(BaseSettings):
     storage_tensorstore_kvstore_driver: KV_DRIVER = "gcs"
 
     temporal_service_url: str = "localhost:7233"
+    temporal_namespace: str = "default"
 
     storage_local_cache_dir: str = "./local_cache"
 
@@ -389,6 +390,10 @@ class Settings(BaseSettings):
     mongodb_collection_omex: str = "BiosimOmex"
     mongodb_collection_sims: str = "BiosimSims"
     mongodb_collection_compare: str = "BiosimCompare"
+    mongodb_collection_verify_reports: str = "BiosimVerifyReports"
+    verification_report_inline_max_bytes: int = Field(default=12 * 1024 * 1024, gt=0)
+    verification_report_max_decompressed_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
+    verification_activity_inline_max_bytes: int = Field(default=512 * 1024, gt=0)
     mongodb_collection_simulation_runs: str = "BiosimSimulationRuns"
     mongodb_collection_projects: str = "Projects"
     mongodb_collection_metadata: str = "Metadata"

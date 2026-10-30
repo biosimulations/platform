@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from biosim_server.biosim_verify.activities import calc_stats
+from biosim_server.biosim_verify.comparison import calc_stats
 from biosim_server.biosim_verify.hdf5_compare import get_results, compare_arrays, compare_datasets
 
 

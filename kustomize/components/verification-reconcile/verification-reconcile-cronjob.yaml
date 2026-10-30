@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: verification-report-reconcile
+  labels:
+    app: verification-report-reconcile
+spec:
+  # Recover reports independently of GET, well within the default 24-hour retention.
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 240
+      template:
+        metadata:
+          labels:
+            app: verification-report-reconcile
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: reconcile
+              # Same image as the api; the overlay `images:` transformer keeps
+              # the tag in lockstep with platform-api.
+              image: ghcr.io/biosimulations/platform-api:latest
+              imagePullPolicy: Always
+              command: ["python", "-m", "scripts.reconcile_verification_reports", "--apply", "--limit", "100"]
+              envFrom:
+                - configMapRef:
+                    name: api-config
+              env:
+                - name: MONGODB_URI
+                  valueFrom:
+                    secretKeyRef:
+                      name: shared-secrets
+                      key: mongodb-uri
+                - name: STORAGE_GCS_CREDENTIALS_FILE
+                  value: /app/secret/gcs-credentials.json
+              volumeMounts:
+                - name: gcs-credentials
+                  mountPath: /app/secret
+                  readOnly: true
+                - name: scratch
+                  mountPath: /app/scratch
+          volumes:
+            # STORAGE_LOCAL_CACHE_DIR (/app/scratch) only holds temporary download
+            # files for one run. worker-cache-pvc is ReadWriteOnce and held by the
+            # worker, so a job on another node could never attach it.
+            - name: scratch
+              emptyDir:
+                sizeLimit: 1Gi
+            - name: gcs-credentials
+              secret:
+                secretName: shared-secrets
+                items:
+                  - key: gcs_credentials.json
+                    path: gcs-credentials.json

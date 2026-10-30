@@ -59,3 +59,34 @@ async def test_shutdown_standalone_closes_shared_services() -> None:
 
     db_service.close.assert_awaited_once()
     file_service.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial_error", [RuntimeError("offline"), ValueError("unexpected connector failure")])
+async def test_temporal_reconnects_and_shutdown_cancels_retry(monkeypatch: pytest.MonkeyPatch, initial_error: Exception) -> None:
+    import asyncio
+    attempts = AsyncMock(side_effect=[initial_error, None])
+    client = AsyncMock()
+
+    async def connect() -> None:
+        await attempts()
+        dependencies.set_temporal_client(client)
+
+    monkeypatch.setattr(dependencies, '_connect_temporal', connect)
+    await dependencies.start_temporal_connection(retry_seconds=.01)
+    assert dependencies.get_temporal_client() is None
+    for _ in range(30):
+        if dependencies.get_temporal_client() is client:
+            break
+        await asyncio.sleep(.01)
+    assert dependencies.get_temporal_client() is client
+    assert attempts.await_count == 2
+    await dependencies.stop_temporal_connection()
+    failures = AsyncMock(side_effect=RuntimeError('offline'))
+    monkeypatch.setattr(dependencies, '_connect_temporal', failures)
+    await dependencies.start_temporal_connection(retry_seconds=60)
+    task = dependencies._temporal_reconnect_task
+    assert task is not None
+    await dependencies.stop_temporal_connection()
+    assert task.cancelled() and dependencies._temporal_reconnect_task is None
+    dependencies.set_temporal_client(None)

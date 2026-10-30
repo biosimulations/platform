@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import quote
 
+from aiohttp import ClientResponseError
 from gcloud.aio.auth import Token
 from gcloud.aio.storage import Storage
 from gcloud.aio.storage.constants import DEFAULT_TIMEOUT
@@ -67,9 +68,15 @@ async def upload_bytes_to_gcs(file_contents: bytes, gcs_path: str, token: Token)
 
 async def get_gcs_modified_date(gcs_path: str, token: Token) -> datetime:
     logger.info(f"Getting modified date for {gcs_path}")
-    async with Storage(token=token) as client:
-        metadata: dict[str, Any] = await client.download_metadata(bucket=get_settings().storage_bucket, object_name=gcs_path)
-        return datetime.fromisoformat(metadata["updated"])
+    try:
+        async with Storage(token=token) as client:
+            metadata: dict[str, Any] = await client.download_metadata(bucket=get_settings().storage_bucket, object_name=gcs_path)
+            return datetime.fromisoformat(metadata["updated"])
+    except ClientResponseError as e:
+        # gcloud-aio reports a missing object as an HTTP 404, not FileNotFoundError.
+        if e.status == 404:
+            raise FileNotFoundError(gcs_path) from e
+        raise
 
 
 async def get_listing_of_gcs(token: Token) -> list[ListingItem]:
@@ -97,9 +104,12 @@ async def get_gcs_file_contents(gcs_path: str, token: Token) -> bytes | None:
     try:
         async with Storage(token=token) as client:
             return await client.download(bucket=get_settings().storage_bucket, object_name=gcs_path)
-    except FileNotFoundError as e:
-        logger.error(f"File not found: {e}")
-        return None
+    except ClientResponseError as e:
+        # A missing object is None (the FileService contract); other HTTP errors are not "missing".
+        if e.status == 404:
+            logger.info(f"File not found: {gcs_path}")
+            return None
+        raise
 
 async def main() -> None:
     get_settings()
