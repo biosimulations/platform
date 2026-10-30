@@ -10,7 +10,7 @@ from biosim_server.biosim_verify.comparison import compare_loaded_runs
 from biosim_server.biosim_verify.models import (
     GenerateStatisticsActivityOutput, GenerateStatisticsActivityResult,
     GenerateStatisticsArtifactReference, RunData, SimulationRunInfo, VerificationRecord,
-    VerifyWorkflowOutput, VerificationProvenance,
+    VerifyWorkflowOutput, VerificationProvenance, ReportPersistenceState,
 )
 from biosim_server.biosim_verify.report_codec import encode_report
 from biosim_server.biosim_verify.report_storage import ReportCorrupt, ReportIntegrityConflict
@@ -130,7 +130,7 @@ async def persist_verification_report_activity(
         envelope = await store.save(output, provenance)
         await ledger.record_report_persisted(payload.output.workflow_id, envelope.report_id, payload.output.workflow_status)
         return output.model_copy(update={
-            "persistence_state": "stored", "report_available": True, "report_id": envelope.report_id,
+            "persistence_state": ReportPersistenceState.STORED, "report_available": True, "report_id": envelope.report_id,
         })
     except Exception as exc:
         blocked = isinstance(exc, (ValueError, ReportIntegrityConflict, ReportCorrupt))

@@ -21,6 +21,8 @@ from biosim_server.common.temporal import pydantic_data_converter
 from tests.biosim_verify.test_report_storage import _output
 from tests.fixtures.retention_history.crash_worker import CrashPublicationWorkflow
 
+pytestmark = pytest.mark.filterwarnings("error::UserWarning")
+
 
 @pytest_asyncio.fixture
 async def crash_server() -> Any:

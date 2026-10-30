@@ -25,6 +25,7 @@ from biosim_server.biosim_verify.models import (
     VerificationRecord,
     VerificationType,
     VerifyWorkflowStatus,
+    ReportPersistenceState,
 )
 from biosim_server.common.auth import AuthenticatedUser, get_current_user, get_optional_user
 from tests.api.test_main import _make_temporal_for_runs, _make_verify_output, _temporal_with_describe, _verify_omex_mocks
@@ -385,7 +386,7 @@ async def test_real_temporal_and_mongo_roundtrip(
 
     @activity.defn(name="persist_verification_report_activity")
     async def persist_report(arg: PersistVerificationReportActivityInput) -> Any:
-        return arg.output.model_copy(update={"persistence_state": "stored", "report_available": True})
+        return arg.output.model_copy(update={"persistence_state": ReportPersistenceState.STORED, "report_available": True})
 
     async with Worker(temporal_client, task_queue="verification_tasks", workflows=[RunsVerifyWorkflow],
                       activities=[fetch_run, generate_statistics_activity, statistics_v2, persist_report],

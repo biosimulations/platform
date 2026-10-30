@@ -8,6 +8,8 @@ from biosim_server.biosim_verify.models import CompareSettings, VerificationProv
 from biosim_server.biosim_verify.report_storage import ReportCorrupt, ReportIntegrityConflict, VerificationReportStore
 from biosim_server.common.storage.file_service_local import FileServiceLocal
 
+pytestmark = pytest.mark.filterwarnings("error::UserWarning")
+
 
 def _output(run_id: str = "run-1", owner: str | None = "owner") -> VerifyWorkflowOutput:
     return VerifyWorkflowOutput(
@@ -108,3 +110,24 @@ async def test_report_roundtrip_preserves_nonfinite_scientific_results(mongo_tes
     scores = restored.workflow_results.comparison_statistics['model.sedml/report'][0][0].score
     assert scores is not None and math.isnan(scores[0]) and scores[1:] == [float('inf'), -float('inf')]
     await store.delete_all()
+
+
+@pytest.mark.asyncio
+async def test_deflate_corruption_raises_report_corrupt(mongo_test_client: Any) -> None:
+    import zlib
+    store = VerificationReportStore(mongo_test_client)
+    await store.ensure_indexes()
+    output = _output()
+    await store.save(output, _provenance(output))
+    doc = await store._collection.find_one({'workflow_id': output.workflow_id})
+    assert doc is not None
+    corrupt = bytearray(doc['inline_payload'])
+    corrupt[10] = (corrupt[10] & ~0x06) | 0x06
+    await store._collection.update_one({'workflow_id': output.workflow_id}, {'$set': {'inline_payload': bytes(corrupt)}})
+    try:
+        with pytest.raises(ReportCorrupt) as error:
+            await store.get(output.workflow_id)
+        assert isinstance(error.value.__cause__, ValueError)
+        assert isinstance(error.value.__cause__.__cause__, zlib.error)
+    finally:
+        await store.delete_all()

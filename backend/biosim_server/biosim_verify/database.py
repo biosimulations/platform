@@ -411,7 +411,7 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
     async def mark_persistence_issue(self, workflow_id: str, blocked: bool) -> None:
         await self._collection.update_one(
             {"workflow_id": workflow_id, "persistence_state": {"$ne": ReportPersistenceState.STORED.value}},
-            {"$set": {"persistence_state": "blocked" if blocked else "pending",
+            {"$set": {"persistence_state": ReportPersistenceState.BLOCKED.value if blocked else ReportPersistenceState.PENDING.value,
                       "persistence_error": "Report integrity/encoding failure" if blocked else "Storage dependency unavailable",
                       "persistence_attempted_at": datetime.now(UTC)}},
         )

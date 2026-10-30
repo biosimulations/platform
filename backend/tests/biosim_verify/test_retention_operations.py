@@ -19,6 +19,8 @@ from biosim_server.biosim_verify.database import VerificationDatabaseServiceMong
 from biosim_server.common.storage.file_service_local import FileServiceLocal
 from scripts.backfill_verification_reports import run
 
+pytestmark = pytest.mark.filterwarnings("error::UserWarning")
+
 
 @pytest.mark.asyncio
 async def test_temporal_inventory_resumes_page_tokens_and_quarantines_unknown_owner() -> None:

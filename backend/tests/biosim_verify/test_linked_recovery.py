@@ -47,6 +47,8 @@ from biosim_server.version import __version__
 from tests.biosim_verify.test_compatibility import _file
 from tests.common.test_gcs_missing_objects import FakeGcsStorage
 
+pytestmark = pytest.mark.filterwarnings("error::UserWarning")
+
 
 _SETTINGS = CompareSettings(
     user_description="kept", include_outputs=False, rel_tol=0.0001, abs_tol_min=0.001, abs_tol_scale=0.00001,

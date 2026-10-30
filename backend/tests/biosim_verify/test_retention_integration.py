@@ -32,6 +32,8 @@ from biosim_server.common.temporal import pydantic_data_converter
 from tests.fixtures.retention_history.legacy_runs import RunsVerifyWorkflow as LegacyRuns
 from tests.fixtures.retention_history.legacy_omex import OmexVerifyWorkflow as LegacyOmex
 
+pytestmark = pytest.mark.filterwarnings("error::UserWarning")
+
 
 @activity.defn(name="get_existing_biosim_simulation_run_activity")
 async def missing_run(arg: GetExistingBiosimSimulationRunActivityInput) -> GetExistingBiosimSimulationRunActivityOutput:

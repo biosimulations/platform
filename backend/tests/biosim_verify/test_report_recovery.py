@@ -16,6 +16,8 @@ from biosim_server.biosim_verify.models import (
 )
 from biosim_server.biosim_verify.report_recovery import process_record
 
+pytestmark = pytest.mark.filterwarnings("error::UserWarning")
+
 
 def _record() -> VerificationRecord:
     return VerificationRecord(

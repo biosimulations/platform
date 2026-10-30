@@ -12,6 +12,7 @@ import hashlib
 import json
 import io
 import math
+import zlib
 from typing import Any
 
 CODEC_VERSION = "verification-json-gzip-v2"
@@ -52,8 +53,11 @@ def encode_report(report: Any) -> tuple[bytes, str, int, str]:
 def decode_report(payload: bytes, *, encoding: str = CODEC_VERSION, max_decompressed_bytes: int = 64 * 1024 * 1024) -> Any:
     if encoding != CODEC_VERSION:
         raise ValueError(f"unsupported report codec: {encoding}")
-    with gzip.GzipFile(fileobj=io.BytesIO(payload)) as decompressor:
-        raw = decompressor.read(max_decompressed_bytes + 1)
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(payload)) as decompressor:
+            raw = decompressor.read(max_decompressed_bytes + 1)
+    except zlib.error as exc:
+        raise ValueError("corrupt payload") from exc
     if len(raw) > max_decompressed_bytes:
         raise ValueError("verification report exceeds decompression limit")
     return _decode(json.loads(raw))
