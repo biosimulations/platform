@@ -58,22 +58,8 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Wait for Temporal + Mongo
-        run: |
-          for i in $(seq 1 30); do
-            if docker exec platform-mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1; then
-              echo "mongo ready"
-              break
-            fi
-            sleep 1
-          done
-          for i in $(seq 1 60); do
-            if (echo > /dev/tcp/localhost/7233) >/dev/null 2>&1; then
-              echo "temporal ready"
-              break
-            fi
-            sleep 1
-          done
+      - name: Require healthy Mongo and Temporal; prove persistence
+        run: bash scripts/smoke-infrastructure.sh infra
 
       - name: Start backend API
         working-directory: backend
@@ -107,6 +93,9 @@ jobs:
             sleep 1
           done
           echo "backend did not come up"; exit 1
+
+      - name: Require backend connection to Temporal
+        run: bash scripts/smoke-infrastructure.sh backend
 
       - name: Wait for frontend on :4200
         run: |
