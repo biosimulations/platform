@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from temporalio.client import WorkflowExecutionStatus
@@ -14,7 +14,9 @@ from biosim_server.biosim_verify.models import (
     VerifyWorkflowOutput,
     VerifyWorkflowStatus,
 )
+from biosim_server.biosim_verify.history import terminal_failure_output
 from biosim_server.biosim_verify.report_recovery import process_record
+from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
 
 pytestmark = pytest.mark.filterwarnings("error::UserWarning")
 
@@ -82,17 +84,29 @@ async def test_missing_history_marks_unavailable_without_starting_work() -> None
     ledger.mark_persistence_unavailable.assert_awaited_once()
 
 
+def _start() -> RunsVerifyWorkflowInput:
+    return RunsVerifyWorkflowInput(biosimulations_run_ids=["run1"], owner_sub="owner",
+                                   compare_settings=_output().compare_settings)
+
+
 @pytest.mark.asyncio
 async def test_cancelled_is_failed_not_missing_simulation() -> None:
     record, ledger, store = _record(), AsyncMock(), AsyncMock()
     store.get.return_value = None
     store.save.return_value.report_id = 'wf'
     handle = MagicMock()
-    handle.describe = AsyncMock(return_value=MagicMock(status=WorkflowExecutionStatus.CANCELED, run_id='run'))
+    handle.describe = AsyncMock(return_value=MagicMock(
+        status=WorkflowExecutionStatus.CANCELED, run_id='run', close_time=datetime(2026, 10, 29, 12, tzinfo=UTC)))
     temporal = MagicMock()
     temporal.get_workflow_handle.return_value = handle
-    assert await process_record(record=record, ledger=ledger, store=store, temporal=temporal, apply=True) == 'saved'
-    assert store.save.await_args.args[0].workflow_status == VerifyWorkflowStatus.FAILED
+    with patch('biosim_server.biosim_verify.report_recovery.read_start_input', new=AsyncMock(return_value=_start())), \
+         patch('biosim_server.biosim_verify.report_recovery.computed_output_from_history',
+               new=AsyncMock(return_value=None)):
+        assert await process_record(record=record, ledger=ledger, store=store, temporal=temporal, apply=True) == 'saved'
+    saved = store.save.await_args.args[0]
+    assert saved.workflow_status == VerifyWorkflowStatus.FAILED
+    assert saved.workflow_error == 'Verification workflow ended with status CANCELED'
+    assert saved.timestamp == '2026-10-29T12:00:00+00:00'
     assert store.save.await_args.args[1].origin == 'terminal_execution_failure'
 
 
@@ -126,8 +140,7 @@ async def test_backfill_dryrun_checkpoint_cannot_skip_apply(tmp_path: object) ->
 
 
 
-def test_failure_record_treats_naive_mongo_time_as_utc() -> None:
-    from biosim_server.biosim_verify.report_recovery import _output_from_record
-    record = _record().model_copy(update={"created": datetime(2026, 10, 29, 12)})
-    output = _output_from_record(record, VerifyWorkflowStatus.FAILED, "execution terminated")
+def test_terminal_failure_treats_naive_close_time_as_utc() -> None:
+    output = terminal_failure_output(_start(), "wf", "run", WorkflowExecutionStatus.TERMINATED,
+                                     datetime(2026, 10, 29, 12))
     assert output.timestamp == "2026-10-29T12:00:00+00:00"

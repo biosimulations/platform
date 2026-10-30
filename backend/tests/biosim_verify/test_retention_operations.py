@@ -31,7 +31,7 @@ async def test_temporal_inventory_resumes_page_tokens_and_quarantines_unknown_ow
     temporal.list_workflows.return_value = page
     # Omitted owner differs from an explicitly public owner=None.
     original = RunsVerifyWorkflowInput(biosimulations_run_ids=['run'], compare_settings=_output().compare_settings)
-    with patch('biosim_server.api.main._read_verification_input', new=AsyncMock(return_value=original)):
+    with patch('biosim_server.biosim_verify.report_recovery.read_start_input', new=AsyncMock(return_value=original)):
         counts, token = await inventory_retained_executions(temporal=temporal, ledger=ledger, store=store,
             apply=True, limit=1, next_page_token=b'previous')
     assert counts == {'unknown_ownership': 1} and token == b'next'
@@ -39,7 +39,7 @@ async def test_temporal_inventory_resumes_page_tokens_and_quarantines_unknown_ow
     ledger.insert_verification.assert_not_awaited()
     store.save.assert_not_awaited()
     original.owner_sub = None
-    with patch('biosim_server.api.main._read_verification_input', new=AsyncMock(return_value=original)), \
+    with patch('biosim_server.biosim_verify.report_recovery.read_start_input', new=AsyncMock(return_value=original)), \
          patch('biosim_server.biosim_verify.report_recovery.process_record', new=AsyncMock(return_value='saved')):
         await inventory_retained_executions(temporal=temporal, ledger=ledger, store=store, apply=True)
     ledger.insert_verification.assert_awaited_once()

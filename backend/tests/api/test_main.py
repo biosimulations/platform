@@ -1020,17 +1020,25 @@ async def test_get_verify_non_verify_workflow_type_is_404() -> None:
 
 @pytest.mark.asyncio
 async def test_get_verify_failed_workflow_reconciled_to_failed_status() -> None:
-    """Temporal says FAILED; workflow query returns IN_PROGRESS → response is FAILED."""
+    """Temporal says FAILED; workflow query returns IN_PROGRESS → response is FAILED, built from history."""
+    from datetime import UTC, datetime
     from temporalio.client import WorkflowExecutionStatus
+    from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
     output = _make_verify_output(status=VerifyWorkflowStatus.IN_PROGRESS, owner_sub="auth0|owner")
     temporal = _temporal_with_describe(
         exec_status=WorkflowExecutionStatus.FAILED, query_result=output
     )
+    desc = temporal.get_workflow_handle.return_value.describe.return_value
+    desc.id, desc.close_time = output.workflow_id, datetime.now(UTC)
+    original = RunsVerifyWorkflowInput(biosimulations_run_ids=["run1"], owner_sub="auth0|owner",
+                                       compare_settings=output.compare_settings)
     user = AuthenticatedUser(sub="auth0|owner", email="owner@example.com")
     app.dependency_overrides[get_current_user] = app.dependency_overrides[get_optional_user] = lambda: user
     try:
         with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
-             patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
+             patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()), \
+             patch("biosim_server.api.main.read_start_input", new=AsyncMock(return_value=original)), \
+             patch("biosim_server.api.main.computed_output_from_history", new=AsyncMock(return_value=None)):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 resp = await c.get("/verify/wf")
     finally:
@@ -1039,7 +1047,8 @@ async def test_get_verify_failed_workflow_reconciled_to_failed_status() -> None:
     assert resp.status_code == 200
     body = VerifyWorkflowOutput.model_validate(resp.json())
     assert body.workflow_status == VerifyWorkflowStatus.FAILED
-    assert body.workflow_error is not None
+    assert body.workflow_error == "Verification workflow ended with status FAILED"
+    temporal.get_workflow_handle.return_value.query.assert_not_awaited()
 
 
 @pytest.mark.asyncio

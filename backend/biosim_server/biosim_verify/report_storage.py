@@ -25,6 +25,15 @@ class ReportUnavailable(RuntimeError):
     pass
 
 
+class ReportArtifactMissing(ReportUnavailable):
+    """The referenced object does not exist.
+
+    Object reads are strongly consistent, so a missing object will not
+    reappear; retrying cannot help.  Storage that is unconfigured or
+    unreachable stays a plain :class:`ReportUnavailable`.
+    """
+
+
 class ReportCorrupt(RuntimeError):
     pass
 
@@ -118,7 +127,7 @@ class VerificationReportStore:
         elif self._file_service is not None and doc.get("artifact_reference"):
             found_payload = await self._file_service.get_file_contents(doc["artifact_reference"])
             if found_payload is None:
-                raise ReportUnavailable("verification report artifact is unavailable")
+                raise ReportArtifactMissing("verification report artifact is unavailable")
             payload = found_payload
         else:
             raise ReportUnavailable("verification report payload is unavailable")
@@ -150,7 +159,7 @@ class VerificationReportStore:
             raise ReportUnavailable("statistics artifact storage is unavailable")
         payload = await self._file_service.get_file_contents(ref.artifact_reference)
         if payload is None:
-            raise ReportUnavailable("statistics artifact is unavailable")
+            raise ReportArtifactMissing("statistics artifact is unavailable")
         try:
             decoded = decode_report(
                 payload, encoding=ref.encoding,

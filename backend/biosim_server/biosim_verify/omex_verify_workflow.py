@@ -5,17 +5,18 @@ from typing import Any, Coroutine
 
 from pydantic import BaseModel
 from temporalio import workflow
-from temporalio.common import RetryPolicy
 from temporalio.workflow import ChildWorkflowHandle
 
 from biosim_server.biosim_omex import OmexFile
 from biosim_server.biosim_runs import BiosimulatorVersion, OmexSimWorkflow, OmexSimWorkflowInput, OmexSimWorkflowOutput, \
     BiosimulatorWorkflowRun
-from biosim_server.biosim_verify.activities import persist_verification_report_activity, PersistVerificationReportActivityInput
 from biosim_server.biosim_verify.models import VerificationProvenance
 from biosim_server.biosim_verify import CompareSettings
-from biosim_server.biosim_verify.models import SimulatorFailure, VerifyWorkflowStatus, VerifyWorkflowOutput
+from biosim_server.biosim_verify.models import (
+    ReportPersistenceState, SimulatorFailure, VerifyWorkflowStatus, VerifyWorkflowOutput,
+)
 from biosim_server.biosim_verify.runs_verify_workflow import generate_statistics
+from biosim_server.biosim_verify.workflow_persistence import persist_report
 
 
 class OmexVerifyWorkflowInput(BaseModel):
@@ -64,18 +65,14 @@ class OmexVerifyWorkflow:
             "workflow_status": VerifyWorkflowStatus.IN_PROGRESS,
             "workflow_results": None, "workflow_results_reference": None,
             "workflow_error": None, "report_available": False,
+            "persistence_state": ReportPersistenceState.PENDING,
         })
-        final = await workflow.execute_activity(
-            persist_verification_report_activity,
-            PersistVerificationReportActivityInput(output=output, provenance=VerificationProvenance(
-                verification_id=output.workflow_id, workflow_run_id=output.workflow_run_id,
-                owner_sub=output.owner_sub, created_at=workflow.info().start_time,
-                computed_at=workflow.now(), requested_settings=verify_input.compare_settings.model_dump(),
-                workflow_input=verify_input.model_dump(mode="json"),
-            )), start_to_close_timeout=timedelta(minutes=2),
-            retry_policy=RetryPolicy(maximum_attempts=20, maximum_interval=timedelta(minutes=1),
-                                     non_retryable_error_types=["ReportIntegrityConflict", "ValueError"]),
-        )
+        final = await persist_report(output, VerificationProvenance(
+            verification_id=output.workflow_id, workflow_run_id=output.workflow_run_id,
+            owner_sub=output.owner_sub, created_at=workflow.info().start_time,
+            computed_at=workflow.now(), requested_settings=verify_input.compare_settings.model_dump(),
+            workflow_input=verify_input.model_dump(mode="json"),
+        ))
         self.verify_output = final
         return final
 

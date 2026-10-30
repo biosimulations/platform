@@ -417,8 +417,10 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         )
 
     async def mark_persistence_unavailable(self, workflow_id: str, reason: str) -> None:
+        # A stored report is immutable and authoritative: a late catch-up must
+        # never demote it to "unavailable".
         await self._collection.update_one(
-            {"workflow_id": workflow_id},
+            {"workflow_id": workflow_id, "persistence_state": {"$ne": ReportPersistenceState.STORED.value}},
             {"$set": {
                 "persistence_state": ReportPersistenceState.UNAVAILABLE.value,
                 "persistence_error": reason[:1000],

@@ -13,12 +13,27 @@ from biosim_server.biosim_verify.models import (
     VerifyWorkflowOutput, VerificationProvenance, ReportPersistenceState,
 )
 from biosim_server.biosim_verify.report_codec import encode_report
-from biosim_server.biosim_verify.report_storage import ReportCorrupt, ReportIntegrityConflict
+from biosim_server.biosim_verify.report_storage import (
+    ReportArtifactMissing, ReportCorrupt, ReportIntegrityConflict, VerificationReportStore,
+)
 from biosim_server.biosim_verify.snapshots import SnapshotMismatch, SnapshotMissing, capture_input_snapshots, read_snapshot_manifest
 from biosim_server.dependencies import get_verification_database_service, get_verification_report_store, get_mongo_client
 from biosim_server.dependencies import get_file_service
 from biosim_server.config import get_settings
 from biosim_server.version import __version__
+
+
+# The activity raises this for a failure that will not get better by retrying.
+# It lives here, next to the raise, so the activity and the workflow policy
+# cannot drift apart.
+PERMANENT_ERROR_TYPE = "ReportBlocked"
+
+# A failure that retrying cannot fix.  ReportArtifactMissing is a subclass of
+# ReportUnavailable, so it must be listed explicitly: an unconfigured or
+# unreachable store stays retryable, but a missing object never appears later.
+PERMANENT_ERRORS: tuple[type[BaseException], ...] = (
+    ValueError, ReportIntegrityConflict, ReportCorrupt, ReportArtifactMissing,
+)
 
 
 class GenerateStatisticsActivityInput(BaseModel):
@@ -77,9 +92,57 @@ async def generate_statistics_activity(gen_stats_input: GenerateStatisticsActivi
 
 @activity.defn
 async def generate_statistics_activity_v2(gen_stats_input: GenerateStatisticsActivityInput) -> GenerateStatisticsActivityResult:
-    # Externalize before returning across Temporal's uncompressed payload boundary.
+    # Small statistics stay inline: they then cost no object write, no read, and
+    # no transient artifact, and history recovery can still read them when
+    # object storage is unavailable.  Only a payload that would approach
+    # Temporal's limit is externalized.
     output = await generate_statistics_activity(gen_stats_input)
     return await externalize_statistics(output)
+
+
+async def prepare_report(
+    payload: PersistVerificationReportActivityInput,
+    *,
+    store: VerificationReportStore,
+    row: VerificationRecord | None,
+) -> tuple[VerifyWorkflowOutput, VerificationProvenance]:
+    """The report content and provenance stored for one persist input.
+
+    The persist activity stores exactly this.  A writer that recovers the
+    persist input from workflow history calls it too, so the recovered report
+    is the one the workflow would have stored, byte for byte.  *row* is the
+    verification's ledger row, which carries a re-verification's link.
+    """
+    output = await store.hydrate_activity_reference(payload.output)
+    output = output.model_copy(update={"workflow_results_reference": None})
+    provenance = payload.provenance.model_copy(update={
+        "comparator_version": __version__,
+        "dependency_versions": {name: version(name) for name in ("numpy", "pydantic")},
+        "actual_runs": output.workflow_results.sims_run_info if output.workflow_results else [],
+    })
+    try:
+        manifest = await read_snapshot_manifest(payload.output.workflow_id)
+    except (SnapshotMissing, SnapshotMismatch, OSError, ValueError, TypeError):
+        activity.logger.error("verification_snapshot_manifest_unreadable")
+        manifest = None
+    if manifest is not None:
+        ordered_run_ids, snapshots = manifest
+        provenance = provenance.model_copy(update={
+            "ordered_run_ids": ordered_run_ids,
+            "input_snapshots": snapshots,
+        })
+    if isinstance(row, VerificationRecord):
+        linked: dict[str, object] = {}
+        if row.source_verification_id and not provenance.source_verification_id:
+            linked["source_verification_id"] = row.source_verification_id
+        if row.derivation_kind and not provenance.derivation_kind:
+            linked["derivation_kind"] = row.derivation_kind
+        if linked:
+            provenance = provenance.model_copy(update=linked)
+            output = output.model_copy(update=linked)
+            if row.derivation_kind == "reconstruction":
+                output = output.model_copy(update={"calculation": "new_calculation"})
+    return output, provenance
 
 
 @activity.defn
@@ -92,61 +155,50 @@ async def persist_verification_report_activity(
     if store is None or ledger is None or mongo is None:
         raise RuntimeError("verification report persistence is unavailable")
     try:
-        output = await store.hydrate_activity_reference(payload.output)
-        output = output.model_copy(update={"workflow_results_reference": None})
-        provenance = payload.provenance.model_copy(update={
-            "comparator_version": __version__,
-            "dependency_versions": {name: version(name) for name in ("numpy", "pydantic")},
-            "actual_runs": output.workflow_results.sims_run_info if output.workflow_results else [],
-        })
-        try:
-            manifest = await read_snapshot_manifest(payload.output.workflow_id)
-        except (SnapshotMissing, SnapshotMismatch, OSError, ValueError, TypeError):
-            activity.logger.error("verification_snapshot_manifest_unreadable")
-            manifest = None
-        if manifest is not None:
-            ordered_run_ids, snapshots = manifest
-            provenance = provenance.model_copy(update={
-                "ordered_run_ids": ordered_run_ids,
-                "input_snapshots": snapshots,
-            })
         # Re-verification records its link on the ledger, not on the omex workflow
         # input, so an in-flight unpatched history does not gain a new command.
         try:
             row = await ledger.get_verification(payload.output.workflow_id)
-        except Exception:
-            row = None
-        if isinstance(row, VerificationRecord):
-            linked: dict[str, object] = {}
-            if row.source_verification_id and not provenance.source_verification_id:
-                linked["source_verification_id"] = row.source_verification_id
-            if row.derivation_kind and not provenance.derivation_kind:
-                linked["derivation_kind"] = row.derivation_kind
-            if linked:
-                provenance = provenance.model_copy(update=linked)
-                output = output.model_copy(update=linked)
-                if row.derivation_kind == "reconstruction":
-                    output = output.model_copy(update={"calculation": "new_calculation"})
+        except Exception as exc:
+            # A ledger read failure is a dependency outage, not "no link":
+            # swallowing it would store a report with its re-verification link
+            # silently dropped.  Retry instead.
+            raise RuntimeError("ledger read failed") from exc
+        output, provenance = await prepare_report(payload, store=store, row=row)
         envelope = await store.save(output, provenance)
         await ledger.record_report_persisted(payload.output.workflow_id, envelope.report_id, payload.output.workflow_status)
+        # The stored report is authoritative.  Once it is durable, statistics
+        # leave the activity result, the workflow result and every query: the
+        # payload stays bounded however large the comparison was.
         return output.model_copy(update={
-            "persistence_state": ReportPersistenceState.STORED, "report_available": True, "report_id": envelope.report_id,
+            "persistence_state": ReportPersistenceState.STORED, "report_available": True,
+            "report_id": envelope.report_id,
+            "workflow_results": None, "workflow_results_reference": None,
         })
     except Exception as exc:
-        blocked = isinstance(exc, (ValueError, ReportIntegrityConflict, ReportCorrupt))
+        blocked = isinstance(exc, PERMANENT_ERRORS)
         activity.logger.error("verification_persistence_failure blocked=%s", blocked)
         try:
             await ledger.mark_persistence_issue(payload.output.workflow_id, blocked)
         except Exception:
             activity.logger.error("verification_persistence_bookkeeping_failure")
         if blocked:
-            raise ApplicationError("Report integrity/encoding failure", non_retryable=True) from exc
+            raise ApplicationError(
+                "Report integrity/encoding failure", type=PERMANENT_ERROR_TYPE, non_retryable=True,
+            ) from exc
         raise
 
 
 async def externalize_statistics(output: GenerateStatisticsActivityOutput) -> GenerateStatisticsActivityResult:
-    """Store a statistics payload before it crosses Temporal's result limit."""
+    """Return statistics inline when they are small, externalized when they are not.
+
+    Inline keeps the common case free of object storage and recoverable from
+    history alone.  Above ``verification_activity_inline_max_bytes`` the payload
+    is written to object storage and only a reference crosses Temporal.
+    """
     encoded, encoding, size, digest = encode_report(output.model_dump(mode="json"))
+    if size <= get_settings().verification_activity_inline_max_bytes:
+        return GenerateStatisticsActivityResult(output=output)
     if size > get_settings().verification_report_max_decompressed_bytes:
         raise ApplicationError("Statistics exceed archival size limit", non_retryable=True)
     file_service = get_file_service()

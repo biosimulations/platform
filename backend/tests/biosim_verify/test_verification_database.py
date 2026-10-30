@@ -478,3 +478,25 @@ async def test_record_terminal_status_writes_once(svc: VerificationDatabaseServi
 async def test_hash_index_serves_the_listing_sort(svc: VerificationDatabaseServiceMongo) -> None:
     indexes = await svc._collection.index_information()
     assert any(spec["key"] == [("omex_hash", 1), ("created", -1), ("workflow_id", 1)] for spec in indexes.values())
+
+
+# ---------------------------------------------------------------------------
+# persistence state — a stored report is never demoted
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_unavailable_never_overwrites_a_stored_report(svc: VerificationDatabaseServiceMongo) -> None:
+    from biosim_server.biosim_verify.models import ReportPersistenceState, VerifyWorkflowStatus
+    await svc.insert_verification(_omex_record("stored", None, _utc(2026, 10, 30)))
+    await svc.insert_verification(_omex_record("pending", None, _utc(2026, 10, 30)))
+    await svc.record_report_persisted("stored", "stored", VerifyWorkflowStatus.COMPLETED)
+
+    # A late catch-up that lost the race to the writer that stored the report.
+    await svc.mark_persistence_unavailable("stored", "Temporal history is unavailable")
+    await svc.mark_persistence_unavailable("pending", "Temporal history is unavailable")
+
+    stored = await svc.get_verification("stored")
+    pending = await svc.get_verification("pending")
+    assert stored is not None and stored.persistence_state == ReportPersistenceState.STORED
+    assert stored.persistence_error is None
+    assert pending is not None and pending.persistence_state == ReportPersistenceState.UNAVAILABLE
