@@ -6,6 +6,8 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+import docker  # type: ignore[import-untyped]
+import yaml
 from temporalio import activity
 from temporalio.client import Client
 from temporalio.worker import Worker, Replayer, UnsandboxedWorkflowRunner
@@ -52,13 +54,16 @@ async def test_retention_restart_replay_and_restore(
     monkeypatch.setattr(deps, 'get_mongo_client', lambda: mongo_test_client)
     monkeypatch.setattr('biosim_server.biosim_verify.activities.get_mongo_client', lambda: mongo_test_client)
     monkeypatch.setattr('biosim_server.biosim_verify.activities.get_file_service', lambda: objects)
-    dbdir = tmp_path / 'temporal'
-    dbdir.mkdir()
+    compose = yaml.safe_load((Path(__file__).resolve().parents[3] / 'compose.yaml').read_text())
+    temporal_config = compose['services']['temporal']
+    init_config = compose['services']['temporal-data-init']
+    docker_client = docker.from_env()
+    volume = docker_client.volumes.create(name='retention-' + uuid4().hex)
     with socket.socket() as port_socket:
         port_socket.bind(('127.0.0.1', 0))
         host_port = port_socket.getsockname()[1]
-    server = DockerContainer('temporalio/temporal:1.7.0').with_bind_ports(7233, host_port).with_volume_mapping(
-        str(dbdir), '/data', mode='rw').with_command('server start-dev --ip 0.0.0.0 --db-filename /data/temporal.db')
+    server = DockerContainer(temporal_config['image']).with_bind_ports(7233, host_port).with_volume_mapping(
+        volume.name, '/data', mode='rw').with_command(temporal_config['command'])
 
     async def connect() -> Client:
         for _ in range(100):
@@ -68,8 +73,10 @@ async def test_retention_restart_replay_and_restore(
                 await asyncio.sleep(.1)
         raise AssertionError('isolated Temporal failed to start')
 
-    server.start()
     try:
+        docker_client.containers.run(init_config['image'], command=init_config['command'],
+            volumes={volume.name: {'bind': '/data', 'mode': 'rw'}}, remove=True)
+        server.start()
         client = await connect()
         settings = CompareSettings(user_description='retention test', include_outputs=True,
                                    rel_tol=.1, abs_tol_min=.01, abs_tol_scale=.01)
@@ -180,6 +187,10 @@ async def test_retention_restart_replay_and_restore(
         await restore_db.drop_collection(restored._collection.name)
         await restore_db.drop_collection(restored_ledger._collection.name)
     finally:
-        server.stop()
+        try:
+            server.stop()
+        finally:
+            volume.remove()
+            docker_client.close()
         await store.delete_all()
         await ledger.delete_all_verifications()
