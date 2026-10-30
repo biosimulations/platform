@@ -552,7 +552,8 @@ async def test_snapshot_comparison_does_not_call_upstream_services(recovery_worl
         ), "reconstruction-offline")
     submit.assert_not_called()
     download.assert_not_called()
-    assert result.reference is not None
+    # Small statistics stay inline in the activity result; no transient object is written.
+    assert result.output is not None and result.reference is None
     reference = archived["snapshots"][0].artifact_reference
     del recovery_world.files.objects[reference]
     with pytest.raises(ApplicationError):

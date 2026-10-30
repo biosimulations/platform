@@ -76,8 +76,10 @@ async def test_oversized_statistics_crosses_activity_boundary_as_reference() -> 
     with (
         patch("biosim_server.biosim_verify.activities.BiosimServiceRest.get_hdf5_data",
               new=AsyncMock(return_value=data)),
+        # A one-byte inline limit makes any statistics "oversized" for the activity result.
         patch("biosim_server.biosim_verify.activities.get_settings",
-              return_value=SimpleNamespace(verification_report_max_decompressed_bytes=64 * 1024 * 1024)),
+              return_value=SimpleNamespace(verification_report_max_decompressed_bytes=64 * 1024 * 1024,
+                                           verification_activity_inline_max_bytes=1)),
         patch("biosim_server.biosim_verify.activities.get_file_service",
               return_value=artifact_store),
     ):
