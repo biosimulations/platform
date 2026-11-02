@@ -106,10 +106,29 @@ export interface VerificationRecovery {
   reverify_archive: ReverifyOffer
 }
 
+// Who started a derived verification, relative to its source. Never an identity.
+export type InitiatorRelation = 'owner' | 'admin' | 'other' | 'anonymous'
+
 export interface DerivedVerificationLink {
   workflow_id: string
   derivation_kind: DerivationKind
   created: string
+  initiator_relation?: InitiatorRelation | null
+  is_yours?: boolean
+  // Its comparison settings differ from the documented re-verification defaults
+  custom_settings?: boolean
+}
+
+// POST /verify/{id}/reverify. Omitted fields use the documented defaults.
+export interface ReverifyRequest {
+  simulators?: string[] | null
+  include_outputs?: boolean | null
+  user_description?: string | null
+  rel_tol?: number | null
+  abs_tol_min?: number | null
+  abs_tol_scale?: number | null
+  observables?: string[] | null
+  cache_buster?: string | null
 }
 
 export interface VerifyWorkflowOutput {
@@ -119,6 +138,8 @@ export interface VerifyWorkflowOutput {
   timestamp: string
   workflow_run_id?: string | null
   workflow_error?: string | null
+  // Which check failed when a reconstruction's retained inputs could not be compared
+  failure_code?: 'checksum_mismatch' | 'missing_numerical_inputs' | null
   workflow_results?: GenerateStatisticsActivityOutput | null
   owner_sub?: string | null
   persistence_state?: ReportPersistenceState
@@ -130,6 +151,11 @@ export interface VerifyWorkflowOutput {
   comparator_version?: string | null
   calculation?: string | null
   derived_verifications?: DerivedVerificationLink[]
+  // All derived verifications; more than are listed when some are omitted
+  derived_verifications_total?: number
+  // On a derived re-verification: its settings differ from the documented defaults
+  custom_settings?: boolean | null
+  // Never set on a report; GET /verify/{id}/recovery returns the offers on demand
   recovery?: VerificationRecovery | null
 }
 

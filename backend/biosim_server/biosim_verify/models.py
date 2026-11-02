@@ -469,9 +469,10 @@ class ReverifyRequest(BaseModel):
     simulators: Optional[list[str]] = Field(default=None, max_length=MAX_VERIFY_SIMULATORS)
     include_outputs: Optional[bool] = None
     user_description: Optional[str] = None
-    rel_tol: Optional[float] = Field(default=None, allow_inf_nan=False)
-    abs_tol_min: Optional[float] = Field(default=None, allow_inf_nan=False)
-    abs_tol_scale: Optional[float] = Field(default=None, allow_inf_nan=False)
+    # A negative tolerance would fail every comparison; the UI mirrors these bounds.
+    rel_tol: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    abs_tol_min: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    abs_tol_scale: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     observables: Optional[list[str]] = None
     cache_buster: Optional[str] = None
 

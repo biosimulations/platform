@@ -240,3 +240,25 @@ async def test_no_initiator_identity_appears_in_any_response(recovery_world: Any
     assert {link["initiator_relation"] for link in links} == {"admin", "other", "anonymous"}
     for secret in ("auth0|admin", "auth0|other", "admin@example.test", "other@example.test", "initiator_sub"):
         assert secret not in text
+
+
+@pytest.mark.asyncio
+async def test_negative_tolerances_are_refused(recovery_world: Any) -> None:  # noqa: F811
+    await _omex_source(recovery_world, "source-negative")
+    async with await _client() as client:
+        for field in ("rel_tol", "abs_tol_min", "abs_tol_scale"):
+            response = await client.post("/verify/source-negative/reverify",
+                                         headers={"Idempotency-Key": f"negative-{field}"}, json={field: -0.1})
+            assert response.status_code == 422, field
+    assert recovery_world.temporal.started == []
+
+
+def test_the_derived_report_header_carries_custom_settings() -> None:
+    from biosim_server.biosim_verify.linked_recovery import annotate_output
+    from tests.biosim_verify.test_linked_recovery import _output
+    row = VerificationRecord(workflow_id="reverification-x", verify_type=VerificationType.OMEX, created=_BASE,
+                             source_verification_id="source", derivation_kind="reverification", custom_settings=True)
+    annotated = annotate_output(_output("reverification-x"), row, None, [], 0)
+    assert annotated.custom_settings is True and annotated.source_verification_id == "source"
+    plain = annotate_output(_output("original"), None, None, [], 0)
+    assert plain.custom_settings is None

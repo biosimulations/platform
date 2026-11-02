@@ -6,6 +6,7 @@ import ts from 'typescript'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import * as Vue from 'vue'
 import * as status from '../app/utils/verification-status.ts'
+import * as recoveryUtils from '../app/utils/verification-recovery.ts'
 
 // Mount the real SFC setup/lifecycle/watchers with Vue's renderer and a minimal host.
 // No copied polling implementation, browser, or live backend is involved.
@@ -24,6 +25,7 @@ function mountStatus(fetch, initial = { workflowId: 'a' }) {
       if (name === 'vue') return Vue
       if (name === '@vueuse/core') return { useClipboard: () => ({ copy() {} }) }
       if (name === '~/utils/verification-status') return status
+      if (name === '~/utils/verification-recovery') return recoveryUtils
       throw new Error(`Unexpected dependency ${name}`)
     },
     useRuntimeConfig: () => ({ public: { api_url: 'https://api.test' } }),
@@ -176,7 +178,7 @@ test('recovery shows defaults, reuses one idempotency key, and keeps the origina
   assert.equal(view.state().unavailable, true)
   assert.equal(view.state().recovery.reverify_archive.may_start_simulations, true)
   assert.equal(view.state().reverifyDraft.user_description, 'reverification')
-  assert.equal(view.state().reverifyDraft.simulators, 'amici, copasi, pysces, tellurium, vcell')
+  assert.deepEqual(view.state().reverifyDraft.simulators, ['amici', 'copasi', 'pysces', 'tellurium', 'vcell'])
   view.state().reverifyConfirmed = true
   const first = view.state().submitRecovery('reverify')
   const second = view.state().submitRecovery('reverify')
@@ -282,5 +284,108 @@ test('recovery idempotency keys fit the server pattern and differ per request bo
   assert.equal(keys.length, 2)
   for (const key of keys) assert.match(key, /^[A-Za-z0-9._:-]{8,200}$/)
   assert.notEqual(keys[0], keys[1])
+  view.unmount()
+})
+
+// --- Where recovery actions appear (S-1) ------------------------------------------------
+
+const unavailableError = (extra = {}) => ({
+  response: { status: 404 },
+  data: { detail: 'exists but its results are no longer retained.', recovery: recoveryOffer, ...extra },
+})
+
+test('recovery visibility: nothing while running or saving, on request when finished, unprompted when unavailable', async () => {
+  const cases = [
+    { name: 'running', answer: { ...output('a', 'pending'), workflow_status: 'IN_PROGRESS' }, mode: 'none' },
+    { name: 'saving', answer: output('a', 'pending'), mode: 'none' },
+    { name: 'stored', answer: output('a'), mode: 'on_request' },
+    { name: 'failed', answer: { ...output('a'), workflow_status: 'FAILED' }, mode: 'on_request' },
+    { name: 'unavailable', error: unavailableError(), mode: 'automatic' },
+  ]
+  for (const item of cases) {
+    const urls = []
+    const view = mountStatus(async (url) => {
+      urls.push(String(url))
+      if (item.error) throw item.error
+      return item.answer
+    })
+    await flush()
+    assert.equal(view.state().mode, item.mode, item.name)
+    // Only the unavailable original shows actions without being asked
+    assert.equal(view.state().showRecoveryActions, item.mode === 'automatic', item.name)
+    assert.equal(urls.some(url => url.endsWith('/recovery')), false, item.name)
+    view.unmount()
+  }
+})
+
+test('a finished report loads its recovery offers once, when Recompute is opened', async () => {
+  const urls = []
+  const view = mountStatus(async (url) => {
+    urls.push(String(url))
+    return String(url).endsWith('/recovery') ? recoveryOffer : output('a')
+  })
+  await flush()
+  assert.equal(view.state().showRecoveryActions, false)
+  await view.state().toggleRecompute()
+  await flush()
+  assert.deepEqual(urls.filter(url => url.endsWith('/recovery')), ['https://api.test/verify/a/recovery'])
+  assert.equal(view.state().showRecoveryActions, true)
+  await view.state().toggleRecompute()
+  assert.equal(view.state().showRecoveryActions, false)
+  await view.state().toggleRecompute()
+  assert.equal(urls.filter(url => url.endsWith('/recovery')).length, 1)
+  assert.equal(view.state().showRecoveryActions, true)
+  view.unmount()
+})
+
+test('edited re-verify settings reach the request body; invalid ones are not sent', async () => {
+  const posts = []
+  const view = mountStatus(async (url, options = {}) => {
+    if (options.method === 'POST') {
+      posts.push(options.body)
+      return { workflow_id: 'reverification-edited' }
+    }
+    throw unavailableError()
+  })
+  await flush()
+  const draft = view.state().reverifyDraft
+  draft.simulators = ['copasi', 'tellurium:2.2']
+  draft.rel_tol = '0.5'
+  draft.abs_tol_min = '0'
+  draft.abs_tol_scale = '0.25'
+  draft.include_outputs = true
+  draft.user_description = 'my settings'
+  view.state().reverifyConfirmed = true
+  await view.state().submitRecovery('reverify')
+  assert.deepEqual(posts, [{
+    simulators: ['copasi', 'tellurium:2.2'], include_outputs: true, user_description: 'my settings',
+    rel_tol: 0.5, abs_tol_min: 0, abs_tol_scale: 0.25, cache_buster: '0',
+  }])
+  view.state().reverifyDraft.rel_tol = '-1'
+  await view.state().submitRecovery('reverify')
+  assert.equal(posts.length, 1)
+  assert.match(view.state().recoveryError, /Relative tolerance/)
+  view.state().addSimulator('vcell:7')
+  assert.deepEqual(view.state().reverifyDraft.simulators, ['copasi', 'tellurium:2.2', 'vcell:7'])
+  view.unmount()
+})
+
+test('derived verifications are grouped by relation with a count of the rest', async () => {
+  const links = [
+    { workflow_id: 'admin-1', derivation_kind: 'reconstruction', created: '2026-11-01T00:00:00Z', initiator_relation: 'admin' },
+    { workflow_id: 'mine-1', derivation_kind: 'reverification', created: '2026-11-01T00:00:00Z', initiator_relation: 'other', is_yours: true, custom_settings: true },
+    { workflow_id: 'other-1', derivation_kind: 'reverification', created: '2026-11-01T00:00:00Z', initiator_relation: 'anonymous' },
+  ]
+  const view = mountStatus(async url => String(url).endsWith('/a')
+    ? { ...output('a'), derived_verifications: links, derived_verifications_total: 107 }
+    : output('b'))
+  await flush()
+  const { groups, more } = view.state().derivedView
+  assert.deepEqual(groups.map(group => group.key), ['owner_admin', 'yours', 'others'])
+  assert.equal(groups[1].items[0].custom_settings, true)
+  assert.equal(more, 104)
+  view.props.workflowId = 'b'
+  await flush()
+  assert.equal(view.state().derivedView.groups.length, 0)
   view.unmount()
 })

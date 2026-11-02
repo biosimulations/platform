@@ -3313,16 +3313,19 @@ components:
         rel_tol:
           anyOf:
           - type: number
+            minimum: 0.0
           - type: 'null'
           title: Rel Tol
         abs_tol_min:
           anyOf:
           - type: number
+            minimum: 0.0
           - type: 'null'
           title: Abs Tol Min
         abs_tol_scale:
           anyOf:
           - type: number
+            minimum: 0.0
           - type: 'null'
           title: Abs Tol Scale
         observables:

@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useClipboard } from '@vueuse/core'
-import { verificationIsDone, verificationDisplayStatus, isUnavailableVerification } from '~/utils/verification-status'
+import { verificationIsDone, verificationDisplayStatus, isUnavailableVerification, recoveryMode } from '~/utils/verification-status'
+import {
+  MAX_REVERIFY_SIMULATORS,
+  groupDerivedLinks,
+  reverifyBody,
+  reverifyDraftFromOffer,
+  reverifyErrors
+} from '~/utils/verification-recovery'
+import type { ReverifyDraft } from '~/utils/verification-recovery'
 import type { DerivedVerificationLink, VerificationRecovery, VerifyWorkflowOutput } from '~/models/verification'
 
 const props = withDefaults(defineProps<{
@@ -44,44 +52,67 @@ let inFlight: AbortController | null = null
 
 const unavailable = ref(false)
 const recovery = ref<VerificationRecovery | null>(null)
+// A finished report offers recovery behind a collapsed "Recompute…"; opening it loads the offers once
+const recoveryOpen = ref(false)
+const recoveryLoading = ref(false)
 const reverifyConfirmed = ref(false)
-const reverifyDraft = ref({
-  simulators: 'amici, copasi, pysces, tellurium, vcell',
-  include_outputs: false,
-  user_description: 'reverification',
-  rel_tol: 0.0001,
-  abs_tol_min: 0.001,
-  abs_tol_scale: 0.00001,
-  cache_buster: '0',
-})
+const reverifyDraft = ref<ReverifyDraft>(reverifyDraftFromOffer(null))
 const linkedVerificationId = ref<string | null>(null)
 // Verifications derived from this one. Shown beside the original result, never in place of it
 const derivedVerifications = ref<DerivedVerificationLink[]>([])
+const derivedTotal = ref(0)
 const recoveryError = ref<string | null>(null)
 const recoveryPending = ref(false)
 const recoveryKeys = new Map<string, string>()
 type RecoveryOperation = 'reconstruct' | 'reverify'
 
-function documentedDefaults() {
-  const offer = recovery.value?.reverify_archive
-  const defaults = offer?.defaults
-  return {
-    simulators: (offer?.default_simulators ?? ['amici', 'copasi', 'pysces', 'tellurium', 'vcell']).join(', '),
-    include_outputs: defaults?.include_outputs ?? false,
-    user_description: defaults?.user_description ?? 'reverification',
-    rel_tol: defaults?.rel_tol ?? 0.0001,
-    abs_tol_min: defaults?.abs_tol_min ?? 0.001,
-    abs_tol_scale: defaults?.abs_tol_scale ?? 0.00001,
-    cache_buster: offer?.default_cache_buster ?? '0',
-  }
-}
+const mode = computed(() => recoveryMode(workflowData.value, unavailable.value))
+// Actions show unprompted only for an unavailable original; a finished report shows them once opened
+const showRecoveryActions = computed(() => recovery.value != null
+  && (mode.value === 'automatic' || (mode.value === 'on_request' && recoveryOpen.value)))
+const reverifyProblems = computed(() => reverifyErrors(reverifyDraft.value))
+const simulatorOptions = computed(() => [...new Set([
+  ...(recovery.value?.reverify_archive.default_simulators ?? []),
+  ...(recovery.value?.reverify_archive.suggested_simulators ?? []),
+  ...reverifyDraft.value.simulators
+])])
+const derivedView = computed(() => groupDerivedLinks(derivedVerifications.value, derivedTotal.value))
 
 function applyRecovery(value: VerificationRecovery | null) {
   const first = recovery.value == null && value != null
   recovery.value = value
   if (!value || !first) return
-  reverifyDraft.value = documentedDefaults()
+  reverifyDraft.value = reverifyDraftFromOffer(value)
   reverifyConfirmed.value = false
+}
+
+function applyDerived(links: DerivedVerificationLink[] | undefined, total: number | undefined) {
+  derivedVerifications.value = links ?? []
+  derivedTotal.value = total ?? derivedVerifications.value.length
+}
+
+// Toggle the "Recompute…" disclosure; the first opening asks the server for the offers
+async function toggleRecompute() {
+  recoveryOpen.value = !recoveryOpen.value
+  if (!recoveryOpen.value || recovery.value || recoveryLoading.value) return
+  const workflowId = props.workflowId
+  recoveryLoading.value = true
+  recoveryError.value = null
+  try {
+    const res = await $fetch<VerificationRecovery>(`${config.public.api_url}/verify/${workflowId}/recovery`)
+    if (workflowId !== props.workflowId) return
+    applyRecovery(res)
+  } catch (err: any) {
+    if (workflowId !== props.workflowId) return
+    recoveryError.value = err?.data?.detail || err?.message || 'Recovery options could not be loaded'
+  } finally {
+    if (workflowId === props.workflowId) recoveryLoading.value = false
+  }
+}
+
+function addSimulator(name: string) {
+  const value = name.trim()
+  if (value && !reverifyDraft.value.simulators.includes(value)) reverifyDraft.value.simulators.push(value)
 }
 
 function idempotencyKey(operation: RecoveryOperation, body: unknown): string {
@@ -97,8 +128,12 @@ function idempotencyKey(operation: RecoveryOperation, body: unknown): string {
 
 function resetRecovery() {
   recovery.value = null
+  recoveryOpen.value = false
+  recoveryLoading.value = false
+  reverifyDraft.value = reverifyDraftFromOffer(null)
   linkedVerificationId.value = null
   derivedVerifications.value = []
+  derivedTotal.value = 0
   recoveryError.value = null
   recoveryPending.value = false
   reverifyConfirmed.value = false
@@ -129,21 +164,17 @@ async function submitRecovery(operation: RecoveryOperation) {
     recoveryError.value = 'Confirm that re-verification can start new simulations before submitting.'
     return
   }
+  if (operation === 'reverify' && reverifyProblems.value.length) {
+    recoveryError.value = reverifyProblems.value.join(' ')
+    return
+  }
   const body = operation === 'reconstruct'
     ? {
         run_ids: offer.reconstruct.run_ids ?? [],
         snapshot_sha256: offer.reconstruct.snapshot_sha256 ?? [],
-        compare_settings: offer.reconstruct.compare_settings,
+        compare_settings: offer.reconstruct.compare_settings
       }
-    : {
-        simulators: reverifyDraft.value.simulators.split(',').map(item => item.trim()).filter(Boolean),
-        include_outputs: reverifyDraft.value.include_outputs,
-        user_description: reverifyDraft.value.user_description,
-        rel_tol: Number(reverifyDraft.value.rel_tol),
-        abs_tol_min: Number(reverifyDraft.value.abs_tol_min),
-        abs_tol_scale: Number(reverifyDraft.value.abs_tol_scale),
-        cache_buster: reverifyDraft.value.cache_buster,
-      }
+    : reverifyBody(reverifyDraft.value)
   const key = idempotencyKey(operation, body)
   recoveryPending.value = true
   recoveryError.value = null
@@ -223,8 +254,7 @@ async function fetchStatus() {
     pollInterval.value = POLL_INTERVAL_SECONDS
     if (res) {
       workflowData.value = res
-      applyRecovery(res.recovery ?? null)
-      derivedVerifications.value = res.derived_verifications ?? []
+      applyDerived(res.derived_verifications, res.derived_verifications_total)
       emit('update:modelValue', res)
 
       if (verificationIsDone(res) && res.workflow_status === 'COMPLETED') {
@@ -243,7 +273,7 @@ async function fetchStatus() {
     unavailable.value = isUnavailableVerification(err)
     if (unavailable.value) {
       applyRecovery(err?.data?.recovery ?? null)
-      derivedVerifications.value = err?.data?.derived_verifications ?? []
+      applyDerived(err?.data?.derived_verifications, err?.data?.derived_verifications_total)
     }
     errorMsg.value = unavailable.value ? null : errText
     const status: number | undefined = err?.response?.status ?? err?.statusCode
@@ -462,8 +492,9 @@ onUnmounted(() => {
       v-if="workflowData?.source_verification_id || workflowData?.derivation_kind || workflowData?.computed_at || workflowData?.comparator_version"
       class="mt-4 rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-700 space-y-1"
     >
-      <p v-if="derivationLabel(workflowData?.derivation_kind)" class="font-medium">
+      <p v-if="derivationLabel(workflowData?.derivation_kind)" class="font-medium flex flex-wrap items-center gap-2">
         {{ derivationLabel(workflowData?.derivation_kind) }}
+        <UBadge v-if="workflowData?.custom_settings" color="warning" variant="subtle" size="sm">Custom tolerances</UBadge>
       </p>
       <p v-if="workflowData?.source_verification_id">
         Source verification
@@ -481,18 +512,41 @@ onUnmounted(() => {
     <div v-if="derivedVerifications.length" class="mt-4 rounded-lg border border-neutral-200 p-3 text-sm text-neutral-700 space-y-2">
       <p class="font-medium">Derived verifications</p>
       <p class="text-xs text-neutral-500">New verifications linked to this one. They do not replace this result.</p>
-      <ul class="space-y-1">
-        <li v-for="item in derivedVerifications" :key="item.workflow_id" class="flex flex-wrap items-center gap-2">
-          <UBadge color="warning" variant="subtle" size="sm">{{ derivationLabel(item.derivation_kind) }}</UBadge>
-          <NuxtLink class="font-mono text-primary underline break-all" :to="`?workflow_id=${item.workflow_id}`">
-            {{ item.workflow_id }}
-          </NuxtLink>
-          <span class="text-xs text-neutral-500">{{ new Date(item.created).toLocaleString() }}</span>
-        </li>
-      </ul>
+      <div v-for="group in derivedView.groups" :key="group.key" class="space-y-1">
+        <p class="text-xs font-semibold uppercase tracking-wider text-neutral-500">{{ group.label }}</p>
+        <ul class="space-y-1">
+          <li v-for="item in group.items" :key="item.workflow_id" class="flex flex-wrap items-center gap-2">
+            <UBadge color="warning" variant="subtle" size="sm">{{ derivationLabel(item.derivation_kind) }}</UBadge>
+            <UBadge v-if="item.custom_settings" color="neutral" variant="outline" size="sm">Custom tolerances</UBadge>
+            <NuxtLink class="font-mono text-primary underline break-all" :to="`?workflow_id=${item.workflow_id}`">
+              {{ item.workflow_id }}
+            </NuxtLink>
+            <span class="text-xs text-neutral-500">{{ new Date(item.created).toLocaleString() }}</span>
+          </li>
+        </ul>
+      </div>
+      <p v-if="derivedView.more" class="text-xs text-neutral-500">
+        {{ derivedView.more }} more {{ derivedView.more === 1 ? 'derived verification is' : 'derived verifications are' }} not listed.
+      </p>
     </div>
 
-    <div v-if="recovery?.reconstruct.eligible" class="mt-4 rounded-lg border border-neutral-200 p-3 space-y-2">
+    <div v-if="mode === 'on_request'" class="mt-4">
+      <UButton
+        label="Recompute…"
+        color="neutral"
+        variant="ghost"
+        size="sm"
+        :trailing-icon="recoveryOpen ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
+        :loading="recoveryLoading"
+        :aria-expanded="recoveryOpen"
+        @click="toggleRecompute"
+      />
+      <p v-if="recoveryOpen && recovery && !recovery.reconstruct.eligible && !recovery.reverify_archive.eligible" class="mt-2 text-sm text-neutral-600">
+        {{ recovery.reconstruct.message }} {{ recovery.reverify_archive.message }}
+      </p>
+    </div>
+
+    <div v-if="showRecoveryActions && recovery?.reconstruct.eligible" class="mt-4 rounded-lg border border-neutral-200 p-3 space-y-2">
       <p class="text-sm text-neutral-700">{{ recovery.reconstruct.message }}</p>
       <UButton
         label="Reconstruct comparison"
@@ -503,24 +557,51 @@ onUnmounted(() => {
       />
     </div>
 
-    <div v-if="recovery?.reverify_archive.eligible" class="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+    <div v-if="showRecoveryActions && recovery?.reverify_archive.eligible" class="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-3">
       <p class="text-sm text-neutral-800">{{ recovery.reverify_archive.message }}</p>
       <p v-if="recovery.reverify_archive.may_start_simulations" class="text-sm font-medium text-amber-900">
         This can submit new simulation jobs. Cache reuse is not guaranteed.
-      </p>
-      <p class="text-xs text-neutral-600">
-        Documented defaults: simulators {{ recovery.reverify_archive.default_simulators?.join(', ') }},
-        description {{ reverifyDraft.user_description }},
-        include outputs {{ reverifyDraft.include_outputs }},
-        rel tol {{ reverifyDraft.rel_tol }},
-        abs tol min {{ reverifyDraft.abs_tol_min }},
-        abs tol scale {{ reverifyDraft.abs_tol_scale }},
-        cache buster {{ reverifyDraft.cache_buster }}.
       </p>
       <p v-if="recovery.reverify_archive.suggested_simulators?.length" class="text-xs text-neutral-600">
         Suggested from cached runs only, not proof of the original selection:
         {{ recovery.reverify_archive.suggested_simulators.join(', ') }}.
       </p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <UFormField
+          label="Simulators"
+          :hint="`Default: ${(recovery.reverify_archive.default_simulators ?? []).join(', ')}`"
+          :help="`1 to ${MAX_REVERIFY_SIMULATORS}. Type a name, or name:version, to add one.`"
+          class="sm:col-span-2"
+        >
+          <USelectMenu
+            v-model="reverifyDraft.simulators"
+            multiple
+            create-item
+            :items="simulatorOptions"
+            class="w-full"
+            placeholder="Choose simulators"
+            @create="addSimulator"
+          />
+        </UFormField>
+        <UFormField label="Relative tolerance" :hint="`Default: ${recovery.reverify_archive.defaults?.rel_tol ?? 0.0001}`" help="At least 0">
+          <UInput v-model="reverifyDraft.rel_tol" type="number" min="0" step="any" class="w-full" />
+        </UFormField>
+        <UFormField label="Minimum absolute tolerance" :hint="`Default: ${recovery.reverify_archive.defaults?.abs_tol_min ?? 0.001}`" help="At least 0">
+          <UInput v-model="reverifyDraft.abs_tol_min" type="number" min="0" step="any" class="w-full" />
+        </UFormField>
+        <UFormField label="Absolute tolerance scale" :hint="`Default: ${recovery.reverify_archive.defaults?.abs_tol_scale ?? 0.00001}`" help="At least 0">
+          <UInput v-model="reverifyDraft.abs_tol_scale" type="number" min="0" step="any" class="w-full" />
+        </UFormField>
+        <UFormField label="Description" :hint="`Default: ${recovery.reverify_archive.defaults?.user_description ?? 'reverification'}`">
+          <UInput v-model="reverifyDraft.user_description" class="w-full" />
+        </UFormField>
+        <UFormField :hint="`Default: ${(recovery.reverify_archive.defaults?.include_outputs ?? false) ? 'on' : 'off'}`">
+          <UCheckbox v-model="reverifyDraft.include_outputs" label="Store simulation outputs" />
+        </UFormField>
+      </div>
+      <ul v-if="reverifyProblems.length" class="text-sm text-red-700 list-disc pl-5">
+        <li v-for="problem in reverifyProblems" :key="problem">{{ problem }}</li>
+      </ul>
       <label class="flex items-start gap-2 text-sm text-neutral-800">
         <input v-model="reverifyConfirmed" type="checkbox" class="mt-1">
         <span>I understand re-verification can start new simulations.</span>
@@ -528,7 +609,7 @@ onUnmounted(() => {
       <UButton
         label="Start re-verification"
         color="warning"
-        :disabled="!reverifyConfirmed"
+        :disabled="!reverifyConfirmed || reverifyProblems.length > 0"
         :loading="recoveryPending"
         @click="submitRecovery('reverify')"
       />
