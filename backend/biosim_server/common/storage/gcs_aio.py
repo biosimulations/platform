@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import logging
+from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -143,6 +144,23 @@ async def get_listing_of_gcs_path(gcs_path: str, token: Token) -> list[ListingIt
         files: list[ListingItem] = [ListingItem(Key=item["id"], LastModified=datetime.fromisoformat(item["updated"]),
                                                 Size=item["size"], ETag=item["etag"]) for item in metadata["items"]]
         return files
+
+
+async def iter_gcs_objects(prefix: str, token: Token, page_size: int = 1000) -> AsyncIterator[ListingItem]:
+    """List every object under *prefix*, following ``nextPageToken``."""
+    page_token: str | None = None
+    async with Storage(token=token) as client:
+        while True:
+            params = {"prefix": prefix, "maxResults": str(page_size)}
+            if page_token:
+                params["pageToken"] = page_token
+            page: dict[str, Any] = await client.list_objects(bucket=get_settings().storage_bucket, params=params)
+            for item in page.get("items", []):
+                yield ListingItem(Key=item["name"], LastModified=datetime.fromisoformat(item["updated"]),
+                                  Size=int(item["size"]), ETag=item.get("etag", ""))
+            page_token = page.get("nextPageToken")
+            if not page_token:
+                return
 
 
 async def get_gcs_file_contents(gcs_path: str, token: Token) -> bytes | None:

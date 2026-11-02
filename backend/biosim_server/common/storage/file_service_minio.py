@@ -20,6 +20,7 @@ import uuid
 from temporalio import workflow
 with workflow.unsafe.imports_passed_through():
     from datetime import datetime
+from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Optional
@@ -170,6 +171,15 @@ class FileServiceMinio(FileService):
                         Size=obj["Size"],
                     ))
         return items
+
+    @override
+    async def iter_objects(self, prefix: str) -> AsyncIterator[ListingItem]:
+        async with self._client() as s3:
+            paginator = s3.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    yield ListingItem(Key=obj["Key"], LastModified=obj["LastModified"], ETag=obj["ETag"],
+                                      Size=obj["Size"])
 
     @override
     async def get_file_contents(self, gcs_path: str) -> bytes | None:

@@ -1,6 +1,7 @@
 """Immutable Mongo-backed verification report persistence."""
 
 import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import DuplicateKeyError
@@ -119,6 +120,20 @@ class VerificationReportStore:
         """The stored report's envelope, without its payload, or None."""
         doc = await self._collection.find_one({"workflow_id": workflow_id}, projection={"_id": 0, "inline_payload": 0})
         return VerificationReportEnvelope.model_validate(doc) if doc else None
+
+    async def referenced_objects(self) -> AsyncIterator[str]:
+        """Every object name a stored report references: its payload, snapshots and manifest."""
+        projection = {"_id": 0, "artifact_reference": 1, "provenance.input_snapshots.artifact_reference": 1,
+                      "provenance.snapshot_manifest_reference": 1}
+        async for doc in self._collection.find({}, projection=projection):
+            if doc.get("artifact_reference"):
+                yield str(doc["artifact_reference"])
+            provenance = doc.get("provenance") or {}
+            if provenance.get("snapshot_manifest_reference"):
+                yield str(provenance["snapshot_manifest_reference"])
+            for snapshot in provenance.get("input_snapshots") or []:
+                if snapshot.get("artifact_reference"):
+                    yield str(snapshot["artifact_reference"])
 
     async def get_provenance(self, workflow_id: str) -> VerificationProvenance | None:
         doc = await self._collection.find_one({"workflow_id": workflow_id}, projection={"provenance": 1, "_id": 0})

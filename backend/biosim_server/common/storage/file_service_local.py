@@ -5,6 +5,8 @@ import uuid
 from temporalio import workflow
 with workflow.unsafe.imports_passed_through():
     from datetime import datetime
+from collections.abc import AsyncIterator
+from datetime import UTC
 from pathlib import Path
 from typing import List, Optional
 
@@ -129,6 +131,21 @@ class FileServiceLocal(FileService):
         return [ListingItem(Key=str(file.relative_to(self.base_dir)), Size=file.stat().st_size,
                             LastModified=datetime.fromtimestamp(file.stat().st_mtime), ETag=generate_fake_etag(file))
                 for file in dir_path.rglob("*")]
+
+    @override
+    async def iter_objects(self, prefix: str) -> AsyncIterator[ListingItem]:
+        # Walk only the directory the prefix names; the rest of its last segment filters.
+        directory = self.base_dir / prefix.rpartition("/")[0]
+        if not directory.is_dir():
+            return
+        for file in sorted(directory.rglob("*")):
+            key = file.relative_to(self.base_dir).as_posix()
+            # A put_if_absent temporary is not an object until it is linked into place.
+            if not file.is_file() or not key.startswith(prefix) or (file.name.startswith(".") and file.name.endswith(".tmp")):
+                continue
+            stat = file.stat()
+            yield ListingItem(Key=key, Size=stat.st_size, LastModified=datetime.fromtimestamp(stat.st_mtime, UTC),
+                              ETag=generate_fake_etag(file))
 
     @override
     async def get_file_contents(self, gcs_path: str) -> bytes | None:

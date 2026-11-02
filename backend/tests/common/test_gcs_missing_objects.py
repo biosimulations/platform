@@ -71,12 +71,29 @@ class FakeGcsStorage:
         del self.objects[object_name]
         return ""
 
+    page_tokens: list[str | None] = []
+
+    async def list_objects(self, bucket: str, params: dict[str, str] | None = None, **_kwargs: Any) -> dict[str, Any]:
+        """One page of the JSON API listing; the page token is the offset."""
+        params = params or {}
+        self.page_tokens.append(params.get("pageToken"))
+        names = sorted(name for name in self.objects if name.startswith(params.get("prefix", "")))
+        start, size = int(params.get("pageToken") or 0), int(params.get("maxResults", 1000))
+        page: dict[str, Any] = {"items": [
+            {"name": name, "updated": "2026-01-01T00:00:00.000Z", "size": str(len(self.objects[name])), "etag": "e"}
+            for name in names[start:start + size]
+        ]}
+        if start + size < len(names):
+            page["nextPageToken"] = str(start + size)
+        return page
+
 
 @pytest.fixture
 def fake_gcs(monkeypatch: pytest.MonkeyPatch) -> type[FakeGcsStorage]:
     FakeGcsStorage.objects = {}
     FakeGcsStorage.fail_status = None
     FakeGcsStorage.reported_md5 = None
+    FakeGcsStorage.page_tokens = []
     monkeypatch.setattr(gcs_aio, "Storage", FakeGcsStorage)
     return FakeGcsStorage
 
@@ -144,3 +161,15 @@ async def test_exists_and_an_idempotent_delete(fake_gcs: type[FakeGcsStorage]) -
         await gcs_aio.delete_gcs_object("content/abc", token=None)  # type: ignore[arg-type]
     with pytest.raises(ClientResponseError):
         await gcs_aio.gcs_object_exists("content/abc", token=None)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_listing_follows_page_tokens(fake_gcs: type[FakeGcsStorage]) -> None:
+    for index in range(5):
+        fake_gcs.objects[f"verification-reports/r/{index}"] = b"xy"
+    fake_gcs.objects["elsewhere/0"] = b"x"
+    items = [item async for item in gcs_aio.iter_gcs_objects("verification-reports/", token=None,  # type: ignore[arg-type]
+                                                               page_size=2)]
+    assert [item.Key for item in items] == [f"verification-reports/r/{index}" for index in range(5)]
+    assert fake_gcs.page_tokens == [None, "2", "4"]
+    assert items[0].Size == 2 and items[0].LastModified.tzinfo is not None

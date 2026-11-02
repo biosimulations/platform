@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 from temporalio import workflow
@@ -60,6 +61,14 @@ class FileService(ABC):
 
     @abstractmethod
     async def get_file_contents(self, gcs_path: str) -> bytes | None:
+        pass
+
+    @abstractmethod
+    def iter_objects(self, prefix: str) -> AsyncIterator[ListingItem]:
+        """Every object whose name starts with *prefix*, read page by page.
+
+        ``LastModified`` is timezone-aware UTC.
+        """
         pass
 
     @abstractmethod

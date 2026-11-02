@@ -83,6 +83,11 @@ class _MemoryFiles(FileService):
     async def delete_file(self, gcs_path: str) -> None:
         self.objects.pop(gcs_path, None)
 
+    async def iter_objects(self, prefix: str) -> AsyncIterator[Any]:
+        for key in sorted(self.objects):
+            if key.startswith(prefix):
+                yield SimpleNamespace(Key=key, LastModified=datetime.now(UTC), ETag="", Size=len(self.objects[key]))
+
     async def get_modified_date(self, gcs_path: str) -> datetime:
         if gcs_path not in self.objects:
             raise FileNotFoundError(gcs_path)
