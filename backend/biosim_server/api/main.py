@@ -1104,8 +1104,12 @@ async def _resolve_reverify_simulators(names: list[str]) -> list[BiosimulatorVer
         400: {"description": "Duplicate run ids."},
         401: {"description": "Invalid bearer token."},
         404: {"description": "Verification not found for this caller."},
-        409: {"description": "Inputs do not match retained provenance, checksums failed, or the idempotency key was reused for a different body."},
-        429: {"description": "Shared workflow rate limit."},
+        409: {"description": (
+            "Inputs do not match retained provenance, a retained input is missing, or the idempotency key was "
+            "reused for a different body. A checksum mismatch is not refused here: the comparison detects it "
+            "and the derived verification fails with failure_code checksum_mismatch."
+        )},
+        429: {"description": "Shared workflow rate limit. It is charged before any storage is read."},
         503: {"description": "Ledger, snapshot storage, or Temporal is unavailable."},
     },
 )

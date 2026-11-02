@@ -192,6 +192,9 @@ class VerifyWorkflowOutput(BaseModel):
     timestamp: str
     workflow_run_id: Optional[str] = None
     workflow_error: Optional[str] = None
+    # Which check failed, when a reconstruction's retained inputs could not be compared:
+    # "checksum_mismatch" or "missing_numerical_inputs".
+    failure_code: Optional[str] = None
     # Requested simulators that produced no results (OmexVerifyWorkflow); empty when every one ran
     failed_simulators: list[SimulatorFailure] = []
     workflow_results: Optional[GenerateStatisticsActivityOutput] = None

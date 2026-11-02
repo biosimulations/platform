@@ -2,7 +2,9 @@
 
 This workflow loads retained numerical snapshots, verifies their checksums, and
 compares them. It has no path that submits a simulator job or downloads a run
-from biosimulations.org. A missing or mismatched snapshot fails the activity.
+from biosimulations.org. A missing or mismatched snapshot fails the activity
+with a typed error, and the derived report says which check failed in
+``failure_code`` and ``workflow_error``.
 """
 
 import logging
@@ -11,7 +13,7 @@ from datetime import timedelta
 from pydantic import BaseModel
 from temporalio import activity, workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ApplicationError
+from temporalio.exceptions import ActivityError, ApplicationError
 
 from biosim_server.biosim_verify.activities import (
     externalize_statistics,
@@ -36,6 +38,13 @@ from biosim_server.biosim_verify.snapshots import (
 from biosim_server.biosim_verify.workflow_persistence import persist_report
 
 
+# The comparison activity's typed failures: failure_code -> the derived report's workflow_error.
+SNAPSHOT_FAILURES = {
+    "checksum_mismatch": "Retained numerical input checksum mismatch",
+    "missing_numerical_inputs": "Retained numerical input is missing",
+}
+
+
 class ReconstructComparisonWorkflowInput(BaseModel):
     source_verification_id: str
     compare_settings: CompareSettings
@@ -57,9 +66,11 @@ async def compare_retained_snapshots(payload: CompareRetainedSnapshotsInput, wor
     try:
         datasets = await load_verified_snapshots(payload.snapshots)
     except SnapshotMissing as exc:
-        raise ApplicationError("Retained numerical input is missing", non_retryable=True) from exc
+        raise ApplicationError(SNAPSHOT_FAILURES["missing_numerical_inputs"], type="missing_numerical_inputs",
+                               non_retryable=True) from exc
     except SnapshotMismatch as exc:
-        raise ApplicationError("Numerical input checksum mismatch", non_retryable=True) from exc
+        raise ApplicationError(SNAPSHOT_FAILURES["checksum_mismatch"], type="checksum_mismatch",
+                               non_retryable=True) from exc
     output = compare_loaded_runs(payload.sim_run_info, datasets, payload.compare_settings)
     await publish_snapshot_manifest(workflow_id, payload.ordered_run_ids, payload.snapshots)
     return await externalize_statistics(output, workflow_id)
@@ -119,10 +130,13 @@ class ReconstructComparisonWorkflow:
                 "workflow_results_reference": result.reference,
                 "timestamp": str(workflow.now()),
             })
-        except Exception:
+        except Exception as exc:
+            cause = exc.cause if isinstance(exc, ActivityError) else None
+            code = cause.type if isinstance(cause, ApplicationError) and cause.type in SNAPSHOT_FAILURES else None
             output = self.verify_output.model_copy(update={
                 "workflow_status": VerifyWorkflowStatus.FAILED,
-                "workflow_error": "Retained numerical inputs could not be compared",
+                "workflow_error": SNAPSHOT_FAILURES[code] if code else "Retained numerical inputs could not be compared",
+                "failure_code": code,
                 "timestamp": str(workflow.now()),
             })
         self.verify_output = self.verify_output.model_copy(update={

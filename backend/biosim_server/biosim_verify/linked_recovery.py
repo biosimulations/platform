@@ -3,8 +3,16 @@
 Recovery always reserves a new verification id. It does not modify the source
 row, its report, or its permalink. Reconstruction compares retained snapshots
 and never submits a simulator job.
+
+Admission runs cheapest first, so no object-storage work happens before the
+caller is charged (I-4): an idempotency peek, the in-memory eligibility and
+input checks, the shared-budget charge, then storage existence checks, and
+only then the reservation and the start.  An idempotent replay is never
+charged.  Snapshot checksums are verified by the comparison activity, which
+fails the derived verification with ``checksum_mismatch``.
 """
 
+import asyncio
 import errno
 import logging
 import uuid
@@ -53,12 +61,7 @@ from biosim_server.biosim_verify.reconstruct_workflow import (
     ReconstructComparisonWorkflowInput,
 )
 from biosim_server.biosim_verify.report_codec import encode_report
-from biosim_server.biosim_verify.snapshots import (
-    SKIPPED_WORK_LIMIT,
-    SnapshotMismatch,
-    SnapshotMissing,
-    load_verified_snapshots,
-)
+from biosim_server.biosim_verify.snapshots import SKIPPED_WORK_LIMIT
 from biosim_server.common.auth import AuthenticatedUser
 from biosim_server.common.ratelimit import _enforce_rate_limit, client_identity
 from biosim_server.dependencies import (
@@ -81,6 +84,9 @@ REVERIFY_MESSAGE = (
     "and are not proof of the original simulator selection."
 )
 _UNKNOWN_START = "Verification start outcome is unknown; retry this request with the same Idempotency-Key."
+# Snapshot existence checks: distinct references, this many at once, within this budget.
+_EXISTS_CONCURRENCY = 8
+_EXISTS_BUDGET_SECONDS = 10.0
 _InputT = TypeVar("_InputT", ReconstructComparisonWorkflowInput, OmexVerifyWorkflowInput)
 
 
@@ -432,6 +438,16 @@ async def _insert_or_match(record: VerificationRecord) -> None:
             raise HTTPException(status_code=503, detail=_UNKNOWN_START)
 
 
+async def _charge_new_reservation(*, request: Request, user: AuthenticatedUser | None) -> None:
+    """Charge the shared workflow budget for a reservation that does not exist yet.
+
+    A retry of an existing reservation is never charged, so a lost reply can
+    converge after the quota is spent.  Concurrent identical requests may each
+    be charged; the unique index still keeps one id.
+    """
+    _enforce_rate_limit(request, user)
+
+
 async def _reserve_workflow_id(
     *,
     request: Request,
@@ -441,28 +457,13 @@ async def _reserve_workflow_id(
     idempotency_key: str,
     request_hash: str,
     prefix: str,
-) -> tuple[str, bool]:
-    """Return ``(workflow_id, already_reserved)``.
+) -> str:
+    """Reserve a new workflow id for this caller scope, or return the one a racing request reserved.
 
-    A new reservation is rate-limited on the shared workflow budget. A retry of
-    the same key is not, so a lost reply can converge after the quota is spent.
+    The caller has already been charged by :func:`_charge_new_reservation`.
     """
     ledger = await _require_ledger()
     caller_key, _authenticated = client_identity(user, request)
-    try:
-        existing = await ledger.find_recovery(caller_key, source_id, operation, idempotency_key)
-    except Exception as exc:
-        logger.error("idempotency lookup failed for %s", source_id)
-        raise HTTPException(status_code=503, detail="Verification database service not available") from exc
-    if existing is not None:
-        if existing.request_hash != request_hash:
-            raise RecoveryRejected(
-                409, "This idempotency key was already used for a different request.", "idempotency_conflict",
-            )
-        return existing.workflow_id, True
-    # Charge only a reservation that does not already exist. Concurrent identical
-    # requests may each pass this check; the unique index then keeps one id.
-    _enforce_rate_limit(request, user)
     workflow_id = f"{prefix}{uuid.uuid4()}"
     try:
         stored, _created = await ledger.reserve_recovery(RecoveryReservation(
@@ -477,7 +478,7 @@ async def _reserve_workflow_id(
     except Exception as exc:
         logger.error("idempotency reservation failed for %s", source_id)
         raise HTTPException(status_code=503, detail="Verification database service not available") from exc
-    return stored.workflow_id, stored.workflow_id != workflow_id
+    return stored.workflow_id
 
 
 async def _start_reserved(
@@ -567,25 +568,34 @@ async def _matching_snapshots(body: ReconstructRequest, provenance: Verification
     return offer
 
 
-async def _verify_snapshot_bytes(snapshots: list[NumericalInputSnapshot]) -> None:
-    if get_file_service() is None:
+async def _require_snapshots_exist(snapshots: list[NumericalInputSnapshot]) -> None:
+    """Check that every retained input still exists: metadata only, never a download.
+
+    Distinct references are checked ``_EXISTS_CONCURRENCY`` at a time within
+    ``_EXISTS_BUDGET_SECONDS``.  A missing one is a typed 409; the caller was
+    already charged because storage work was done.  Checksums are left to the
+    comparison activity.
+    """
+    files = get_file_service()
+    if files is None:
         raise HTTPException(status_code=503, detail="Snapshot storage is unavailable")
+    references = list(dict.fromkeys(snapshot.artifact_reference for snapshot in snapshots))
+    semaphore = asyncio.Semaphore(_EXISTS_CONCURRENCY)
+
+    async def exists(reference: str) -> bool:
+        async with semaphore:
+            return await files.exists(reference)
+
     try:
-        await load_verified_snapshots(snapshots)
-    except SnapshotMissing as exc:
+        async with asyncio.timeout(_EXISTS_BUDGET_SECONDS):
+            found = await asyncio.gather(*(exists(reference) for reference in references))
+    except Exception as exc:
+        logger.error("snapshot existence check could not be completed")
+        raise HTTPException(status_code=503, detail="Snapshot storage is unavailable") from exc
+    if not all(found):
         raise RecoveryRejected(
             409, "Retained numerical inputs are missing. No simulator job was submitted.", "missing_numerical_inputs",
-        ) from exc
-    except SnapshotMismatch as exc:
-        raise RecoveryRejected(
-            409, "Retained numerical inputs failed checksum verification. No simulator job was submitted.",
-            "checksum_mismatch",
-        ) from exc
-    except RecoveryRejected:
-        raise
-    except Exception as exc:
-        logger.error("snapshot verification could not be completed")
-        raise HTTPException(status_code=503, detail="Snapshot storage is unavailable") from exc
+        )
 
 
 async def _peek_reservation(
@@ -641,12 +651,14 @@ async def accept_reconstruction(
             "missing_provenance",
         )
     offer = await _matching_snapshots(body, provenance)
-    # Refuse before reserving an id when the bytes are missing or do not match.
-    await _verify_snapshot_bytes(provenance.input_snapshots)
-    workflow_id = existing.workflow_id if existing is not None else (await _reserve_workflow_id(
+    # Every refusal so far was in memory.  Charge before any storage I/O.
+    if existing is None:
+        await _charge_new_reservation(request=request, user=user)
+    await _require_snapshots_exist(provenance.input_snapshots)
+    workflow_id = existing.workflow_id if existing is not None else await _reserve_workflow_id(
         request=request, user=user, source_id=source.workflow_id, operation=DerivationKind.RECONSTRUCTION,
         idempotency_key=idempotency_key, request_hash=request_hash, prefix="reconstruction-",
-    ))[0]
+    )
     settings = offer.compare_settings if offer.compare_settings is not None else body.compare_settings
     workflow_input = ReconstructComparisonWorkflowInput(
         source_verification_id=source.workflow_id, compare_settings=settings,
@@ -694,6 +706,9 @@ async def accept_reverification(
                 run_id=run_id, settings=settings, may_start_simulations=True,
                 defaults_applied=defaults_applied, simulators=simulator_names, message=REVERIFY_MESSAGE,
             )
+    # Charge before the archive lookup and its storage metadata call.
+    if existing is None:
+        await _charge_new_reservation(request=request, user=user)
     archive, omex = await _archive(source)
     if archive == "unavailable":
         raise HTTPException(status_code=503, detail="Archive storage is unavailable")
@@ -710,10 +725,10 @@ async def accept_reverification(
             "archive_not_stored",
         )
     resolved = await resolve_simulators(simulator_names)
-    workflow_id = existing.workflow_id if existing is not None else (await _reserve_workflow_id(
+    workflow_id = existing.workflow_id if existing is not None else await _reserve_workflow_id(
         request=request, user=user, source_id=source.workflow_id, operation=DerivationKind.REVERIFICATION,
         idempotency_key=idempotency_key, request_hash=request_hash, prefix="reverification-",
-    ))[0]
+    )
     workflow_input = OmexVerifyWorkflowInput(
         omex_file=omex, requested_simulators=resolved, cache_buster=cache_buster,
         compare_settings=settings, owner_sub=source.owner_sub,

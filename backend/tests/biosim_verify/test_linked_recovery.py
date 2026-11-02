@@ -322,7 +322,12 @@ async def test_reconstruction_verifies_checksums_and_leaves_the_source_intact(re
 
 
 @pytest.mark.asyncio
-async def test_checksum_mismatch_does_not_start_a_workflow(recovery_world: Any) -> None:
+async def test_a_checksum_mismatch_is_left_to_the_comparison(recovery_world: Any) -> None:
+    """Admission only checks that retained inputs exist; it never downloads them (WP-5).
+
+    The comparison activity detects the mismatch and fails the derived verification
+    with ``checksum_mismatch`` (test_recovery_admission).
+    """
     archived = await _archive_source(recovery_world, "source-checksum")
     reference = archived["snapshots"][0].artifact_reference
     recovery_world.files.objects[reference] = b"tampered"
@@ -330,10 +335,8 @@ async def test_checksum_mismatch_does_not_start_a_workflow(recovery_world: Any) 
         response = await client.post(
             "/verify/source-checksum/reconstruct", headers={"Idempotency-Key": _KEY}, json=_body(archived),
         )
-    assert response.status_code == 409
-    assert response.json()["code"] == "checksum_mismatch"
-    assert recovery_world.temporal.started == []
-    assert await recovery_world.ledger.list_derived("source-checksum") == []
+    assert response.status_code == 202
+    assert recovery_world.temporal.started == [response.json()["workflow_id"]]
 
 
 @pytest.mark.asyncio
