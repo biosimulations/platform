@@ -76,18 +76,20 @@ async def test_backfill_both_cursors_time_bounds_and_late_closure(tmp_path: Path
 async def test_reconcile_alarms_without_exposing_private_request(caplog: pytest.LogCaptureFixture) -> None:
     from scripts.reconcile_verification_reports import reconcile
     ledger, store = AsyncMock(), AsyncMock()
-    old = _record().model_copy(update={'created': datetime.now(UTC) - timedelta(hours=2)})
-    ledger.list_persistence_candidates.return_value = [old]
+    blocked = _record().model_copy(update={'created': datetime.now(UTC) - timedelta(hours=2),
+                                           'persistence_state': 'blocked'})
+    ledger.list_persistence_candidates.return_value = [blocked]
     ledger.acquire_persistence_scan.return_value = (None, None)
     with patch('scripts.reconcile_verification_reports.get_verification_database_service', return_value=ledger), \
          patch('scripts.reconcile_verification_reports.get_verification_report_store', return_value=store), \
          patch('scripts.reconcile_verification_reports.get_temporal_client', return_value=None), \
-         patch('scripts.reconcile_verification_reports.process_record', new=AsyncMock(return_value='pending')), \
-         caplog.at_level(logging.ERROR):
+         patch('scripts.reconcile_verification_reports.process_record', new=AsyncMock(return_value='dependency_error')), \
+         caplog.at_level(logging.INFO):
         counts = await reconcile(100, True)
-    assert counts['stale_pending'] == 1
-    event = json.loads(caplog.records[-1].message)
-    assert event['event'] == 'verification_persistence_attention'
+    assert counts['blocked'] == 1 and counts['attention'] == 1
+    summary, attention = (json.loads(record.message) for record in caplog.records[-2:])
+    assert summary['event'] == 'verification_reconcile_summary'
+    assert attention['event'] == 'verification_persistence_attention'
     assert 'owner' not in caplog.text and 'workflow_input' not in caplog.text
 
 

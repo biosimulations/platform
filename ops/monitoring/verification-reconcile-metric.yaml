@@ -1,11 +1,12 @@
 name: verification_reconcile_runs
-description: Verification reconciliation runs, including runs requiring attention
+description: >-
+  Verification reconciliation runs. Every run that scanned, or found the lease busy,
+  logs one verification_reconcile_summary, so this counts healthy runs whatever
+  their rows need.
 filter: >-
   resource.type="k8s_container" AND resource.labels.namespace_name="biosim-gke"
-  AND (jsonPayload.event="verification_reconcile_success"
-  OR jsonPayload.event="verification_persistence_attention"
-  OR textPayload:"verification_reconcile_success"
-  OR textPayload:"verification_persistence_attention")
+  AND (jsonPayload.event="verification_reconcile_summary"
+  OR textPayload:"verification_reconcile_summary")
 metricDescriptor:
   metricKind: DELTA
   valueType: INT64

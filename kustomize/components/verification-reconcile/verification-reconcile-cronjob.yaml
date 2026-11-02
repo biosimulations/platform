@@ -13,14 +13,17 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      backoffLimit: 2
+      # The exit status reflects job health only: row problems exit 0 and alert
+      # through verification_persistence_attention. A failed job is not retried
+      # in place; the next 5-minute run is the retry.
+      backoffLimit: 0
       activeDeadlineSeconds: 240
       template:
         metadata:
           labels:
             app: verification-report-reconcile
         spec:
-          restartPolicy: OnFailure
+          restartPolicy: Never
           containers:
             - name: reconcile
               # Same image as the api; the overlay `images:` transformer keeps

@@ -6,9 +6,9 @@
   },
   "combiner": "OR",
   "conditions": [{
-    "displayName": "Persistence error, blocked report, or stale pending work",
+    "displayName": "Unacknowledged persistence attention, or a failing persist attempt",
     "conditionMatchedLog": {
-      "filter": "resource.type=\"k8s_container\" AND resource.labels.namespace_name=\"biosim-gke\" AND (jsonPayload.event=\"verification_persistence_attention\" OR textPayload:\"verification_persistence_attention\" OR textPayload:\"verification_persistence_failure\" OR textPayload:\"Reconciliation scan budget exhausted\")"
+      "filter": "resource.type=\"k8s_container\" AND resource.labels.namespace_name=\"biosim-gke\" AND (jsonPayload.event=\"verification_persistence_attention\" OR textPayload:\"verification_persistence_attention\" OR textPayload:\"verification_persistence_failure\")"
     }
   }],
   "alertStrategy": {"notificationRateLimit": {"period": "900s"}, "autoClose": "86400s"},

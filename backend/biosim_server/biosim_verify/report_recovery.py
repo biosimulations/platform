@@ -1,20 +1,23 @@
 """Shared bounded recovery logic for reconciliation and backfill."""
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from temporalio.client import Client, WorkflowExecutionStatus
+from temporalio.common import RetryPolicy
 from temporalio.service import RPCError, RPCStatusCode
 
 from biosim_server.biosim_verify.activities import prepare_report
 from biosim_server.biosim_verify.database import VerificationDatabaseService
 from biosim_server.biosim_verify.history import (
+    PERSIST_ACTIVITY_TYPE,
     HistoryIdentityMismatch,
     StartInput,
     computed_output_from_history,
     read_start_input,
     terminal_failure_output,
 )
+from biosim_server.biosim_verify.workflow_persistence import PERSIST_RETRY
 from biosim_server.biosim_verify.models import (
     ReportPersistenceState,
     VerificationProvenance,
@@ -32,6 +35,53 @@ _TERMINAL_STATUSES = frozenset({
     WorkflowExecutionStatus.TERMINATED,
     WorkflowExecutionStatus.TIMED_OUT,
 })
+
+
+#: A persist activity on this attempt or later is failing, not just starting.
+PERSIST_RETRYING_ATTEMPT = 3
+
+
+class RunningState(NamedTuple):
+    """Why a running execution has no report yet, and for at least how long."""
+
+    kind: str  # "persist_retrying" or "computing"
+    age: timedelta
+
+
+def minimum_retry_elapsed(attempt: int, policy: RetryPolicy = PERSIST_RETRY) -> timedelta:
+    """The least time that must have passed before *attempt* could start.
+
+    It is the sum of the retry intervals before that attempt.  Temporal does
+    not report when the first attempt was scheduled, so this lower bound is
+    the age of a retrying activity: an alert based on it is never early.
+    """
+    interval = policy.initial_interval.total_seconds()
+    ceiling = policy.maximum_interval.total_seconds() if policy.maximum_interval else interval
+    elapsed = 0.0
+    for _ in range(max(attempt - 1, 0)):
+        elapsed += min(interval, ceiling)
+        interval *= policy.backoff_coefficient
+    return timedelta(seconds=elapsed)
+
+
+async def running_state(temporal: Client, record: VerificationRecord, *, now: datetime) -> RunningState | None:
+    """Classify a running execution from its pending activities, or None if it is not running.
+
+    A persist activity pending at attempt 3 or later is ``persist_retrying``:
+    storage is failing for a computed result.  Anything else is ``computing``,
+    whose age is the execution's.
+    """
+    handle = temporal.get_workflow_handle(record.workflow_id, run_id=record.workflow_run_id)
+    desc = await handle.describe(rpc_timeout=timedelta(seconds=15))
+    if desc.status != WorkflowExecutionStatus.RUNNING:
+        return None
+    for pending in desc.raw_description.pending_activities:
+        if pending.activity_type.name == PERSIST_ACTIVITY_TYPE and pending.attempt >= PERSIST_RETRYING_ATTEMPT:
+            return RunningState("persist_retrying", minimum_retry_elapsed(pending.attempt))
+    started = desc.start_time or record.created
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    return RunningState("computing", now - started)
 
 
 class _DependencyError(Exception):

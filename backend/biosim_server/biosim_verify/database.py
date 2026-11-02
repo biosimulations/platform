@@ -90,6 +90,10 @@ def _summary_from_doc(doc: Mapping[str, Any]) -> VerificationSummary:
     )
 
 
+class LeaseLost(RuntimeError):
+    """Another reconciliation took over the scan lease; this one must stop."""
+
+
 class InvalidVerificationCursor(ValueError):
     """A ``cursor`` that is not a token this service issued."""
 
@@ -406,7 +410,7 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         result = await self._scan_collection().update_one({"_id": namespace, "owner": owner,
             "lease_until": {"$gt": now}}, {"$set": values})
         if result.matched_count != 1:
-            raise RuntimeError("Reconciliation lease was lost")
+            raise LeaseLost("Reconciliation lease was lost")
 
     async def mark_persistence_issue(self, workflow_id: str, blocked: bool) -> None:
         await self._collection.update_one(
