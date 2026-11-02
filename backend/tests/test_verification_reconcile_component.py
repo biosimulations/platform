@@ -27,4 +27,6 @@ def test_the_heartbeat_counts_summaries_and_the_alert_matches_attention() -> Non
     log_filter = condition["conditionMatchedLog"]["filter"]
     assert "verification_persistence_attention" in log_filter
     assert "verification_persistence_failure" in log_filter
+    # A content address holding the wrong bytes is attention too (WP-7a).
+    assert "verification_object_integrity_conflict" in log_filter
     assert "verification_reconcile_summary" not in log_filter

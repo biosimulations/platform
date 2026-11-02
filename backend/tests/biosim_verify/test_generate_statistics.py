@@ -72,7 +72,7 @@ async def test_oversized_statistics_crosses_activity_boundary_as_reference() -> 
     settings = CompareSettings(user_description="test", include_outputs=True, rel_tol=1e-4,
                                abs_tol_min=1e-3, abs_tol_scale=1e-5)
     data = Hdf5DataValues(shape=[2, 3], values=[0, 1, 2, 3, 4, 5])
-    artifact_store = SimpleNamespace(upload_bytes_immutable=AsyncMock(return_value="artifact"))
+    artifact_store = SimpleNamespace(put_if_absent=AsyncMock(return_value=True))
     with (
         patch("biosim_server.biosim_verify.activities.BiosimServiceRest.get_hdf5_data",
               new=AsyncMock(return_value=data)),
@@ -83,7 +83,8 @@ async def test_oversized_statistics_crosses_activity_boundary_as_reference() -> 
         patch("biosim_server.biosim_verify.activities.get_file_service",
               return_value=artifact_store),
     ):
-        result = await ActivityEnvironment().run(
+        environment = ActivityEnvironment()
+        result = await environment.run(
             generate_statistics_activity_v2,
             GenerateStatisticsActivityInput(
                 sim_run_info_list=[run], compare_settings=settings, workflow_id="wf-oversized",
@@ -91,6 +92,10 @@ async def test_oversized_statistics_crosses_activity_boundary_as_reference() -> 
         )
     assert result.output is None
     assert result.reference is not None
-    assert artifact_store.upload_bytes_immutable.await_count == 1
-    uploaded = artifact_store.upload_bytes_immutable.await_args.args[0]
+    assert artifact_store.put_if_absent.await_count == 1
+    uploaded, name = artifact_store.put_if_absent.await_args.args
     assert len(uploaded) > 1
+    # Named by workflow and content digest, so a retried activity reuses the object.
+    workflow_id = environment.info.workflow_id
+    assert name == f"verification-activity/{workflow_id}/{result.reference.content_sha256}.json.gz"
+    assert result.reference.artifact_reference == name

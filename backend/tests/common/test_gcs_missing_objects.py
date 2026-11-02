@@ -1,10 +1,13 @@
-"""GCS helpers honor the FileService missing-object contract without credentials.
+"""GCS helpers honor the FileService missing-object and create-only contracts without credentials.
 
 gcloud-aio-storage reports a missing object as ``aiohttp.ClientResponseError``
-with status 404, never ``FileNotFoundError``. These tests replace ``Storage``
-with a fake that raises exactly that, so the contract is checked offline.
+with status 404, never ``FileNotFoundError``, and a failed ``ifGenerationMatch``
+precondition as status 412. These tests replace ``Storage`` with a fake that
+raises exactly those, so the contracts are checked offline.
 """
 
+import base64
+import hashlib
 from typing import Any
 
 import pytest
@@ -26,6 +29,8 @@ class FakeGcsStorage:
 
     objects: dict[str, bytes] = {}
     fail_status: int | None = None
+    # Report this MD5 for every upload instead of the real one (a server-side corruption).
+    reported_md5: str | None = None
 
     def __init__(self, token: Any = None) -> None:
         pass
@@ -50,15 +55,28 @@ class FakeGcsStorage:
         self._check(object_name)
         return {"updated": "2026-01-01T00:00:00+00:00"}
 
-    async def upload(self, bucket: str, file_data: bytes, object_name: str, **_kwargs: Any) -> dict[str, Any]:
+    async def upload(self, bucket: str, file_data: bytes, object_name: str,
+                     parameters: dict[str, str] | None = None, **_kwargs: Any) -> dict[str, Any]:
+        if self.fail_status is not None:
+            raise gcs_error(self.fail_status)
+        # ifGenerationMatch=0 succeeds only when no live object exists.
+        if (parameters or {}).get("ifGenerationMatch") == "0" and object_name in self.objects:
+            raise gcs_error(412)
         self.objects[object_name] = file_data
-        return {}
+        md5 = base64.b64encode(hashlib.md5(file_data, usedforsecurity=False).digest()).decode()
+        return {"name": object_name, "md5Hash": self.reported_md5 or md5}
+
+    async def delete(self, bucket: str, object_name: str, **_kwargs: Any) -> str:
+        self._check(object_name)
+        del self.objects[object_name]
+        return ""
 
 
 @pytest.fixture
 def fake_gcs(monkeypatch: pytest.MonkeyPatch) -> type[FakeGcsStorage]:
     FakeGcsStorage.objects = {}
     FakeGcsStorage.fail_status = None
+    FakeGcsStorage.reported_md5 = None
     monkeypatch.setattr(gcs_aio, "Storage", FakeGcsStorage)
     return FakeGcsStorage
 
@@ -87,3 +105,42 @@ async def test_missing_object_modified_date_is_file_not_found(fake_gcs: type[Fak
     fake_gcs.fail_status = 503
     with pytest.raises(ClientResponseError):
         await gcs_aio.get_gcs_modified_date("absent.omex", token=None)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_a_412_means_the_object_exists(fake_gcs: type[FakeGcsStorage]) -> None:
+    assert await gcs_aio.put_gcs_object_if_absent(b"first", "content/abc", token=None) is True  # type: ignore[arg-type]
+    assert await gcs_aio.put_gcs_object_if_absent(b"second", "content/abc", token=None) is False  # type: ignore[arg-type]
+    assert fake_gcs.objects["content/abc"] == b"first"  # never overwritten
+
+
+@pytest.mark.asyncio
+async def test_a_stored_checksum_mismatch_is_an_error(fake_gcs: type[FakeGcsStorage]) -> None:
+    fake_gcs.reported_md5 = base64.b64encode(b"0" * 16).decode()
+    with pytest.raises(IOError, match="does not match"):
+        await gcs_aio.put_gcs_object_if_absent(b"bytes", "content/abc", token=None)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 429, 500, 503])
+async def test_other_create_errors_are_not_reported_as_existing(fake_gcs: type[FakeGcsStorage], status: int) -> None:
+    fake_gcs.fail_status = status
+    with pytest.raises(ClientResponseError) as raised:
+        await gcs_aio.put_gcs_object_if_absent(b"bytes", "content/abc", token=None)  # type: ignore[arg-type]
+    assert raised.value.status == status
+
+
+@pytest.mark.asyncio
+async def test_exists_and_an_idempotent_delete(fake_gcs: type[FakeGcsStorage]) -> None:
+    assert await gcs_aio.gcs_object_exists("content/abc", token=None) is False  # type: ignore[arg-type]
+    await gcs_aio.delete_gcs_object("content/abc", token=None)  # type: ignore[arg-type]  # missing: no error
+    fake_gcs.objects["content/abc"] = b"x"
+    assert await gcs_aio.gcs_object_exists("content/abc", token=None) is True  # type: ignore[arg-type]
+    await gcs_aio.delete_gcs_object("content/abc", token=None)  # type: ignore[arg-type]
+    assert "content/abc" not in fake_gcs.objects
+    fake_gcs.objects["content/abc"] = b"x"
+    fake_gcs.fail_status = 403
+    with pytest.raises(ClientResponseError):
+        await gcs_aio.delete_gcs_object("content/abc", token=None)  # type: ignore[arg-type]
+    with pytest.raises(ClientResponseError):
+        await gcs_aio.gcs_object_exists("content/abc", token=None)  # type: ignore[arg-type]

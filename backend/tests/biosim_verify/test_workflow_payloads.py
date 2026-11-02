@@ -101,7 +101,7 @@ async def test_inline_threshold_is_inclusive(
     monkeypatch.setattr(get_settings(), "verification_activity_inline_max_bytes", size + headroom)
     objects = FileServiceLocal(tmp_path)
     with patch("biosim_server.biosim_verify.activities.get_file_service", return_value=objects):
-        result = await externalize_statistics(output)
+        result = await externalize_statistics(output, "wf-threshold")
     assert (result.output is not None) is inline
     assert (result.reference is not None) is not inline
     assert bool(list(tmp_path.glob("verification-activity/*"))) is not inline

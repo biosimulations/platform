@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import hashlib
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -64,6 +66,50 @@ async def upload_bytes_to_gcs(file_contents: bytes, gcs_path: str, token: Token)
     async with Storage(token=token) as client:
         await client.upload(bucket=get_settings().storage_bucket, file_data=file_contents, object_name=gcs_path)
         return gcs_path
+
+
+async def put_gcs_object_if_absent(file_contents: bytes, gcs_path: str, token: Token) -> bool:
+    """Create the object only if it does not exist.  True if this call created it."""
+    logger.info(f"Creating {gcs_path} ({len(file_contents)} bytes) if absent")
+    try:
+        async with Storage(token=token) as client:
+            # Generation 0 matches only a missing object, so the server refuses to overwrite.
+            result: dict[str, Any] = await client.upload(
+                bucket=get_settings().storage_bucket, object_name=gcs_path, file_data=file_contents,
+                parameters={"ifGenerationMatch": "0"},
+            )
+    except ClientResponseError as e:
+        # 412 Precondition Failed: an object already exists at this name.
+        if e.status == 412:
+            return False
+        raise
+    reported = result.get("md5Hash")
+    expected = base64.b64encode(hashlib.md5(file_contents, usedforsecurity=False).digest()).decode()
+    if reported is not None and reported != expected:
+        raise IOError(f"stored object {gcs_path} does not match the uploaded bytes")
+    return True
+
+
+async def gcs_object_exists(gcs_path: str, token: Token) -> bool:
+    try:
+        async with Storage(token=token) as client:
+            await client.download_metadata(bucket=get_settings().storage_bucket, object_name=gcs_path)
+            return True
+    except ClientResponseError as e:
+        if e.status == 404:
+            return False
+        raise
+
+
+async def delete_gcs_object(gcs_path: str, token: Token) -> None:
+    logger.info(f"Deleting {gcs_path}")
+    try:
+        async with Storage(token=token) as client:
+            await client.delete(bucket=get_settings().storage_bucket, object_name=gcs_path)
+    except ClientResponseError as e:
+        # Already gone is the outcome a delete wants.
+        if e.status != 404:
+            raise
 
 
 async def get_gcs_modified_date(gcs_path: str, token: Token) -> datetime:

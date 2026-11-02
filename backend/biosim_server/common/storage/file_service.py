@@ -30,19 +30,25 @@ class FileService(ABC):
     async def upload_bytes(self, file_contents: bytes, gcs_path: str) -> str:
         pass
 
-    async def upload_bytes_immutable(self, file_contents: bytes, gcs_path: str) -> str:
-        """Publish an object without replacing an existing reference.
+    @abstractmethod
+    async def put_if_absent(self, file_contents: bytes, gcs_path: str) -> bool:
+        """Create the object only if nothing exists at *gcs_path*; never overwrite.
 
-        Each attempt uses a unique object and verifies its bytes before publishing
-        the returned reference. The insert-once report manifest selects the winner;
-        retries can leave unreferenced objects, but cannot overwrite a published one.
+        Returns True when this call created it, and False when an object was
+        already there, whose bytes are left untouched.  A backend whose server
+        reports a checksum of the stored bytes compares it with *file_contents*
+        and raises ``IOError`` on a mismatch.
         """
-        import uuid
-        reference = f"{gcs_path}.{uuid.uuid4().hex}"
-        await self.upload_bytes(file_contents, reference)
-        if await self.get_file_contents(reference) != file_contents:
-            raise IOError("immutable object verification failed")
-        return reference
+        pass
+
+    @abstractmethod
+    async def exists(self, gcs_path: str) -> bool:
+        pass
+
+    @abstractmethod
+    async def delete_file(self, gcs_path: str) -> None:
+        """Delete the object.  Deleting a missing object is not an error."""
+        pass
 
     @abstractmethod
     async def get_modified_date(self, gcs_path: str) -> datetime:

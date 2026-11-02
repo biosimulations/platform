@@ -6,7 +6,6 @@ provenance without adding a workflow command.
 """
 
 import asyncio
-import hashlib
 import json
 from collections.abc import Awaitable, Callable, Sequence
 
@@ -18,7 +17,14 @@ from biosim_server.biosim_verify.models import (
     RunData,
     SimulationRunInfo,
 )
+from biosim_server.biosim_verify.object_names import (
+    holds_content,
+    snapshot_data_path,
+    snapshot_index_path,
+    snapshot_manifest_path,
+)
 from biosim_server.biosim_verify.report_codec import checksum, decode_report, encode_report
+from biosim_server.common.storage.content_addressed import publish_content_addressed
 from biosim_server.dependencies import get_file_service
 
 
@@ -28,11 +34,6 @@ class SnapshotMissing(Exception):
 
 class SnapshotMismatch(Exception):
     """Stored bytes do not match the recorded checksum, shape, or identity."""
-
-
-def _pointer_path(workflow_id: str) -> str:
-    digest = hashlib.sha256(workflow_id.encode()).hexdigest()
-    return f"verification-snapshots/index/{digest}.json"
 
 
 def _snapshot_document(run_data: RunData, simulator_version: str) -> dict[str, object]:
@@ -69,14 +70,14 @@ async def publish_snapshot_manifest(
         "snapshots": [snapshot.model_dump() for snapshot in snapshots],
     }
     compressed, encoding, size, digest = encode_report(manifest)
-    reference = await file_service.upload_bytes_immutable(
-        compressed, f"verification-snapshots/manifests/{digest}.json.gz",
+    reference = await publish_content_addressed(
+        file_service, compressed, snapshot_manifest_path(digest), holds_content(digest, encoding),
     )
     pointer = json.dumps(
         {"reference": reference, "sha256": digest, "encoding": encoding, "uncompressed_bytes": size},
         sort_keys=True, separators=(",", ":"),
     ).encode()
-    await file_service.upload_bytes(pointer, _pointer_path(workflow_id))
+    await file_service.upload_bytes(pointer, snapshot_index_path(workflow_id))
 
 
 async def capture_input_snapshots(
@@ -99,8 +100,9 @@ async def capture_input_snapshots(
             raise TypeError("snapshot source must be run data")
         document = _snapshot_document(item, labels.get(item.run_id, ""))
         compressed, encoding, size, digest = encode_report(document)
-        reference = await file_service.upload_bytes_immutable(
-            compressed, f"verification-snapshots/data/{digest}.json.gz",
+        # Content-addressed: the same run data, in any verification, is one object.
+        reference = await publish_content_addressed(
+            file_service, compressed, snapshot_data_path(digest), holds_content(digest, encoding),
         )
         return NumericalInputSnapshot(
             run_id=item.run_id, dataset_name=item.dataset_name, var_names=list(item.var_names),
@@ -123,7 +125,7 @@ async def read_snapshot_manifest(workflow_id: str) -> tuple[list[str], list[Nume
     file_service = get_file_service()
     if file_service is None:
         return None
-    raw = await file_service.get_file_contents(_pointer_path(workflow_id))
+    raw = await file_service.get_file_contents(snapshot_index_path(workflow_id))
     if raw is None:
         return None
     pointer = json.loads(raw)

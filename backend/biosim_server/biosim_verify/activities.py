@@ -12,6 +12,7 @@ from biosim_server.biosim_verify.models import (
     GenerateStatisticsArtifactReference, RunData, SimulationRunInfo, VerificationRecord,
     VerifyWorkflowOutput, VerificationProvenance, ReportPersistenceState,
 )
+from biosim_server.biosim_verify.object_names import holds_content, statistics_artifact_path
 from biosim_server.biosim_verify.report_codec import encode_report
 from biosim_server.biosim_verify.report_storage import (
     ReportArtifactMissing, ReportCorrupt, ReportIntegrityConflict, VerificationReportStore,
@@ -19,6 +20,7 @@ from biosim_server.biosim_verify.report_storage import (
 from biosim_server.biosim_verify.snapshots import SnapshotMismatch, SnapshotMissing, capture_input_snapshots, read_snapshot_manifest
 from biosim_server.dependencies import get_verification_database_service, get_verification_report_store, get_mongo_client
 from biosim_server.dependencies import get_file_service
+from biosim_server.common.storage.content_addressed import publish_content_addressed
 from biosim_server.config import get_settings
 from biosim_server.version import __version__
 
@@ -97,7 +99,7 @@ async def generate_statistics_activity_v2(gen_stats_input: GenerateStatisticsAct
     # object storage is unavailable.  Only a payload that would approach
     # Temporal's limit is externalized.
     output = await generate_statistics_activity(gen_stats_input)
-    return await externalize_statistics(output)
+    return await externalize_statistics(output, activity.info().workflow_id or "")
 
 
 async def prepare_report(
@@ -189,12 +191,15 @@ async def persist_verification_report_activity(
         raise
 
 
-async def externalize_statistics(output: GenerateStatisticsActivityOutput) -> GenerateStatisticsActivityResult:
+async def externalize_statistics(output: GenerateStatisticsActivityOutput,
+                                 workflow_id: str) -> GenerateStatisticsActivityResult:
     """Return statistics inline when they are small, externalized when they are not.
 
     Inline keeps the common case free of object storage and recoverable from
     history alone.  Above ``verification_activity_inline_max_bytes`` the payload
-    is written to object storage and only a reference crosses Temporal.
+    is written to object storage and only a reference crosses Temporal.  The
+    object's name is its content's digest under the workflow, so a retried
+    activity reuses it instead of writing another.
     """
     encoded, encoding, size, digest = encode_report(output.model_dump(mode="json"))
     if size <= get_settings().verification_activity_inline_max_bytes:
@@ -204,7 +209,9 @@ async def externalize_statistics(output: GenerateStatisticsActivityOutput) -> Ge
     file_service = get_file_service()
     if file_service is None:
         raise RuntimeError("statistics artifact storage is unavailable")
-    reference = await file_service.upload_bytes_immutable(encoded, f"verification-activity/{digest}.json.gz")
+    reference = await publish_content_addressed(
+        file_service, encoded, statistics_artifact_path(workflow_id, digest), holds_content(digest, encoding),
+    )
     return GenerateStatisticsActivityResult(reference=GenerateStatisticsArtifactReference(
         artifact_reference=reference, content_sha256=digest, encoding=encoding, uncompressed_bytes=size,
     ))

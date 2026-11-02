@@ -4,7 +4,8 @@ import uuid
 from temporalio import workflow
 
 from biosim_server.common.storage.gcs_aio import create_token, close_token, download_gcs_file, upload_file_to_gcs, \
-    upload_bytes_to_gcs, get_gcs_modified_date, get_listing_of_gcs_path, get_gcs_file_contents
+    upload_bytes_to_gcs, get_gcs_modified_date, get_listing_of_gcs_path, get_gcs_file_contents, \
+    put_gcs_object_if_absent, gcs_object_exists, delete_gcs_object
 from biosim_server.config import get_local_cache_dir
 
 with workflow.unsafe.imports_passed_through():
@@ -44,6 +45,18 @@ class FileServiceGCS(FileService):
     async def upload_bytes(self, file_contents: bytes, gcs_path: str) -> str:
         logger.info(f"Uploading {len(file_contents)} bytes to {gcs_path}")
         return await upload_bytes_to_gcs(file_contents=file_contents, gcs_path=gcs_path, token=self.token)
+
+    @override
+    async def put_if_absent(self, file_contents: bytes, gcs_path: str) -> bool:
+        return await put_gcs_object_if_absent(file_contents=file_contents, gcs_path=gcs_path, token=self.token)
+
+    @override
+    async def exists(self, gcs_path: str) -> bool:
+        return await gcs_object_exists(gcs_path=gcs_path, token=self.token)
+
+    @override
+    async def delete_file(self, gcs_path: str) -> None:
+        await delete_gcs_object(gcs_path=gcs_path, token=self.token)
 
     @override
     async def get_modified_date(self, gcs_path: str) -> datetime:

@@ -12,7 +12,9 @@ from typing import Any
 from bson import BSON
 from pymongo.errors import DuplicateKeyError
 
+from biosim_server.biosim_verify.object_names import holds_content, report_artifact_path
 from biosim_server.biosim_verify.report_codec import decode_report, encode_report
+from biosim_server.common.storage.content_addressed import publish_content_addressed
 from biosim_server.biosim_verify.report_storage import VerificationReportStore, ReportIntegrityConflict
 from biosim_server.biosim_verify.models import VerificationReportEnvelope, VerifyWorkflowOutput
 from biosim_server.biosim_verify.database import VerificationDatabaseServiceMongo
@@ -102,8 +104,11 @@ async def restore_bundle(directory: Path, store: VerificationReportStore,
             if ref:
                 if store._file_service is None:
                     raise RuntimeError('Destination object store unavailable')
-                doc['artifact_reference'] = await store._file_service.upload_bytes_immutable(
-                    data[manifest['objects'][ref]], f"verification-restored/{doc['content_sha256']}")
+                # The name the report would have had, so repeated restores reuse one object.
+                doc['artifact_reference'] = await publish_content_addressed(
+                    store._file_service, data[manifest['objects'][ref]],
+                    report_artifact_path(doc['report_id'], doc['content_sha256']),
+                    holds_content(doc['content_sha256'], doc['encoding']))
             try:
                 await store._collection.insert_one(doc)
             except DuplicateKeyError:

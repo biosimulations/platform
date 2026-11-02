@@ -71,6 +71,18 @@ class _MemoryFiles(FileService):
         self.objects[gcs_path] = file_contents
         return gcs_path
 
+    async def put_if_absent(self, file_contents: bytes, gcs_path: str) -> bool:
+        if gcs_path in self.objects:
+            return False
+        self.objects[gcs_path] = file_contents
+        return True
+
+    async def exists(self, gcs_path: str) -> bool:
+        return gcs_path in self.objects
+
+    async def delete_file(self, gcs_path: str) -> None:
+        self.objects.pop(gcs_path, None)
+
     async def get_modified_date(self, gcs_path: str) -> datetime:
         if gcs_path not in self.objects:
             raise FileNotFoundError(gcs_path)

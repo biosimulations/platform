@@ -12,9 +12,11 @@ from biosim_server.biosim_verify.models import (
     VerificationReportEnvelope,
     VerifyWorkflowOutput,
 )
+from biosim_server.biosim_verify.object_names import holds_content, report_artifact_path
 from biosim_server.biosim_verify.report_codec import decode_report, encode_report
 from biosim_server.config import get_settings
 from biosim_server.common.storage import FileService
+from biosim_server.common.storage.content_addressed import publish_content_addressed
 
 
 class ReportIntegrityConflict(RuntimeError):
@@ -89,8 +91,11 @@ class VerificationReportStore:
         if len(compressed) <= self._settings.verification_report_inline_max_bytes:
             envelope.inline_payload = compressed
         elif self._file_service is not None:
-            reference = f"verification-reports/{report_id}/{digest}.json.gz"
-            envelope.artifact_reference = await self._file_service.upload_bytes_immutable(compressed, reference)
+            # Retries and racing writers publish the same name; none adds an object.
+            envelope.artifact_reference = await publish_content_addressed(
+                self._file_service, compressed, report_artifact_path(report_id, digest),
+                holds_content(digest, encoding),
+            )
         else:
             raise ValueError("verification report exceeds inline storage limit")
         try:

@@ -62,7 +62,7 @@ async def compare_retained_snapshots(payload: CompareRetainedSnapshotsInput, wor
         raise ApplicationError("Numerical input checksum mismatch", non_retryable=True) from exc
     output = compare_loaded_runs(payload.sim_run_info, datasets, payload.compare_settings)
     await publish_snapshot_manifest(workflow_id, payload.ordered_run_ids, payload.snapshots)
-    return await externalize_statistics(output)
+    return await externalize_statistics(output, workflow_id)
 
 
 @activity.defn

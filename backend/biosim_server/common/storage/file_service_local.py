@@ -1,4 +1,5 @@
 import logging
+import os
 import shutil
 import uuid
 from temporalio import workflow
@@ -90,6 +91,32 @@ class FileServiceLocal(FileService):
             await f.write(file_contents)
         self.files_written.append(dest)
         return str(gcs_path)
+
+    @override
+    async def put_if_absent(self, file_contents: bytes, gcs_path: str) -> bool:
+        dest = self.base_dir / gcs_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Write elsewhere first, then link: os.link creates the name atomically and
+        # fails if it exists, so a reader never sees a partial object.
+        temporary = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.tmp")
+        async with aiofiles.open(temporary, mode='wb') as f:
+            await f.write(file_contents)
+        try:
+            os.link(temporary, dest)
+        except FileExistsError:
+            return False
+        finally:
+            temporary.unlink(missing_ok=True)
+        self.files_written.append(dest)
+        return True
+
+    @override
+    async def exists(self, gcs_path: str) -> bool:
+        return (self.base_dir / gcs_path).is_file()
+
+    @override
+    async def delete_file(self, gcs_path: str) -> None:
+        (self.base_dir / gcs_path).unlink(missing_ok=True)
 
     @override
     async def get_modified_date(self, gcs_path: str) -> datetime:

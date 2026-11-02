@@ -39,11 +39,11 @@ async def run(args: argparse.Namespace) -> None:
             await asyncio.Event().wait()
 
     class Objects(FileServiceLocal):
-        async def upload_bytes_immutable(self, contents: bytes, key: str) -> str:
+        async def put_if_absent(self, contents: bytes, key: str) -> bool:
             await stop_at('before_upload')
-            reference = await super().upload_bytes_immutable(contents, key)
+            created = await super().put_if_absent(contents, key)
             await stop_at('after_upload')
-            return reference
+            return created
 
     class Ledger(VerificationDatabaseServiceMongo):
         async def record_report_persisted(self, workflow_id: str, report_id: str, status: Any) -> None:
