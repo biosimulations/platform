@@ -1259,7 +1259,11 @@ paths:
         '404':
           description: Verification not found, or not a verification workflow ID.
         '503':
-          description: Temporal is unreachable or the client is not initialized.
+          description: Temporal is unreachable or the client is not initialized; or
+            the verification ledger is unreachable and the answer needs it (a stored
+            report, a failed execution, or an unknown ID). A ledger outage sends Retry-After.
+            Running progress, and a completed result that was never stored, are still
+            served from Temporal during a ledger outage.
         '422':
           description: Validation Error
           content:

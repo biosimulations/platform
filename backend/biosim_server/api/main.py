@@ -841,6 +841,33 @@ async def _publish_recovered_output(
         return output.model_copy(update={"persistence_state": ReportPersistenceState.PENDING, "report_available": False})
 
 
+def _ledger_outage() -> HTTPException:
+    """A 503 to retry: during a ledger outage GET never answers 404, nor from a guess."""
+    return HTTPException(status_code=503, detail="Verification ledger unavailable",
+                         headers={"Retry-After": "5", "Cache-Control": "private, no-store"})
+
+
+def _outage_view(
+    output: VerifyWorkflowOutput, status: WorkflowExecutionStatus | None, response: Response,
+) -> VerifyWorkflowOutput:
+    """What GET can answer from Temporal alone while the ledger is unreachable (D6).
+
+    Running progress, and a completed result that was never stored, need no
+    ledger.  They are returned privately, and nothing is written.  A stored
+    report can only be read from the report store, and a failed execution's
+    report needs the ledger to be published, so both are a 503 to retry.
+    """
+    if output.persistence_state == ReportPersistenceState.STORED or status not in {
+        WorkflowExecutionStatus.RUNNING, WorkflowExecutionStatus.COMPLETED,
+    }:
+        raise _ledger_outage()
+    response.headers["Cache-Control"] = "private, no-store"
+    if status == WorkflowExecutionStatus.RUNNING:
+        return output
+    # Computed but not durable (blocked or still pending): say so, and keep the client polling.
+    return output.model_copy(update={"persistence_state": ReportPersistenceState.PENDING, "report_available": False})
+
+
 async def _annotated(
     output: VerifyWorkflowOutput, row: VerificationRecord | None, user: AuthenticatedUser | None,
 ) -> VerifyWorkflowOutput:
@@ -880,11 +907,17 @@ async def _annotated(
         401: {"description": "Invalid bearer token, or no token for a verification started with one."},
         403: {"description": "Caller is not the workflow owner or an admin."},
         404: {"description": "Verification not found, or not a verification workflow ID."},
-        503: {"description": "Temporal is unreachable or the client is not initialized."},
+        503: {"description": (
+            "Temporal is unreachable or the client is not initialized; or the verification ledger is "
+            "unreachable and the answer needs it (a stored report, a failed execution, or an unknown ID). "
+            "A ledger outage sends Retry-After. Running progress, and a completed result that was never "
+            "stored, are still served from Temporal during a ledger outage."
+        )},
     },
 )
 async def get_verify_output(
         workflow_id: str,
+        response: Response,
         user: AuthenticatedUser | None = Depends(get_optional_user),
 ) -> VerifyWorkflowOutput:
     logger.info("in get /verify/%s", workflow_id)
@@ -892,6 +925,9 @@ async def get_verify_output(
     ledger = get_verification_database_service()
     report_store = get_verification_report_store()
     row: VerificationRecord | None = None
+    # Set when the ledger or report store cannot be reached.  Progress polling then
+    # continues from Temporal alone, and nothing is written (S-8, D6).
+    ledger_down = False
     # Keep the legacy/test-only path usable when report persistence has not been
     # initialized at all.  A partially initialized persistence layer is an
     # outage, not permission to silently fall back to Temporal.
@@ -913,8 +949,9 @@ async def get_verify_output(
             logger.error("Stored verification report is unavailable for %s: %s", workflow_id, exc)
             raise HTTPException(status_code=503, detail="Stored verification report is unavailable") from exc
         except Exception as exc:
+            # A dependency outage, not a bad report: answer what Temporal alone can.
             logger.error("Saved verification report lookup failed for %s: %s", workflow_id, exc, exc_info=exc)
-            raise HTTPException(status_code=503, detail="Verification report service unavailable") from exc
+            ledger_down = True
     # D2 fix: check for None *before* entering the try so AssertionError → 503, not 404.
     temporal_client = get_temporal_client()
     if temporal_client is None:
@@ -930,6 +967,8 @@ async def get_verify_output(
         desc = await handle.describe(rpc_timeout=timedelta(seconds=60))
     except RPCError as rpc_err:
         if rpc_err.status == RPCStatusCode.NOT_FOUND:
+            if ledger_down:
+                raise _ledger_outage()
             await _ledger_fallback_404(workflow_id, user)
         logger.error("Temporal describe failed for %s: %s", workflow_id, rpc_err, exc_info=rpc_err)
         raise HTTPException(status_code=503, detail="Temporal service unavailable")
@@ -944,6 +983,8 @@ async def get_verify_output(
     # partial state.  Its report comes from history alone: the computed output
     # when the workflow scheduled persistence, otherwise the one deterministic
     # terminal failure that every writer builds identically.
+    if ledger_down and desc.status not in {WorkflowExecutionStatus.RUNNING, WorkflowExecutionStatus.COMPLETED}:
+        raise _ledger_outage()
     recovered = await _recover_verification_from_history(temporal_client, desc, user)
     if recovered is not None:
         output = await _publish_recovered_output(
@@ -970,6 +1011,8 @@ async def get_verify_output(
     except RPCError as rpc_err:
         if rpc_err.status == RPCStatusCode.NOT_FOUND:
             # History purged between describe and query: same answer as a describe miss.
+            if ledger_down:
+                raise _ledger_outage()
             await _ledger_fallback_404(workflow_id, user)
         logger.error("Temporal query failed for %s: %s", workflow_id, rpc_err, exc_info=rpc_err)
         raise HTTPException(status_code=503, detail="Temporal service unavailable")
@@ -993,6 +1036,8 @@ async def get_verify_output(
 
     # Step 3: ownership check -- ownerless is public; owned is owner-or-admin.
     _authorize_verification_read(user, workflow_output.owner_sub)
+    if ledger_down:
+        return _outage_view(workflow_output, desc.status, response)
 
     # A persisted result is authoritative only in the report store: the workflow
     # result carries no statistics. A stored result without a stored report is
@@ -1065,7 +1110,7 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None)
                 workflow_id,
                 ledger_err,
             )
-            raise HTTPException(status_code=503, detail="Verification ledger unavailable") from ledger_err
+            raise _ledger_outage() from ledger_err
     raise HTTPException(status_code=404, detail=f"Verification not found: {workflow_id}")
 
 

@@ -148,10 +148,11 @@ async def test_retention_restart_replay_and_restore(
                 namespace='default', workflow_execution=WorkflowExecution(workflow_id=wid)))
         address = f'localhost:{server.get_exposed_port(7233)}'
         server.get_wrapped_container().stop()
+        from fastapi import Response
         from biosim_server.api.main import get_verify_output
         monkeypatch.setattr('biosim_server.api.main.get_temporal_client', lambda: None)
         for wid in saved_ids:
-            assert (await get_verify_output(wid, user=None)).persistence_state == 'stored'
+            assert (await get_verify_output(wid, Response(), user=None)).persistence_state == 'stored'
         # Start the connection manager while the service is down, then recover in-place.
         # The already-created Docker container retains its host port across start/stop.
         from biosim_server.config import get_settings
