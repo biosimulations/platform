@@ -214,7 +214,10 @@ class VerifyWorkflowOutput(BaseModel):
     # "new_calculation" for reconstruction. Byte-identical restoration is not claimed.
     calculation: Optional[str] = None
     derived_verifications: list[DerivedVerificationLink] = Field(default_factory=list)
-    recovery: Optional[VerificationRecovery] = None
+    recovery: Optional[VerificationRecovery] = Field(
+        default=None,
+        description="Not set on a report response. GET /verify/{workflow_id}/recovery returns the offers on demand.",
+    )
 
 
 class VerificationProvenance(BaseModel):

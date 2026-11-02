@@ -774,6 +774,7 @@ async def test_reconstruction_runs_on_a_real_worker_without_upstream(
             new_id = created.json()["workflow_id"]
             result = await temporal_client.get_workflow_handle(new_id, result_type=VerifyWorkflowOutput).result()
             derived = await client.get(f"/verify/{new_id}")
+            offers = await client.get(f"/verify/{new_id}/recovery")
             source = await client.get("/verify/source-live")
     download.assert_not_called()
     assert result.workflow_status == VerifyWorkflowStatus.COMPLETED
@@ -790,7 +791,8 @@ async def test_reconstruction_runs_on_a_real_worker_without_upstream(
     provenance = await recovery_world.store.get_provenance(new_id)
     assert provenance is not None
     assert [item.content_sha256 for item in provenance.input_snapshots] == archived["snapshot_sha256"]
-    assert body["recovery"]["reconstruct"]["eligible"] is True
+    assert body["recovery"] is None  # offers are served on demand, never on a report response
+    assert offers.status_code == 200 and offers.json()["reconstruct"]["eligible"] is True
     # The source report is unchanged and its permalink links to the new calculation.
     report_after = await recovery_world.store._collection.find_one({"workflow_id": "source-live"}, {"_id": 0})
     assert report_before["content_sha256"] == report_after["content_sha256"]

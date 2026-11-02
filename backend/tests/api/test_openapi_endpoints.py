@@ -65,6 +65,7 @@ _CORE_PATHS = frozenset({
     "/version",
     "/verify/omex",
     "/verify/{workflow_id}",
+    "/verify/{workflow_id}/recovery",
     "/verify/runs",
     "/verification_ids",
 })
@@ -76,6 +77,7 @@ _OPTIONAL_AUTH_OPERATION_IDS = frozenset({
     "verify-runs",
     "reconstruct-verification",
     "reverify-verification",
+    "get-verification-recovery",
 })
 _REQUIRED_AUTH_OPERATION_IDS = frozenset({
     "delete-simulation-run",
@@ -174,6 +176,7 @@ AUTH_MODE: dict[str, AuthMode] = {
     "verify-runs": AuthMode.OPTIONAL,
     "reconstruct-verification": AuthMode.OPTIONAL,
     "reverify-verification": AuthMode.OPTIONAL,
+    "get-verification-recovery": AuthMode.OPTIONAL,
     "list-verification-ids": AuthMode.OPTIONAL,
     # Advisory auth: a valid token only raises the rate-limit ceiling, and one
     # that does not validate is treated as absent. NONE rather than OPTIONAL
@@ -214,6 +217,7 @@ VALIDATION_SKIP: dict[str, str] = {
     "verify-runs": "all query params optional",
     "reconstruct-verification": "covered by test_linked_recovery; this probe only checks a missing header",
     "reverify-verification": "covered by test_linked_recovery; this probe only checks a missing header",
+    "get-verification-recovery": "path-only",
     "list-verification-ids": "no parameters",
     "validate-model": "raw multipart relay; no Pydantic body model to reject",
     "validate-sedml": "raw multipart relay; no Pydantic body model to reject",
@@ -322,6 +326,11 @@ def _probe_reconstruct(client: TestClient) -> None:
 
 def _probe_reverify(client: TestClient) -> None:
     _assert_status(client.post("/verify/probe-id/reverify", json={}), 422)
+
+
+def _probe_verification_recovery(client: TestClient) -> None:
+    with patch("biosim_server.api.main.get_verification_database_service", return_value=None):
+        _assert_status(client.get("/verify/probe-id/recovery"), 503)
 
 
 def _probe_reindex_projects(client: TestClient) -> None:
@@ -454,6 +463,7 @@ UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "get-verify-output": _probe_get_verify_output,
     "reconstruct-verification": _probe_reconstruct,
     "reverify-verification": _probe_reverify,
+    "get-verification-recovery": _probe_verification_recovery,
     "reindex-projects": _probe_reindex_projects,
     "list-project-stats": _probe_list_project_stats,
     "get-project-summary": _probe_get_project_summary,

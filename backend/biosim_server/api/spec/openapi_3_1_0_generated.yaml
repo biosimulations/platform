@@ -1266,6 +1266,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /verify/{workflow_id}/recovery:
+    get:
+      tags:
+      - Verification
+      summary: 'Recovery offers for a verification: reconstruction and archive re-verification'
+      description: 'Compute the offers when a caller asks for them, never on a progress
+        poll.
+
+
+        Visibility is the same as ``GET /verify/{workflow_id}``: a hidden
+
+        verification is a plain 404.'
+      operationId: get-verification-recovery
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: workflow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Workflow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationRecovery'
+        '401':
+          description: Invalid bearer token.
+        '404':
+          description: Verification not found for this caller.
+        '503':
+          description: Ledger, report store, or archive storage is unavailable.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /verify/{workflow_id}/reconstruct:
     post:
       tags:
@@ -4045,6 +4086,8 @@ components:
           anyOf:
           - $ref: '#/components/schemas/VerificationRecovery'
           - type: 'null'
+          description: Not set on a report response. GET /verify/{workflow_id}/recovery
+            returns the offers on demand.
       type: object
       required:
       - workflow_id

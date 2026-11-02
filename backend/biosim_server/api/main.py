@@ -54,6 +54,7 @@ from biosim_server.biosim_verify.linked_recovery import (
     accept_reverification,
     annotate_output,
     build_recovery,
+    read_provenance,
     derived_links,
 )
 from biosim_server.biosim_verify.models import (
@@ -837,28 +838,27 @@ async def _publish_recovered_output(
         return output.model_copy(update={"persistence_state": ReportPersistenceState.PENDING, "report_available": False})
 
 
-async def _with_recovery_view(output: VerifyWorkflowOutput, workflow_id: str) -> VerifyWorkflowOutput:
-    """Add recovery metadata to a response. A failure here still returns the report."""
-    ledger = get_verification_database_service()
-    if ledger is None:
-        return output
-    try:
-        row = await ledger.get_verification(workflow_id)
-    except Exception:
-        logger.error("verification recovery annotation failed for %s", workflow_id)
-        return output
-    if not isinstance(row, VerificationRecord):
+async def _annotated(output: VerifyWorkflowOutput, row: VerificationRecord | None) -> VerifyWorkflowOutput:
+    """Add derivation metadata and derived links to a finished report.
+
+    A verification that is still running gets progress only: no provenance,
+    archive, ledger or storage read happens on a poll.  *row* is the ledger row
+    the request already read; it is never read again here.  Recovery offers are
+    not added: ``GET /verify/{id}/recovery`` serves them on demand.  A failure
+    here still returns the report.
+    """
+    if not output.workflow_status.is_done or not isinstance(row, VerificationRecord):
         return output
     try:
         provenance: VerificationProvenance | None = None
         store = get_verification_report_store()
         if store is not None:
-            loaded = await store.get_provenance(workflow_id)
+            loaded = await store.get_provenance(output.workflow_id)
             if isinstance(loaded, VerificationProvenance):
                 provenance = loaded
-        return annotate_output(output, row, provenance, await derived_links(workflow_id), await build_recovery(row))
+        return annotate_output(output, row, provenance, await derived_links(output.workflow_id))
     except Exception:
-        logger.error("verification recovery annotation failed for %s", workflow_id)
+        logger.error("verification annotation failed for %s", output.workflow_id)
         return output
 
 
@@ -885,6 +885,7 @@ async def get_verify_output(
 
     ledger = get_verification_database_service()
     report_store = get_verification_report_store()
+    row: VerificationRecord | None = None
     # Keep the legacy/test-only path usable when report persistence has not been
     # initialized at all.  A partially initialized persistence layer is an
     # outage, not permission to silently fall back to Temporal.
@@ -899,7 +900,7 @@ async def get_verify_output(
                 saved = await report_store.get(workflow_id)
                 if saved is not None:
                     _authorize_verification_read(user, saved.owner_sub)
-                    return await _with_recovery_view(saved, workflow_id)
+                    return await _annotated(saved, row)
         except HTTPException:
             raise
         except (ReportCorrupt, ReportUnavailable) as exc:
@@ -943,7 +944,7 @@ async def get_verify_output(
             recovered.output, origin=recovered.origin, provenance=recovered.provenance,
         )
         await _record_terminal_status(output)
-        return await _with_recovery_view(output, workflow_id)
+        return await _annotated(output, row)
 
     # Pin both result retrieval and progress queries to the described execution.
     handle = temporal_client.get_workflow_handle(
@@ -1004,7 +1005,7 @@ async def get_verify_output(
             )
             raise HTTPException(status_code=503, detail="Stored verification report is unavailable")
         _authorize_verification_read(user, saved.owner_sub)
-        return await _with_recovery_view(saved, workflow_id)
+        return await _annotated(saved, row)
 
     # Step 4: D1 fix — reconcile a stuck IN_PROGRESS against Temporal's execution status.
     workflow_output = _reconcile_terminal_status(workflow_output, desc.status)
@@ -1015,7 +1016,7 @@ async def get_verify_output(
     # Step 5: remember the terminal status for the listing (after authorization).
     await _record_terminal_status(workflow_output)
 
-    return await _with_recovery_view(workflow_output, workflow_id)
+    return await _annotated(workflow_output, row)
 
 
 async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None) -> NoReturn:
@@ -1035,9 +1036,12 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None)
                     and (ADMIN_ROLE in user.roles or row.owner_sub == user.sub)
                 )
                 if caller_may_know:
+                    # The unavailable original is where recovery is offered unprompted.
                     recovery: VerificationRecovery | None = None
                     try:
-                        recovery = await build_recovery(row)
+                        store = get_verification_report_store()
+                        provenance = None if store is None else await store.get_provenance(workflow_id)
+                        recovery = await build_recovery(row, provenance)
                     except Exception:
                         logger.error("verification recovery annotation failed for %s", workflow_id)
                     # The permalink keeps showing the original's unavailability; it
@@ -1091,6 +1095,34 @@ async def _resolve_reverify_simulators(names: list[str]) -> list[BiosimulatorVer
         logger.error("simulator catalog lookup failed during re-verification")
         raise HTTPException(status_code=503, detail="Biosim service not available") from exc
     return _resolve_requested_simulators(names, versions)
+
+
+@app.get(
+    "/verify/{workflow_id}/recovery",
+    response_model=VerificationRecovery,
+    operation_id="get-verification-recovery",
+    tags=["Verification"],
+    summary="Recovery offers for a verification: reconstruction and archive re-verification",
+    responses={
+        401: {"description": "Invalid bearer token."},
+        404: {"description": "Verification not found for this caller."},
+        503: {"description": "Ledger, report store, or archive storage is unavailable."},
+    },
+)
+async def get_verification_recovery(
+    workflow_id: str,
+    response: Response,
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> VerificationRecovery:
+    """Compute the offers when a caller asks for them, never on a progress poll.
+
+    Visibility is the same as ``GET /verify/{workflow_id}``: a hidden
+    verification is a plain 404.
+    """
+    source = await _visible_source(workflow_id, user)
+    recovery = await build_recovery(source, await read_provenance(workflow_id))
+    response.headers["Cache-Control"] = "private, no-store"
+    return recovery
 
 
 @app.post(

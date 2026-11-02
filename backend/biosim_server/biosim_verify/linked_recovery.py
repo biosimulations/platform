@@ -247,7 +247,7 @@ def apply_reverify_request(body: ReverifyRequest) -> tuple[CompareSettings, list
     return settings, simulators, applied, cache_buster
 
 
-async def _provenance(workflow_id: str) -> VerificationProvenance | None:
+async def read_provenance(workflow_id: str) -> VerificationProvenance | None:
     store = get_verification_report_store()
     if store is None:
         raise HTTPException(status_code=503, detail="Verification report service unavailable")
@@ -287,15 +287,8 @@ async def _archive(record: VerificationRecord) -> tuple[str, OmexFile | None]:
     return "readable", omex
 
 
-async def build_recovery(record: VerificationRecord) -> VerificationRecovery:
-    provenance: VerificationProvenance | None = None
-    store = get_verification_report_store()
-    if store is not None:
-        try:
-            provenance = await store.get_provenance(record.workflow_id)
-        except Exception:
-            logger.error("verification provenance lookup failed for %s", record.workflow_id)
-            provenance = None
+async def build_recovery(record: VerificationRecord, provenance: VerificationProvenance | None) -> VerificationRecovery:
+    """The recovery offers for *record*, from the provenance the caller already read."""
     archive, _omex = await _archive(record)
     return VerificationRecovery(
         reconstruct=reconstruction_offer(provenance),
@@ -308,12 +301,13 @@ def annotate_output(
     record: VerificationRecord | None,
     provenance: VerificationProvenance | None,
     links: list[DerivedVerificationLink],
-    recovery: VerificationRecovery | None,
 ) -> VerifyWorkflowOutput:
-    """Overlay recovery metadata onto a response without writing the stored report."""
+    """Overlay derivation metadata and derived links onto a response without writing the stored report.
+
+    Recovery offers are not part of a report response; ``GET /verify/{id}/recovery``
+    computes them when a caller asks.
+    """
     update: dict[str, object] = {"derived_verifications": links}
-    if recovery is not None:
-        update["recovery"] = recovery
     if record is not None and record.source_verification_id:
         update["source_verification_id"] = record.source_verification_id
     if record is not None and record.derivation_kind:
@@ -643,7 +637,7 @@ async def accept_reconstruction(
                 run_id=run_id, settings=body.compare_settings, may_start_simulations=False, defaults_applied=[],
                 simulators=[], message=RECONSTRUCT_MESSAGE,
             )
-    provenance = await _provenance(source.workflow_id)
+    provenance = await read_provenance(source.workflow_id)
     if provenance is None:
         raise RecoveryRejected(
             409,
