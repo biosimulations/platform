@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Final, Optional
@@ -237,7 +238,7 @@ class VerifyWorkflowOutput(BaseModel):
     # Present on a derived verification. The original report's stored answer does not
     # change when these are overlaid on a read.
     source_verification_id: Optional[str] = None
-    derivation_kind: Optional[str] = None
+    derivation_kind: Optional[DerivationKind] = None
     computed_at: Optional[datetime] = None
     comparator_version: Optional[str] = None
     # "new_calculation" for reconstruction. Byte-identical restoration is not claimed.
@@ -276,15 +277,15 @@ class VerificationProvenance(BaseModel):
     # Why no snapshots were captured, when it was deliberate ("work_limit").
     input_snapshots_skipped: str | None = None
     source_verification_id: str | None = None
-    derivation_kind: str | None = None
+    derivation_kind: DerivationKind | None = None
 
 
 def sanitize_workflow_error(error: object) -> str:
     """Keep terminal errors useful without persisting payloads, paths, or URLs."""
     text = (str(error).splitlines() or ["verification failed"])[0]
     text = text.replace("\\", "/")
-    text = __import__("re").sub(r"https?://\S+", "[redacted-url]", text)
-    text = __import__("re").sub(r"(?<!\w)/(?:Users|home|tmp|var)/\S+", "[redacted-path]", text)
+    text = re.sub(r"https?://\S+", "[redacted-url]", text)
+    text = re.sub(r"(?<!\w)/(?:Users|home|tmp|var)/\S+", "[redacted-path]", text)
     return str(text[:1000])
 
 
@@ -369,8 +370,9 @@ class VerificationRecord(BaseModel):
     workflow_run_id: str | None = None
     persistence_error: str | None = None
     # Set only on a recovery row. The source row is never rewritten with these.
+    # Mongo stores the enum's value, so rows written as plain strings still validate.
     source_verification_id: str | None = None
-    derivation_kind: str | None = None
+    derivation_kind: DerivationKind | None = None
     # Caller who requested recovery. Quota and audit use this; owner_sub stays the source owner.
     initiator_sub: str | None = None
     initiator_relation: InitiatorRelation | None = None

@@ -21,6 +21,7 @@ from biosim_server.biosim_verify.activities import (
 from biosim_server.biosim_verify.comparison import compare_loaded_runs
 from biosim_server.biosim_verify.models import (
     CompareSettings,
+    DerivationKind,
     GenerateStatisticsActivityResult,
     NumericalInputSnapshot,
     ReportPersistenceState,
@@ -99,7 +100,7 @@ class ReconstructComparisonWorkflow:
             timestamp=str(workflow.now()),
             owner_sub=verify_input.owner_sub,
             source_verification_id=verify_input.source_verification_id,
-            derivation_kind="reconstruction",
+            derivation_kind=DerivationKind.RECONSTRUCTION,
             calculation="new_calculation",
         )
 
@@ -151,7 +152,7 @@ class ReconstructComparisonWorkflow:
             computed_at=workflow.now(), requested_settings=verify_input.compare_settings.model_dump(),
             workflow_input=verify_input.model_dump(mode="json"),
             origin="workflow", source_verification_id=verify_input.source_verification_id,
-            derivation_kind="reconstruction", ordered_run_ids=verify_input.ordered_run_ids,
+            derivation_kind=DerivationKind.RECONSTRUCTION, ordered_run_ids=verify_input.ordered_run_ids,
             input_snapshots=verify_input.snapshots, actual_runs=verify_input.sim_run_info,
         ))
         self.verify_output = final

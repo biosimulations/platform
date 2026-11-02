@@ -9,7 +9,7 @@ from biosim_server.biosim_verify import CompareSettings
 from biosim_server.biosim_verify.comparison import compare_loaded_runs
 from biosim_server.biosim_verify.models import (
     GenerateStatisticsActivityOutput, GenerateStatisticsActivityResult,
-    GenerateStatisticsArtifactReference, RunData, SimulationRunInfo, VerificationRecord,
+    DerivationKind, GenerateStatisticsArtifactReference, RunData, SimulationRunInfo, VerificationRecord,
     VerifyWorkflowOutput, VerificationProvenance, ReportPersistenceState,
 )
 from biosim_server.biosim_verify.object_names import (
@@ -156,7 +156,7 @@ def link_derived(
         if linked:
             provenance = provenance.model_copy(update=linked)
             output = output.model_copy(update=linked)
-            if row.derivation_kind == "reconstruction":
+            if row.derivation_kind == DerivationKind.RECONSTRUCTION:
                 output = output.model_copy(update={"calculation": "new_calculation"})
     return output, provenance
 

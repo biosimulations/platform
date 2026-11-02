@@ -10,6 +10,7 @@ from biosim_server.biosim_verify import linked_recovery
 from biosim_server.biosim_verify.models import (
     MAX_DERIVED_PER_SOURCE_PER_DAY_ANONYMOUS,
     MAX_DERIVED_PER_SOURCE_PER_DAY_AUTHENTICATED,
+    DerivationKind,
     InitiatorRelation,
     VerificationRecord,
     VerificationType,
@@ -41,7 +42,7 @@ async def _derived(world: Any, source: str, index: int, relation: InitiatorRelat
     await world.ledger.insert_verification(VerificationRecord(
         workflow_id=workflow_id, verify_type=VerificationType.RUNS, owner_sub=owner,
         created=_BASE + timedelta(minutes=minutes), source_verification_id=source,
-        derivation_kind="reconstruction", initiator_sub=initiator, initiator_relation=relation,
+        derivation_kind=DerivationKind.RECONSTRUCTION, initiator_sub=initiator, initiator_relation=relation,
     ))
     return workflow_id
 
@@ -257,7 +258,7 @@ def test_the_derived_report_header_carries_custom_settings() -> None:
     from biosim_server.biosim_verify.linked_recovery import annotate_output
     from tests.biosim_verify.test_linked_recovery import _output
     row = VerificationRecord(workflow_id="reverification-x", verify_type=VerificationType.OMEX, created=_BASE,
-                             source_verification_id="source", derivation_kind="reverification", custom_settings=True)
+                             source_verification_id="source", derivation_kind=DerivationKind.REVERIFICATION, custom_settings=True)
     annotated = annotate_output(_output("reverification-x"), row, None, [], 0)
     assert annotated.custom_settings is True and annotated.source_verification_id == "source"
     plain = annotate_output(_output("original"), None, None, [], 0)

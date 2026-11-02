@@ -28,7 +28,8 @@ from biosim_server.biosim_runs.models import (
 )
 from biosim_server.biosim_verify.activities import PersistVerificationReportActivityInput, persist_verification_report_activity
 from biosim_server.biosim_verify.models import (
-    MAX_VERIFY_RUN_IDS, MAX_VERIFY_SIMULATORS, CompareSettings, NumericalInputSnapshot, ReconstructRequest,
+    MAX_VERIFY_RUN_IDS, MAX_VERIFY_SIMULATORS, CompareSettings, DerivationKind, NumericalInputSnapshot,
+    ReconstructRequest,
     ReverifyRequest, RunData, SimulationRunInfo, VerificationProvenance, VerificationRecord, VerificationType,
     VerifyWorkflowOutput, VerifyWorkflowStatus,
 )
@@ -542,7 +543,7 @@ async def test_derived_report_shows_source_version_and_time(recovery_world: Any)
     output = VerifyWorkflowOutput(
         workflow_id=new_id, compare_settings=_SETTINGS, workflow_status=VerifyWorkflowStatus.COMPLETED,
         timestamp="2026-02-02T00:00:00+00:00", workflow_run_id="run-1",
-        source_verification_id="source-derived", derivation_kind="reconstruction", calculation="new_calculation",
+        source_verification_id="source-derived", derivation_kind=DerivationKind.RECONSTRUCTION, calculation="new_calculation",
         workflow_results_reference=result.reference,
     )
     await ActivityEnvironment().run(
@@ -550,7 +551,7 @@ async def test_derived_report_shows_source_version_and_time(recovery_world: Any)
         PersistVerificationReportActivityInput(output=output, provenance=VerificationProvenance(
             verification_id=new_id, workflow_run_id="run-1", computed_at=datetime(2026, 2, 2, tzinfo=UTC),
             requested_settings=_SETTINGS.model_dump(), source_verification_id="source-derived",
-            derivation_kind="reconstruction", ordered_run_ids=archived["run_ids"],
+            derivation_kind=DerivationKind.RECONSTRUCTION, ordered_run_ids=archived["run_ids"],
             input_snapshots=archived["snapshots"], actual_runs=archived["runs"],
         )),
     )

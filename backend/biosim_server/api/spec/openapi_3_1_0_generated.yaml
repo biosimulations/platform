@@ -4093,9 +4093,8 @@ components:
           title: Source Verification Id
         derivation_kind:
           anyOf:
-          - type: string
+          - $ref: '#/components/schemas/DerivationKind'
           - type: 'null'
-          title: Derivation Kind
         computed_at:
           anyOf:
           - type: string

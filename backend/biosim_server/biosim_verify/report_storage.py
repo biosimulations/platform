@@ -1,8 +1,9 @@
 """Immutable Mongo-backed verification report persistence."""
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
+from typing import Any
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import DuplicateKeyError
 
@@ -200,6 +201,67 @@ class VerificationReportStore:
             raise
         except Exception as exc:
             raise ReportCorrupt("statistics artifact is corrupt") from exc
+
+    # --- Backup and restore -------------------------------------------------------------
+
+    async def iter_envelopes(self) -> AsyncIterator[dict[str, Any]]:
+        """Every stored envelope, exactly as stored."""
+        async for doc in self._collection.find({}):
+            yield dict(doc)
+
+    async def read_artifact(self, reference: str) -> bytes | None:
+        """The bytes of an object a report references, or None when it does not exist."""
+        if self._file_service is None:
+            raise ReportUnavailable("report artifact storage is unavailable")
+        return await self._file_service.get_file_contents(reference)
+
+    def check_envelope(self, doc: Mapping[str, Any], payload: bytes) -> None:
+        """Raise ``ValueError`` unless *payload* is exactly the report *doc* describes."""
+        envelope = VerificationReportEnvelope.model_validate(doc)
+        decoded = decode_report(payload, encoding=envelope.encoding,
+                                max_decompressed_bytes=self._settings.verification_report_max_decompressed_bytes)
+        _, _, size, digest = encode_report(decoded)
+        output = VerifyWorkflowOutput.model_validate(decoded)
+        if size != envelope.uncompressed_bytes or digest != envelope.content_sha256 or (
+            output.workflow_id != envelope.workflow_id or output.owner_sub != envelope.owner_sub
+            or output.workflow_run_id != envelope.workflow_run_id
+        ):
+            raise ValueError("Backup report integrity mismatch")
+
+    async def restore_envelope(self, doc: dict[str, Any], artifact: bytes | None = None) -> bool:
+        """Insert a backed-up envelope; never replace a report.  True when it was inserted.
+
+        An identical report already present is left as it is (False).  A
+        different one raises :class:`ReportIntegrityConflict`.  An externalized
+        payload (*artifact*) is published under the name the report would have
+        had, so a repeated restore reuses one object.  The restored report is
+        read back before this returns.
+        """
+        def conflicts(existing: Mapping[str, Any]) -> bool:
+            return any(existing.get(key) != doc.get(key) for key in ("content_sha256", "owner_sub", "workflow_run_id"))
+
+        existing = await self._collection.find_one({"workflow_id": doc["workflow_id"]})
+        if existing:
+            if conflicts(existing):
+                raise ReportIntegrityConflict("Restore would change an existing report")
+            return False
+        doc = {key: value for key, value in doc.items() if key != "_id"}
+        if doc.get("artifact_reference"):
+            if self._file_service is None or artifact is None:
+                raise ReportUnavailable("Destination object store unavailable")
+            doc["artifact_reference"] = await publish_content_addressed(
+                self._file_service, artifact, report_artifact_path(doc["report_id"], doc["content_sha256"]),
+                holds_content(doc["content_sha256"], doc["encoding"]),
+            )
+        try:
+            await self._collection.insert_one(doc)
+        except DuplicateKeyError:
+            current = await self._collection.find_one({"workflow_id": doc["workflow_id"]})
+            if not current or conflicts(current):
+                raise ReportIntegrityConflict("Concurrent restore conflict")
+            return False
+        await self.get(doc["workflow_id"])
+        return True
 
     async def delete_all(self) -> None:
         await self._collection.delete_many({})

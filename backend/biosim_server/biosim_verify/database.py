@@ -12,7 +12,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, Final
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
@@ -288,6 +288,16 @@ class VerificationDatabaseService(ABC):
         The boolean is True when this call inserted the row. A stored row whose
         request hash differs raises ``IdempotencyConflict``.
         """
+        ...
+
+    @abstractmethod
+    def iter_rows(self) -> AsyncIterator[dict[str, Any]]:
+        """Every ledger row, exactly as stored.  For backup."""
+        ...
+
+    @abstractmethod
+    async def restore_row(self, doc: Mapping[str, Any]) -> None:
+        """Insert a backed-up row unless a row with its workflow_id exists; never change one."""
         ...
 
     @abstractmethod
@@ -588,6 +598,14 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
             if found.request_hash != reservation.request_hash:
                 raise IdempotencyConflict
             return found, False
+
+    async def iter_rows(self) -> AsyncIterator[dict[str, Any]]:
+        async for doc in self._collection.find({}):
+            yield dict(doc)
+
+    async def restore_row(self, doc: Mapping[str, Any]) -> None:
+        row = {key: value for key, value in doc.items() if key != "_id"}
+        await self._collection.update_one({"workflow_id": row["workflow_id"]}, {"$setOnInsert": row}, upsert=True)
 
     async def delete_verification(self, workflow_id: str) -> None:
         await self._collection.delete_one({"workflow_id": workflow_id})

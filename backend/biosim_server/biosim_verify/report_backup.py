@@ -2,6 +2,8 @@
 
 This covers application verification records, not Temporal or the complete Mongo database.
 A completed bundle is immutable operator evidence; partial bundles cannot be restored.
+It reads and writes only through the report store's and the ledger's public
+backup methods, never their collections or storage directly.
 """
 import hashlib
 import json
@@ -10,14 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from bson import BSON
-from pymongo.errors import DuplicateKeyError
 
-from biosim_server.biosim_verify.object_names import holds_content, report_artifact_path
-from biosim_server.biosim_verify.report_codec import decode_report, encode_report
-from biosim_server.common.storage.content_addressed import publish_content_addressed
-from biosim_server.biosim_verify.report_storage import VerificationReportStore, ReportIntegrityConflict
-from biosim_server.biosim_verify.models import VerificationReportEnvelope, VerifyWorkflowOutput
-from biosim_server.biosim_verify.database import VerificationDatabaseServiceMongo
+from biosim_server.biosim_verify.database import VerificationDatabaseService
+from biosim_server.biosim_verify.report_storage import ReportIntegrityConflict, VerificationReportStore
 
 
 def digest(data: bytes) -> str:
@@ -25,7 +22,7 @@ def digest(data: bytes) -> str:
 
 
 async def export_bundle(directory: Path, store: VerificationReportStore,
-                        ledger: VerificationDatabaseServiceMongo) -> dict[str, Any]:
+                        ledger: VerificationDatabaseService) -> dict[str, Any]:
     directory.mkdir(mode=0o700, parents=False, exist_ok=False)
     files: dict[str, str] = {}
     objects: dict[str, str] = {}
@@ -38,20 +35,18 @@ async def export_bundle(directory: Path, store: VerificationReportStore,
         return name
 
     manifests, records = [], []
-    async for doc in store._collection.find({}):
+    async for doc in store.iter_envelopes():
         # Verify the source before claiming a usable backup.
         if await store.get(doc['workflow_id']) is None:
             raise RuntimeError('Report disappeared during backup')
         manifests.append(write(BSON.encode(doc), '.report.bson'))
         ref = doc.get('artifact_reference')
         if ref:
-            if store._file_service is None:
-                raise RuntimeError('Artifact storage unavailable')
-            payload = await store._file_service.get_file_contents(ref)
+            payload = await store.read_artifact(ref)
             if payload is None:
                 raise RuntimeError('Missing report object')
             objects[ref] = write(payload, '.object')
-    async for doc in ledger._collection.find({}):
+    async for doc in ledger.iter_rows():
         records.append(write(BSON.encode(doc), '.ledger.bson'))
     manifest = {'version': 1, 'complete': True, 'created_at': datetime.now(UTC).isoformat(),
                 'reports': manifests, 'ledger': records, 'objects': objects, 'files': files}
@@ -61,7 +56,7 @@ async def export_bundle(directory: Path, store: VerificationReportStore,
 
 
 async def restore_bundle(directory: Path, store: VerificationReportStore,
-                         ledger: VerificationDatabaseServiceMongo, *, apply: bool = False) -> dict[str, int]:
+                         ledger: VerificationDatabaseService, *, apply: bool = False) -> dict[str, int]:
     manifest = json.loads((directory / 'manifest.json').read_text())
     if manifest.get('version') != 1 or manifest.get('complete') is not True:
         raise ValueError('Incomplete or unsupported backup')
@@ -75,51 +70,23 @@ async def restore_bundle(directory: Path, store: VerificationReportStore,
         data[name] = payload
     reports = [BSON(data[name]).decode() for name in manifest['reports']]
     records = [BSON(data[name]).decode() for name in manifest['ledger']]
+    artifacts = {name: data[manifest['objects'][doc['artifact_reference']]] if doc.get('artifact_reference') else None
+                 for name, doc in zip(manifest['reports'], reports)}
     # Validate all payloads before making any destination writes.
-    for doc in reports:
-        envelope = VerificationReportEnvelope.model_validate(doc)
-        blob = envelope.inline_payload
-        if blob is None:
-            blob = data[manifest['objects'][envelope.artifact_reference]]
-        decoded = decode_report(blob, encoding=envelope.encoding,
-                                max_decompressed_bytes=store._settings.verification_report_max_decompressed_bytes)
-        _, _, size, hash_value = encode_report(decoded)
-        output = VerifyWorkflowOutput.model_validate(decoded)
-        if size != envelope.uncompressed_bytes or hash_value != envelope.content_sha256 or (
-            output.workflow_id != envelope.workflow_id or output.owner_sub != envelope.owner_sub
-            or output.workflow_run_id != envelope.workflow_run_id
-        ):
-            raise ValueError('Backup report integrity mismatch')
+    for name, doc in zip(manifest['reports'], reports):
+        payload = doc.get('inline_payload')
+        store.check_envelope(doc, bytes(payload) if payload is not None else artifacts[name] or b'')
     if apply:
         await store.ensure_indexes()
         await ledger.ensure_indexes()
-        for doc in reports:
-            existing = await store._collection.find_one({'workflow_id': doc['workflow_id']})
-            if existing:
-                if any(existing.get(k) != doc.get(k) for k in ('content_sha256', 'owner_sub', 'workflow_run_id')):
-                    raise ReportIntegrityConflict('Restore would change an existing report')
-                continue
-            doc.pop('_id', None)
-            ref = doc.get('artifact_reference')
-            if ref:
-                if store._file_service is None:
-                    raise RuntimeError('Destination object store unavailable')
-                # The name the report would have had, so repeated restores reuse one object.
-                doc['artifact_reference'] = await publish_content_addressed(
-                    store._file_service, data[manifest['objects'][ref]],
-                    report_artifact_path(doc['report_id'], doc['content_sha256']),
-                    holds_content(doc['content_sha256'], doc['encoding']))
-            try:
-                await store._collection.insert_one(doc)
-            except DuplicateKeyError:
-                current = await store._collection.find_one({'workflow_id': doc['workflow_id']})
-                if not current or any(current.get(k) != doc.get(k) for k in ('content_sha256', 'owner_sub', 'workflow_run_id')):
-                    raise ReportIntegrityConflict('Concurrent restore conflict')
-            await store.get(doc['workflow_id'])
+        for name, doc in zip(manifest['reports'], reports):
+            await store.restore_envelope(doc, artifacts[name])
         for doc in records:
-            doc.pop('_id', None)
-            existing = await ledger._collection.find_one({'workflow_id': doc['workflow_id']})
-            if existing and any(existing.get(k) != doc.get(k) for k in ('owner_sub', 'verify_type', 'workflow_input')):
+            existing = await ledger.get_verification(doc['workflow_id'])
+            if existing is not None and (
+                existing.owner_sub != doc.get('owner_sub') or existing.verify_type != doc.get('verify_type')
+                or existing.workflow_input != doc.get('workflow_input')
+            ):
                 raise ReportIntegrityConflict('Restore would change existing request/ownership')
-            await ledger._collection.update_one({'workflow_id': doc['workflow_id']}, {'$setOnInsert': doc}, upsert=True)
+            await ledger.restore_row(doc)
     return {'reports': len(reports), 'ledger': len(records), 'objects': len(manifest['objects'])}

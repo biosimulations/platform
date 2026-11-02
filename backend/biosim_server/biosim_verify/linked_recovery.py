@@ -592,7 +592,7 @@ def _record(
         owner_sub=source.owner_sub, initiator_sub=None if user is None else user.sub,
         initiator_relation=initiator_relation(user, source), custom_settings=custom,
         created=datetime.now(UTC), omex_hash=omex_hash, source_verification_id=source.workflow_id,
-        derivation_kind=kind.value, workflow_input=dumped, request_hash=encode_report(dumped)[3],
+        derivation_kind=kind, workflow_input=dumped, request_hash=encode_report(dumped)[3],
     )
 
 

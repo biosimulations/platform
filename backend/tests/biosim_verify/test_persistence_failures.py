@@ -49,6 +49,7 @@ from biosim_server.biosim_verify.database import VerificationDatabaseServiceMong
 from biosim_server.biosim_verify.history import terminal_failure_output
 from biosim_server.biosim_verify.models import (
     CompareSettings,
+    DerivationKind,
     GenerateStatisticsArtifactReference,
     ReportPersistenceState,
     VerificationProvenance,
@@ -149,7 +150,7 @@ class World:
             workflow_id=workflow_id, verify_type=VerificationType.RUNS, created=datetime.now(UTC),
             workflow_input=verify_input.model_dump(mode="json"),
             source_verification_id="source-verification" if link else None,
-            derivation_kind="reverification" if link else None,
+            derivation_kind=DerivationKind.REVERIFICATION if link else None,
         ))
         return await self.client.start_workflow(RunsVerifyWorkflow.run, verify_input, id=workflow_id,
                                                 task_queue=queue or self.queue)
