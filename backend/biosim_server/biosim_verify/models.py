@@ -230,6 +230,11 @@ class VerificationProvenance(BaseModel):
     # Retained numerical inputs. A saved request without these is not reconstructable.
     ordered_run_ids: list[str] = Field(default_factory=list)
     input_snapshots: list[NumericalInputSnapshot] = Field(default_factory=list)
+    # The manifest the snapshots came from.  The workflow's pointer to it is removed
+    # after persistence, so this reference is what keeps the manifest reachable.
+    snapshot_manifest_reference: str | None = None
+    # Why no snapshots were captured, when it was deliberate ("work_limit").
+    input_snapshots_skipped: str | None = None
     source_verification_id: str | None = None
     derivation_kind: str | None = None
 

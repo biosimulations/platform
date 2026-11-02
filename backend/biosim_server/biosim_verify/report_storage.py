@@ -115,6 +115,11 @@ class VerificationReportStore:
             raise ReportIntegrityConflict(f"conflicting report for {output.workflow_id}")
         return envelope
 
+    async def find_envelope(self, workflow_id: str) -> VerificationReportEnvelope | None:
+        """The stored report's envelope, without its payload, or None."""
+        doc = await self._collection.find_one({"workflow_id": workflow_id}, projection={"_id": 0, "inline_payload": 0})
+        return VerificationReportEnvelope.model_validate(doc) if doc else None
+
     async def get_provenance(self, workflow_id: str) -> VerificationProvenance | None:
         doc = await self._collection.find_one({"workflow_id": workflow_id}, projection={"provenance": 1, "_id": 0})
         if not doc or not isinstance(doc.get("provenance"), dict):

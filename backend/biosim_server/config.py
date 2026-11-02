@@ -394,6 +394,9 @@ class Settings(BaseSettings):
     verification_report_inline_max_bytes: int = Field(default=12 * 1024 * 1024, gt=0)
     verification_report_max_decompressed_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
     verification_activity_inline_max_bytes: int = Field(default=512 * 1024, gt=0)
+    # Uncompressed numerical-input snapshot bytes one verification may retain.
+    # Above it nothing is captured and reconstruction is refused as work_limit.
+    verification_snapshot_max_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
     mongodb_collection_simulation_runs: str = "BiosimSimulationRuns"
     mongodb_collection_projects: str = "Projects"
     mongodb_collection_metadata: str = "Metadata"

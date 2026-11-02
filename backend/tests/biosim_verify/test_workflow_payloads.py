@@ -15,6 +15,7 @@ from biosim_server.biosim_verify.models import (
     ReportPersistenceState,
     VerifyWorkflowOutput,
 )
+from biosim_server.biosim_verify.object_names import snapshot_index_path
 from biosim_server.biosim_verify.report_codec import encode_report
 from biosim_server.common.storage.file_service_local import FileServiceLocal
 from biosim_server.common.temporal import pydantic_data_converter
@@ -45,7 +46,7 @@ async def _decode(payload: Payload, type_hint: type[Any]) -> Any:
 
 
 def _activity_objects(objects: FileServiceLocal) -> list[Path]:
-    return list((objects.base_dir / "verification-activity").glob("*"))
+    return [path for path in (objects.base_dir / "verification-activity").rglob("*") if path.is_file()]
 
 
 @pytest.mark.integration_local
@@ -65,10 +66,13 @@ async def test_no_statistics_cross_temporal_after_the_report_is_stored(
     computed = await _decode(statistics_payload, GenerateStatisticsActivityResult)
     if statistics == "inline":
         assert computed.output is not None and computed.reference is None
-        assert _activity_objects(world.objects) == []  # no transient object was written
     else:
         assert computed.output is None and computed.reference is not None
-        assert await world.objects.get_file_contents(computed.reference.artifact_reference) is not None
+        assert computed.reference.artifact_reference.startswith(f"verification-activity/{handle.id}/")
+    # Inline statistics never wrote a transient object; an externalized one is removed once
+    # the report is stored, and so is the workflow's snapshot pointer.
+    assert _activity_objects(world.objects) == []
+    assert await world.objects.exists(snapshot_index_path(handle.id)) is False
 
     # After persistence: the activity result, the workflow result and the final query.
     [persisted_payload] = _completed_results(events, "persist_verification_report_activity")

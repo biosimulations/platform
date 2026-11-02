@@ -12,7 +12,12 @@ from biosim_server.biosim_verify.models import (
     GenerateStatisticsArtifactReference, RunData, SimulationRunInfo, VerificationRecord,
     VerifyWorkflowOutput, VerificationProvenance, ReportPersistenceState,
 )
-from biosim_server.biosim_verify.object_names import holds_content, statistics_artifact_path
+from biosim_server.biosim_verify.object_names import (
+    ACTIVITY_PREFIX,
+    holds_content,
+    snapshot_index_path,
+    statistics_artifact_path,
+)
 from biosim_server.biosim_verify.report_codec import encode_report
 from biosim_server.biosim_verify.report_storage import (
     ReportArtifactMissing, ReportCorrupt, ReportIntegrityConflict, VerificationReportStore,
@@ -123,16 +128,25 @@ async def prepare_report(
         "actual_runs": output.workflow_results.sims_run_info if output.workflow_results else [],
     })
     try:
-        manifest = await read_snapshot_manifest(payload.output.workflow_id)
+        index = await read_snapshot_manifest(payload.output.workflow_id)
     except (SnapshotMissing, SnapshotMismatch, OSError, ValueError, TypeError):
         activity.logger.error("verification_snapshot_manifest_unreadable")
-        manifest = None
-    if manifest is not None:
-        ordered_run_ids, snapshots = manifest
+        index = None
+    if index is not None and index.skipped:
+        provenance = provenance.model_copy(update={"input_snapshots_skipped": index.skipped})
+    elif index is not None:
         provenance = provenance.model_copy(update={
-            "ordered_run_ids": ordered_run_ids,
-            "input_snapshots": snapshots,
+            "ordered_run_ids": index.ordered_run_ids,
+            "input_snapshots": index.snapshots,
+            "snapshot_manifest_reference": index.manifest_reference,
         })
+    return link_derived(output, provenance, row)
+
+
+def link_derived(
+    output: VerifyWorkflowOutput, provenance: VerificationProvenance, row: VerificationRecord | None,
+) -> tuple[VerifyWorkflowOutput, VerificationProvenance]:
+    """Carry a derived verification's link from its ledger row into the output and provenance."""
     if isinstance(row, VerificationRecord):
         linked: dict[str, object] = {}
         if row.source_verification_id and not provenance.source_verification_id:
@@ -145,6 +159,27 @@ async def prepare_report(
             if row.derivation_kind == "reconstruction":
                 output = output.model_copy(update={"calculation": "new_calculation"})
     return output, provenance
+
+
+async def remove_transient_objects(payload: PersistVerificationReportActivityInput) -> None:
+    """Best-effort removal of the workflow's transient objects once its report is durable.
+
+    Only the statistics artifact and the snapshot index pointer are removed;
+    neither is referenced by a stored report.  A failed delete is logged and
+    left to the storage lifecycle rule, never raised.
+    """
+    file_service = get_file_service()
+    if file_service is None:
+        return
+    paths = [snapshot_index_path(payload.output.workflow_id)]
+    statistics = payload.output.workflow_results_reference
+    if statistics is not None and statistics.artifact_reference.startswith(ACTIVITY_PREFIX):
+        paths.append(statistics.artifact_reference)
+    for path in paths:
+        try:
+            await file_service.delete_file(path)
+        except Exception:
+            activity.logger.warning("verification_transient_cleanup_failed path=%s", path)
 
 
 @activity.defn
@@ -166,9 +201,18 @@ async def persist_verification_report_activity(
             # swallowing it would store a report with its re-verification link
             # silently dropped.  Retry instead.
             raise RuntimeError("ledger read failed") from exc
-        output, provenance = await prepare_report(payload, store=store, row=row)
-        envelope = await store.save(output, provenance)
+        envelope = await store.find_envelope(payload.output.workflow_id)
+        if envelope is not None and envelope.workflow_run_id == payload.output.workflow_run_id \
+                and envelope.owner_sub == payload.output.owner_sub:
+            # An earlier attempt stored this report and may have removed the
+            # transient objects prepare_report reads.  The stored report is
+            # authoritative, so this attempt only acknowledges it.
+            output, _ = link_derived(payload.output, payload.provenance, row)
+        else:
+            output, provenance = await prepare_report(payload, store=store, row=row)
+            envelope = await store.save(output, provenance)
         await ledger.record_report_persisted(payload.output.workflow_id, envelope.report_id, payload.output.workflow_status)
+        await remove_transient_objects(payload)
         # The stored report is authoritative.  Once it is durable, statistics
         # leave the activity result, the workflow result and every query: the
         # payload stays bounded however large the comparison was.

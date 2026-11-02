@@ -53,7 +53,12 @@ from biosim_server.biosim_verify.reconstruct_workflow import (
     ReconstructComparisonWorkflowInput,
 )
 from biosim_server.biosim_verify.report_codec import encode_report
-from biosim_server.biosim_verify.snapshots import SnapshotMismatch, SnapshotMissing, load_verified_snapshots
+from biosim_server.biosim_verify.snapshots import (
+    SKIPPED_WORK_LIMIT,
+    SnapshotMismatch,
+    SnapshotMissing,
+    load_verified_snapshots,
+)
 from biosim_server.common.auth import AuthenticatedUser
 from biosim_server.common.ratelimit import _enforce_rate_limit, client_identity
 from biosim_server.dependencies import (
@@ -95,6 +100,11 @@ def reconstruction_offer(provenance: VerificationProvenance | None) -> Reconstru
         return ReconstructOffer(
             eligible=False, reason="missing_provenance",
             message="Saved request data is not enough to reconstruct a comparison. Provenance for the numerical inputs is missing.",
+        )
+    if provenance.input_snapshots_skipped == SKIPPED_WORK_LIMIT and not provenance.input_snapshots:
+        return ReconstructOffer(
+            eligible=False, reason="work_limit",
+            message="The numerical inputs exceeded the snapshot size limit, so they were not retained.",
         )
     try:
         settings = CompareSettings.model_validate(provenance.requested_settings)

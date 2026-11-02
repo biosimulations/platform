@@ -2,12 +2,16 @@
 
 Snapshot bytes are written from data the comparison activity already holds.
 A small per-workflow pointer lets report publication copy the manifest into
-provenance without adding a workflow command.
+provenance without adding a workflow command.  One verification retains at
+most ``verification_snapshot_max_bytes`` of uncompressed snapshots; above that
+nothing is captured and the pointer records why.
 """
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable, Sequence
+from typing import NamedTuple
 
 from biosim_server.biosim_runs import Hdf5DataValues
 from biosim_server.biosim_verify.comparison import simulator_label
@@ -25,7 +29,14 @@ from biosim_server.biosim_verify.object_names import (
 )
 from biosim_server.biosim_verify.report_codec import checksum, decode_report, encode_report
 from biosim_server.common.storage.content_addressed import publish_content_addressed
+from biosim_server.common.storage.file_service import FileService
+from biosim_server.config import get_settings
 from biosim_server.dependencies import get_file_service
+
+logger = logging.getLogger(__name__)
+
+#: Why a verification has no snapshots: they would have exceeded the budget.
+SKIPPED_WORK_LIMIT = "work_limit"
 
 
 class SnapshotMissing(Exception):
@@ -34,6 +45,15 @@ class SnapshotMissing(Exception):
 
 class SnapshotMismatch(Exception):
     """Stored bytes do not match the recorded checksum, shape, or identity."""
+
+
+class SnapshotIndex(NamedTuple):
+    """What a workflow's snapshot pointer says: a manifest, or why there is none."""
+
+    manifest_reference: str | None
+    ordered_run_ids: list[str]
+    snapshots: list[NumericalInputSnapshot]
+    skipped: str | None = None
 
 
 def _snapshot_document(run_data: RunData, simulator_version: str) -> dict[str, object]:
@@ -80,13 +100,20 @@ async def publish_snapshot_manifest(
     await file_service.upload_bytes(pointer, snapshot_index_path(workflow_id))
 
 
+async def _publish_skip(file_service: FileService, workflow_id: str, reason: str) -> None:
+    pointer = json.dumps({"skipped": reason}, sort_keys=True, separators=(",", ":")).encode()
+    await file_service.upload_bytes(pointer, snapshot_index_path(workflow_id))
+
+
 async def capture_input_snapshots(
     workflow_id: str, sim_run_info_list: list[SimulationRunInfo], run_data: list[RunData],
 ) -> list[NumericalInputSnapshot] | None:
     """Upload one immutable object per dataset and publish the workflow pointer.
 
-    Returns None when storage is unavailable or there is nothing to store.
-    A failure before the pointer is published leaves reconstruction ineligible.
+    Returns None when storage is unavailable, there is nothing to store, or the
+    snapshots would exceed ``verification_snapshot_max_bytes``.  The budget is
+    checked before anything is uploaded.  A failure before the pointer is
+    published leaves reconstruction ineligible.
     """
     file_service = get_file_service()
     if file_service is None or not workflow_id or not run_data:
@@ -94,12 +121,24 @@ async def capture_input_snapshots(
     labels = {info.biosim_sim_run.id: simulator_label(info) for info in sim_run_info_list}
     order = {info.biosim_sim_run.id: index for index, info in enumerate(sim_run_info_list)}
     ordered = sorted(run_data, key=lambda item: (order.get(item.run_id, 10**9), item.dataset_name))
+    budget = get_settings().verification_snapshot_max_bytes
+    encoded: list[tuple[RunData, bytes, str, int, str]] = []
+    total = 0
+    for item in ordered:
+        compressed, encoding, size, digest = encode_report(_snapshot_document(item, labels.get(item.run_id, "")))
+        total += size
+        if total > budget:
+            # Stop encoding at once: a verification this large is not retained.
+            logger.warning("verification_snapshot_capture_skipped reason=%s budget_bytes=%d",
+                           SKIPPED_WORK_LIMIT, budget)
+            await _publish_skip(file_service, workflow_id, SKIPPED_WORK_LIMIT)
+            return None
+        encoded.append((item, compressed, encoding, size, digest))
 
-    async def upload(item: object) -> object:
-        if not isinstance(item, RunData):
-            raise TypeError("snapshot source must be run data")
-        document = _snapshot_document(item, labels.get(item.run_id, ""))
-        compressed, encoding, size, digest = encode_report(document)
+    async def upload(entry: object) -> object:
+        if not isinstance(entry, tuple):
+            raise TypeError("snapshot source must be encoded run data")
+        item, compressed, encoding, size, digest = entry
         # Content-addressed: the same run data, in any verification, is one object.
         reference = await publish_content_addressed(
             file_service, compressed, snapshot_data_path(digest), holds_content(digest, encoding),
@@ -110,7 +149,7 @@ async def capture_input_snapshots(
             content_sha256=digest, encoding=encoding, uncompressed_bytes=size, artifact_reference=reference,
         )
 
-    uploaded = await _bounded(ordered, upload)
+    uploaded = await _bounded(encoded, upload)
     snapshots = [item for item in uploaded if isinstance(item, NumericalInputSnapshot)]
     if len(snapshots) != len(ordered):
         raise SnapshotMismatch("snapshot capture did not retain every dataset")
@@ -120,8 +159,8 @@ async def capture_input_snapshots(
     return snapshots
 
 
-async def read_snapshot_manifest(workflow_id: str) -> tuple[list[str], list[NumericalInputSnapshot]] | None:
-    """Return ``(ordered_run_ids, snapshots)`` for a workflow, or None when no pointer exists."""
+async def read_snapshot_manifest(workflow_id: str) -> SnapshotIndex | None:
+    """Return what a workflow's snapshot pointer records, or None when no pointer exists."""
     file_service = get_file_service()
     if file_service is None:
         return None
@@ -131,6 +170,9 @@ async def read_snapshot_manifest(workflow_id: str) -> tuple[list[str], list[Nume
     pointer = json.loads(raw)
     if not isinstance(pointer, dict):
         raise SnapshotMismatch("snapshot pointer is not an object")
+    skipped = pointer.get("skipped")
+    if isinstance(skipped, str):
+        return SnapshotIndex(manifest_reference=None, ordered_run_ids=[], snapshots=[], skipped=skipped)
     reference = pointer.get("reference")
     encoding = pointer.get("encoding")
     digest = pointer.get("sha256")
@@ -149,7 +191,8 @@ async def read_snapshot_manifest(workflow_id: str) -> tuple[list[str], list[Nume
     if not isinstance(ordered, list) or not isinstance(raw_snapshots, list):
         raise SnapshotMismatch("snapshot manifest is incomplete")
     snapshots = [NumericalInputSnapshot.model_validate(item) for item in raw_snapshots]
-    return [str(run_id) for run_id in ordered], snapshots
+    return SnapshotIndex(manifest_reference=reference, ordered_run_ids=[str(run_id) for run_id in ordered],
+                         snapshots=snapshots)
 
 
 async def load_verified_snapshot(snapshot: NumericalInputSnapshot) -> Hdf5DataValues:
