@@ -278,6 +278,24 @@ class VerificationType(StrEnum):
 OMEX_HASH_PATTERN: Final = r"^[0-9a-f]{32}$"
 
 
+class PersistenceAck(BaseModel):
+    """An operator's acknowledgement of one persistence problem on a ledger row.
+
+    It never deletes or changes a report.  It applies only while the row's
+    ``persistence_state`` and ``persistence_error`` still equal the values it
+    acknowledged, so a new kind of failure brings attention back.
+    """
+
+    state: ReportPersistenceState
+    error: Optional[str] = None
+    reason: str
+    acknowledged_by: str
+    acknowledged_at: datetime
+
+    def covers(self, state: ReportPersistenceState, error: Optional[str]) -> bool:
+        return self.state == state and self.error == error
+
+
 class VerificationRecord(BaseModel):
     """One ledger row (BiosimCompare collection)."""
 
@@ -310,6 +328,14 @@ class VerificationRecord(BaseModel):
     derivation_kind: str | None = None
     # Caller who requested recovery. Quota and audit use this; owner_sub stays the source owner.
     initiator_sub: str | None = None
+    persistence_ack: PersistenceAck | None = None
+
+    @property
+    def persistence_acknowledged(self) -> bool:
+        """Whether an operator acknowledged the row's current persistence problem."""
+        return self.persistence_ack is not None and self.persistence_ack.covers(
+            self.persistence_state, self.persistence_error,
+        )
 
 
 class VerificationSummary(BaseModel):

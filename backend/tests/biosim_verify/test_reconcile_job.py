@@ -28,7 +28,7 @@ SCRIPT = "scripts.reconcile_verification_reports"
 
 def _args(**overrides: Any) -> argparse.Namespace:
     values: dict[str, Any] = {"limit": 100, "apply": True, "stale_persist_after": 3600.0,
-                              "stale_running_after": 86400.0}
+                              "stale_running_after": 86400.0, "include_acknowledged": False}
     values.update(overrides)
     return argparse.Namespace(**values)
 
@@ -157,6 +157,7 @@ def test_cli_defaults_match_the_plan() -> None:
     args = run.await_args.args[0]
     assert args.apply and args.limit == 100
     assert args.stale_persist_after == 3600 and args.stale_running_after == 86400
+    assert not args.include_acknowledged
     with pytest.raises(SystemExit):
         job.main(["--stale-running-after", "0"])
 

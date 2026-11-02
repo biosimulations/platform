@@ -22,6 +22,7 @@ from pymongo.errors import DuplicateKeyError
 from biosim_server.biosim_verify.models import (
     MAX_WORKFLOW_ID_BYTES,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
+    PersistenceAck,
     RecoveryReservation,
     VerificationRecord,
     VerificationSummary,
@@ -31,6 +32,18 @@ from biosim_server.biosim_verify.models import (
 from biosim_server.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# The persistence error each kind of issue records.  An acknowledgement covers
+# exactly one of them, so a different kind of failure brings attention back.
+BLOCKED_PERSISTENCE_ERROR = "Report integrity/encoding failure"
+DEPENDENCY_PERSISTENCE_ERROR = "Storage dependency unavailable"
+
+
+def persistence_issue(blocked: bool) -> tuple[ReportPersistenceState, str]:
+    """The state and error that :meth:`mark_persistence_issue` records."""
+    if blocked:
+        return ReportPersistenceState.BLOCKED, BLOCKED_PERSISTENCE_ERROR
+    return ReportPersistenceState.PENDING, DEPENDENCY_PERSISTENCE_ERROR
 
 # Listing order: newest first, workflow_id (unique) as the tie-breaker, so the
 # order is total and a (created, workflow_id) position is a stable continuation.
@@ -208,6 +221,20 @@ class VerificationDatabaseService(ABC):
 
     @abstractmethod
     async def mark_persistence_unavailable(self, workflow_id: str, reason: str) -> None:
+        ...
+
+    @abstractmethod
+    async def acknowledge_persistence(self, workflow_id: str, ack: PersistenceAck) -> bool:
+        """Record *ack* while the row still has the state and error it acknowledges.
+
+        Returns False, changing nothing, when the row has moved on.  A stored
+        row is never acknowledged: it has no problem to acknowledge.
+        """
+        ...
+
+    @abstractmethod
+    async def clear_persistence_ack(self, workflow_id: str, state: ReportPersistenceState) -> bool:
+        """Remove the acknowledgement while the row is still in *state*. False if it is not."""
         ...
 
     @abstractmethod
@@ -413,12 +440,35 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
             raise LeaseLost("Reconciliation lease was lost")
 
     async def mark_persistence_issue(self, workflow_id: str, blocked: bool) -> None:
+        state, error = persistence_issue(blocked)
         await self._collection.update_one(
             {"workflow_id": workflow_id, "persistence_state": {"$ne": ReportPersistenceState.STORED.value}},
-            {"$set": {"persistence_state": ReportPersistenceState.BLOCKED.value if blocked else ReportPersistenceState.PENDING.value,
-                      "persistence_error": "Report integrity/encoding failure" if blocked else "Storage dependency unavailable",
+            {"$set": {"persistence_state": state.value, "persistence_error": error,
                       "persistence_attempted_at": datetime.now(UTC)}},
         )
+
+    @staticmethod
+    def _in_state(workflow_id: str, state: ReportPersistenceState) -> dict[str, object]:
+        if state == ReportPersistenceState.STORED:
+            raise ValueError("a stored report has no persistence problem to acknowledge")
+        if state == ReportPersistenceState.PENDING:
+            # Rows written before the field existed are pending (the model default).
+            return {"workflow_id": workflow_id, "$or": [
+                {"persistence_state": state.value}, {"persistence_state": {"$exists": False}},
+            ]}
+        return {"workflow_id": workflow_id, "persistence_state": state.value}
+
+    async def acknowledge_persistence(self, workflow_id: str, ack: PersistenceAck) -> bool:
+        # ``persistence_error: None`` also matches a missing field, as the model reads it.
+        query = {**self._in_state(workflow_id, ack.state), "persistence_error": ack.error}
+        result = await self._collection.update_one(query, {"$set": {"persistence_ack": ack.model_dump(mode="python")}})
+        return result.matched_count == 1
+
+    async def clear_persistence_ack(self, workflow_id: str, state: ReportPersistenceState) -> bool:
+        result = await self._collection.update_one(
+            self._in_state(workflow_id, state), {"$unset": {"persistence_ack": ""}},
+        )
+        return result.matched_count == 1
 
     async def mark_persistence_unavailable(self, workflow_id: str, reason: str) -> None:
         # A stored report is immutable and authoritative: a late catch-up must

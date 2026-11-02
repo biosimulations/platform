@@ -1,7 +1,7 @@
 {
   "displayName": "Verification report persistence requires attention",
   "documentation": {
-    "content": "Inspect the verification-report-reconcile Job and the checkpoint. Restore storage access, resolve integrity conflicts, and rerun reconciliation before Temporal history expires. See docs/verification-report-retention.md. Never delete an original report to clear an alert.",
+    "content": "Investigate the rows the verification_reconcile_summary and verification_persistence_attention events count. Then either fix the cause and rerun reconciliation (with --include-acknowledged for acknowledged blocked rows) before Temporal history expires, or acknowledge the row with a reason: python -m scripts.ack_verification_persistence --workflow-id WF --expect-state STATE --by NAME --reason TEXT --apply. An acknowledgement lapses if the row fails differently. See docs/verification-report-retention.md. Never delete or replace an original report to clear an alert.",
     "mimeType": "text/markdown"
   },
   "combiner": "OR",
