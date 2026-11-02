@@ -14,7 +14,8 @@ platform/
 │   ├── config/       # Per-cluster ConfigMaps
 │   ├── overlays/     # biosim-gke, biosim-rke, biosim-local, biosim-rke-frontend-dev
 │   └── scripts/      # build_and_push.sh, sealed_secret_*
-├── docs/             # frontend-backend-integration-plan.md (implemented)
+├── docs/             # frontend-backend-integration-plan.md (implemented), verification-report-retention.md (runbook)
+├── ops/              # Monitoring and storage templates (applied through infra review, never automatically)
 ├── .github/workflows/  # backend-ci, frontend-ci, smoke (all run on every PR)
 ├── compose.yaml      # Local dev infra: mongo, temporal, optional minio
 ├── lefthook.yml      # Local pre-commit/pre-push hooks (lint, typecheck, ruff, mypy)

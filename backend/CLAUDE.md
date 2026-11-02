@@ -104,10 +104,17 @@ backend/
 │   │   ├── compatibility.py   # find_common_datasets — preflight overlap check
 │   │   ├── database.py        # VerificationDatabaseService + Mongo impl (BiosimCompare ledger)
 │   │   ├── models.py          # Verification models (incl. VerificationRecord, VerificationType)
-│   │   ├── linked_recovery.py # Reconstruction/re-verification offers, reservations, idempotency
+│   │   ├── linked_recovery.py # Reconstruction/re-verification offers, admission, reservations, idempotency, derived links
 │   │   ├── reconstruct_workflow.py  # ReconstructComparisonWorkflow — compares retained snapshots only
 │   │   ├── comparison.py      # compare_loaded_runs — compares in-memory datasets, no upstream calls
 │   │   ├── snapshots.py       # Numerical-input snapshot capture, manifests, checksum verification
+│   │   ├── workflow_persistence.py  # persist_report + PERSIST_RETRY: the one persist call site (uncapped retry, BLOCKED)
+│   │   ├── history.py         # Decodes workflow history: start input, computed output, deterministic FAILED
+│   │   ├── report_codec.py    # verification-json-gzip-v2 codec and canonical SHA-256
+│   │   ├── report_storage.py  # VerificationReportStore — immutable BiosimVerifyReports envelopes
+│   │   ├── report_recovery.py # Reconciler/backfill row processing (no FastAPI import)
+│   │   ├── report_backup.py   # Backup export/restore through the store's and ledger's public methods
+│   │   ├── object_names.py    # Deterministic object names; transient vs collected prefixes
 │   │   ├── omex_verify_workflow.py  # Multi-simulator OMEX verification
 │   │   ├── runs_verify_workflow.py  # Compare existing runs
 │   │   └── hdf5_compare.py    # Comparison logic
@@ -128,7 +135,7 @@ backend/
 │   │   ├── router.py          # POST /simulations/run, GET /simulations/{id}
 │   │   └── workflow.py        # SimulationRunWorkflow (Temporal)
 │   ├── common/
-│   │   ├── storage/           # GCS file operations
+│   │   ├── storage/           # FileService (gcs/local/minio), gcs_aio, content_addressed publication
 │   │   ├── temporal/          # Temporal client utilities
 │   │   ├── hpc/               # SLURM integration
 │   │   └── ssh/               # SSH service
@@ -160,9 +167,10 @@ backend/
 | `/simulations/{processing_id}` | GET | Get status of a simulation run |
 | `/verification_ids` | GET | List verification workflow IDs with summaries (type, start time, OMEX hash, terminal status), newest first, paginated (`limit` ≤ 1000, opaque `cursor`, optional `omex_hash` filter; optional auth: ownerless plus caller-owned IDs) |
 | `/verify/omex` | POST | Verify OMEX file across simulators (token optional; a valid token persists `owner_sub`) |
-| `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin). Adds `derived_verifications` and `recovery` offers (also on the visible "no longer retained" 404); the stored report is never rewritten |
-| `/verify/{workflow_id}/reconstruct` | POST | Compare retained numerical snapshots under a new `reconstruction-` id (requires `Idempotency-Key`; never submits a simulator job; 409 when provenance, checksums, or inputs do not match) |
-| `/verify/{workflow_id}/reverify` | POST | Start a new archive verification under a new `reverification-` id (requires `Idempotency-Key`; may submit new simulation jobs; 409 when no readable archive is stored) |
+| `/verify/{workflow_id}` | GET | Get verification results (token optional; ownerless is public, owned is owner-or-admin). The saved report is served first, without Temporal. A finished report adds ranked `derived_verifications` and `derived_verifications_total`; a 200 never carries `recovery`, and a running poll does no recovery work. The visible "no longer retained" 404 adds `recovery` and derived links. During a ledger outage, running progress is still served; a stored report, failed execution or unknown id is 503 with `Retry-After: 5`, never 404. The stored report is never rewritten |
+| `/verify/{workflow_id}/recovery` | GET | Reconstruction and re-verification offers, computed only when asked (same visibility as GET; hidden is 404; `private, no-store`) |
+| `/verify/{workflow_id}/reconstruct` | POST | Compare retained numerical snapshots under a new `reconstruction-` id (requires `Idempotency-Key`; never submits a simulator job; charged before any storage I/O; 409 when provenance or inputs do not match or a snapshot is missing; a checksum mismatch fails the derived verification with `failure_code`; 429 `derived_limit` above 10 per caller per source per day, 3 anonymous) |
+| `/verify/{workflow_id}/reverify` | POST | Start a new archive verification under a new `reverification-` id (requires `Idempotency-Key`; may submit new simulation jobs; 409 when no readable archive is stored; same daily cap) |
 | `/verify/runs` | POST | Compare existing biosimulation runs (token optional; a valid token persists `owner_sub`) |
 | `/api/v1/me/password-reset` | POST | Issue a short-lived Auth0-hosted password-change URL for the authenticated primary database user (New Universal Login; no email is sent; requires `create:user_tickets` on the server M2M client) |
 | `/validation/model` | POST | Validate a model document via the COMBINE API (relay; works with or without auth; rate-limited) |
@@ -175,8 +183,10 @@ backend/
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
 - **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, initiator_sub, created, omex_hash, status, source_verification_id, derivation_kind, workflow_input, request_hash). Written by `POST /verify/omex`, `POST /verify/runs`, and the two recovery routes before `start_workflow`; `status` is written once by `GET /verify/{workflow_id}` when it first sees the workflow finished; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired. `initiator_sub` is stored for audit and quota but omitted from listings and public output.
-- **BiosimVerifyIdempotency** - Recovery reservations keyed by caller, source, operation, and `Idempotency-Key` with a unique index. A retry of the same key reuses the reserved workflow id and is not charged against the shared workflow budget twice; a different body under the same key is `409 idempotency_conflict`.
-- **BiosimVerifyReports** - Immutable report collection (workflow_id, content_sha256, encoding, artifact reference). Written once by `persist_verification_report_activity`; recovery never rewrites it.
+  The row also carries persistence bookkeeping (`persistence_state`, `persistence_error`, `report_id`) and an optional `persistence_ack`, valid only while the state and error it acknowledged are unchanged. Derived rows add `initiator_relation` and `custom_settings`.
+- **BiosimVerifyIdempotency** - Recovery reservations keyed by caller, source, operation, and `Idempotency-Key` with a unique index. A retry of the same key reuses the reserved workflow id and is not charged against the shared workflow budget twice; a different body under the same key is `409 idempotency_conflict`. Also the source of the per-caller, per-source daily cap.
+- **BiosimVerifyReports** - Immutable report collection (workflow_id, content_sha256, encoding, artifact reference). Written once by `persist_verification_report_activity`, or by a catch-up writer (GET, the reconciler, backfill, restore) for an execution it recovers; nothing rewrites it.
+- **BiosimVerifyMaintenance** - The reconcile job's fenced lease and row cursor.
 - **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns
@@ -190,7 +200,27 @@ All I/O is async: FastAPI endpoints, MongoDB (Motor), HTTP (aiohttp), file ops.
 - `OmexSimWorkflow` - Run single simulator on OMEX file
 - `OmexVerifyWorkflow` - Orchestrate multiple simulators in parallel, then compare
 - `RunsVerifyWorkflow` - Compare existing runs
+- `ReconstructComparisonWorkflow` - Compare retained numerical snapshots (no simulator jobs)
 - `SimulationRunWorkflow` - Run simulations without comparison (backend-for-frontend)
+
+The three verification workflows publish their report through `workflow_persistence.persist_report`:
+transient failures retry without a cap, and a permanent failure completes the workflow with the computed
+output marked `blocked`, never FAILED. After persistence, workflow results and queries carry no statistics.
+See `docs/workflows-architecture.md` → "Verification report persistence and history recovery".
+
+### Verification report operations
+
+Run from `backend/` with `uv run python -m <script>`. Every one that writes to Mongo or object storage is dry-run
+unless given `--apply` (`backup ... export` only reads them, and writes its bundle to a local directory). The
+procedures, events and alert response are in `docs/verification-report-retention.md`.
+
+| Script | Purpose |
+| --- | --- |
+| `scripts.reconcile_verification_reports` | Saves missed reports and terminal failures (the opt-in CronJob). Exit status is job health only: rows needing an operator log `verification_persistence_attention` and still exit 0 |
+| `scripts.ack_verification_persistence` | Acknowledges one row's persistence problem (`--workflow-id --expect-state --by --reason`, or `--clear`) without touching its report |
+| `scripts.gc_verification_objects` | Reachability GC of long-lived verification objects: unreferenced and older than `--grace` days (7); `--max-deletes` caps a run; writes a 0600 report |
+| `scripts.backfill_verification_reports` | Resumable backfill of retained Temporal histories into the report store |
+| `scripts.backup_verification_reports` | `export` / `restore` of ledger rows, report envelopes and objects, with a checksum manifest |
 
 ### Caching
 
@@ -226,6 +256,22 @@ Environment variables (see `config.py`). All have defaults; override as needed.
 | `STORAGE_SECRET_KEY` | _empty_ | S3 secret key (used by `minio`). |
 | `STORAGE_GCS_CREDENTIALS_FILE` | _empty_ | Path to GCS service account JSON (used by `gcs`). |
 | `STORAGE_LOCAL_CACHE_DIR` | `./local_cache` | Base directory for the `local` backend and on-disk caches. |
+
+**`FileService` contract** (`common/storage/file_service.py`). Besides upload/download, every backend implements:
+
+- `put_if_absent(bytes, path) -> bool`: create-only; `False` when an object already exists, whose bytes are left
+  untouched. GCS sends `ifGenerationMatch=0` and maps a 412 to `False`; local storage links a temporary file into
+  place; MinIO sends `If-None-Match: *` and falls back to check-then-put. Where the server reports a checksum, a
+  created object is compared with it instead of being downloaded again.
+- `exists(path)`, a metadata check; `delete_file(path)`, where a missing object is not an error.
+- `iter_objects(prefix)`: every object under a prefix, page by page, with timezone-aware UTC `LastModified`.
+- A missing object is `None` from `get_file_contents` and `FileNotFoundError` from `get_modified_date` on every
+  backend (`gcs_aio.py` maps gcloud's 404, and only that status).
+
+Verification objects are written through `common/storage/content_addressed.publish_content_addressed` under the
+deterministic names in `biosim_verify/object_names.py`, never overwritten. `VERIFICATION_ACTIVITY_INLINE_MAX_BYTES`
+(512 KiB) is the largest statistics payload that crosses Temporal inline, and `VERIFICATION_SNAPSHOT_MAX_BYTES`
+(64 MiB) bounds the numerical-input snapshots one verification retains.
 
 ### External APIs
 

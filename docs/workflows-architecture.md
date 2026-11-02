@@ -94,6 +94,55 @@ Key properties:
   record for the same `(file_hash, image_digest, cache_buster)` reuses it
   instead of re-submitting.
 
+### Verification report persistence and history recovery
+
+Every verification workflow ends by publishing its report through one helper,
+`biosim_verify/workflow_persistence.py` (`persist_report`), so the three workflows share one
+call site and one retry policy:
+
+- `PERSIST_RETRY`: 1s initial interval, doubling, 5 min maximum, **no attempt limit**, with a
+  2-minute start-to-close timeout per attempt. A transient storage or ledger failure keeps the
+  workflow RUNNING, and a running workflow's history (which holds the computed output) is not
+  subject to retention.
+- `persist_verification_report_activity` raises `ApplicationError(type="ReportBlocked",
+  non_retryable=True)` for permanent failures (`ValueError`, `ReportIntegrityConflict`,
+  `ReportCorrupt`, `ReportArtifactMissing`). `persist_report` catches exactly that type and
+  completes the workflow with the computed output marked `persistence_state=blocked`. A
+  computed result is never turned into FAILED.
+- On success the activity returns a **slim** output: no `workflow_results` and no
+  `workflow_results_reference`. The workflow result and every later `get_output` query are
+  slim too; the stored report is authoritative. Statistics of at most
+  `verification_activity_inline_max_bytes` (512 KiB) cross Temporal inline in the statistics
+  activity's result and the persist activity's input; larger ones are externalized
+  (`externalize_statistics`) and only a reference crosses.
+- After storing, the activity deletes the workflow's transient objects (statistics artifact and
+  snapshot index pointer). A retry that finds the report already stored for the same run and
+  owner only acknowledges it, because the objects it would read may be gone.
+
+`biosim_verify/history.py` is the only module that decodes a verification workflow's history.
+It has no dependency on FastAPI, so the reconciler and backfill import it without loading the
+API (a subprocess test pins this).
+
+- `read_start_input` decodes the start event's input.
+- `computed_output_from_history` returns the input of the **last scheduled persist activity**:
+  the computed output the workflow tried to store. It reads 200-event pages with a 15s RPC
+  timeout and refuses histories over 20,000 events. An output whose workflow ID, run ID or owner
+  differs from the start input raises `HistoryIdentityMismatch`.
+- `terminal_failure_output` builds the one FAILED report for an execution that computed
+  nothing, from the start input and the close time only. Provenance stays outside the content
+  hash, so two writers produce byte-identical content.
+
+Both writers outside the workflow follow the same order. `GET /verify/{id}` and the reconciler
+(`report_recovery.process_record`) read a COMPLETED execution with `result()`; a failed,
+terminated, cancelled or timed-out one goes straight to history (its query view is never
+trusted): the computed output if a persist activity was scheduled, otherwise
+`terminal_failure_output`. Both shape the report with `activities.prepare_report()`, as the
+activity does. A writer that loses the insert-once race serves the stored winner; if that
+cannot be read, it is a 503 with `verification_persistence_attention`, never a 500. A result
+marked `stored` whose report is missing is also a 503 with attention: the slim result is never
+served as the report. During a ledger or report-store outage GET answers from Temporal only and
+writes nothing (`docs/verification-report-retention.md` → "Lookup during a Mongo outage").
+
 ### Linked recovery — reconstruction and re-verification
 
 Two additive entry points that never modify the source verification. Both require an
@@ -104,47 +153,77 @@ bytes, content hash, status, and `GET /verify/{id}` permalink stay unchanged.
 |---|---|---|
 | `POST /verify/{id}/reconstruct` | `ReconstructComparisonWorkflow` | No — compares retained snapshots only |
 | `POST /verify/{id}/reverify` | `OmexVerifyWorkflow` | Yes — this is a new verification |
+| `GET /verify/{id}/recovery` | — | No — returns the two offers |
 
 `ReconstructComparisonWorkflow` (`biosim_verify/reconstruct_workflow.py`) executes two activities:
 `compare_retained_snapshots_activity`, which loads numerical inputs from immutable snapshot
 objects, verifies each SHA-256 against the recorded checksum, and calls `compare_loaded_runs`
-(`biosim_verify/comparison.py`); then the shared `persist_verification_report_activity`. Its
-source contains no reference to
-`submit_biosim_run_activity`, `get_hdf5_data`, or `get_existing_biosim_simulation_run_activity`,
-so a reconstruction cannot reach upstream biosimulations.org even when that service is down.
-A missing or mismatched snapshot raises a non-retryable `ApplicationError`; the API refuses
-before reserving an id, so a refusal never leaves a workflow behind.
+(`biosim_verify/comparison.py`); then the shared persistence helper. Its source contains no
+reference to `submit_biosim_run_activity`, `get_hdf5_data`, or
+`get_existing_biosim_simulation_run_activity`, so a reconstruction cannot reach upstream
+biosimulations.org even when that service is down.
 
-Eligibility comes from the persisted provenance manifest, never from the saved request alone.
-`reconstruction_offer` returns `missing_provenance` when there is no manifest,
-`missing_numerical_inputs` when runs were recorded without snapshots, and `work_limit` above
-`MAX_VERIFY_RUN_IDS` / `MAX_VERIFY_SNAPSHOTS`. The client must echo the stored `run_ids`,
-`snapshot_sha256`, and `compare_settings`; any difference is `409 input_mismatch`.
+**Admission order.** Reconstruction does the cheapest checks first, and no object-storage I/O
+happens before the caller is charged:
+
+1. Idempotency peek. A replay of an existing reservation is never charged.
+2. In-memory checks against the provenance manifest: eligibility and the echoed inputs.
+3. Charge a new reservation: the per-caller, per-source daily cap (10 authenticated, 3
+   anonymous; `429 derived_limit`), then the shared workflow budget (`429`).
+4. A bounded existence check of each distinct snapshot reference (`FileService.exists`, 8 at a
+   time, 10s budget). No download.
+5. Reserve the id, write the derived ledger row, start the workflow.
+
+Re-verification is charged before its archive lookup and simulator-catalog call.
+
+**Refusals and the checksum contract.** Eligibility comes from the persisted provenance
+manifest, never from the saved request alone. A refusal is a typed `409`:
+`missing_provenance` (no manifest), `input_mismatch` (the client must echo the stored
+`run_ids`, `snapshot_sha256` and `compare_settings`), `work_limit` (above `MAX_VERIFY_RUN_IDS` /
+`MAX_VERIFY_SNAPSHOTS`, or a capture skipped for the 64 MiB snapshot budget), and
+`missing_numerical_inputs` (no snapshots recorded, or one no longer exists). Refusals at steps
+1–2 cost nothing; a missing snapshot at step 4 is charged, because storage was read. Admission
+does **not** download or checksum snapshots: a checksum mismatch is found by the comparison
+activity, and the derived verification then completes FAILED with
+`failure_code: checksum_mismatch` (or `missing_numerical_inputs` if an object vanished after
+admission). It is no longer a `409`.
 
 Snapshots are captured inside the existing statistics activity
-(`capture_input_snapshots`) and published through a per-workflow pointer. Capture failure is
-logged as `verification_snapshot_capture_failed` and does **not** fail the original report — it
-only leaves that report ineligible for reconstruction.
+(`capture_input_snapshots`) under content-addressed names and published through a per-workflow
+pointer. Capture failure is logged as `verification_snapshot_capture_failed` and does **not**
+fail the original report — it only leaves that report ineligible for reconstruction.
 
 Idempotency is scoped to caller, source, operation, and request hash, with a unique index on
 `BiosimVerifyIdempotency`. Concurrent identical requests converge on one id; a different body
 under the same key is `409 idempotency_conflict`; a lost start reply returns `503` and a retry
-of the same key reuses the reserved id without a second quota charge. The shared workflow rate
-limit is charged only when a new reservation is created, so refusals never consume budget.
+of the same key reuses the reserved id without a second quota charge.
 
-Derived rows carry `source_verification_id` and `derivation_kind`, inherit `owner_sub` from the
-source, and record `initiator_sub` for audit and quota without exposing it in listings or public
-output. `GET /verify/{id}` overlays `derived_verifications` and `recovery` offers onto the
-response; it never rewrites the stored report. When the original report is unavailable, the
-"no longer retained" 404 keeps its string `detail` and adds `recovery` and any
-`derived_verifications` as siblings for a caller who may see the row, so the permalink links to derived verifications instead of
-redirecting to one. A hidden row gets the plain not-found 404 with neither field.
+**Offers on demand.** `GET /verify/{id}` never carries `recovery` on a `200`, and a running poll
+does no provenance, archive or storage work. A finished report is annotated with its derivation
+fields and derived links from the ledger row the request already read. The offers come from
+`GET /verify/{id}/recovery`, which has the same visibility rules (a hidden verification is a
+plain 404) and sends `Cache-Control: private, no-store`. The UI calls it only when a user opens
+"Recompute…". The one place offers appear unprompted is the unavailable original: the "no
+longer retained" 404 keeps its string `detail` and adds `recovery`, `derived_verifications` and
+`derived_verifications_total` as siblings, for a caller who may see the row. A hidden row gets
+the plain not-found 404 with none of them.
+
+**Derived-link policy.** Derived rows carry `source_verification_id` and `derivation_kind`,
+inherit `owner_sub` from the source, and record `initiator_sub` for audit and quota, plus
+`initiator_relation` (`owner`, `admin`, `other` or `anonymous`, decided at reservation) and
+`custom_settings`. The permalink lists, newest first within each group: owner- and
+admin-started links (at most 10), then the caller's own (at most 10), then the 5 newest started
+by anyone else, with `derived_verifications_total` for "N more". Many requests from others can
+therefore never push the owner's, an admin's or the caller's own off the page. A link exposes
+`initiator_relation`, `is_yours` and `custom_settings`, never an identity. Rows written before
+`initiator_relation` existed count as others.
 
 Storage reads in this path rely on `FileService.get_file_contents` returning `None` for a missing
 object and `get_modified_date` raising `FileNotFoundError`. gcloud-aio-storage reports a missing
 object as an HTTP 404 `ClientResponseError`; `common/storage/gcs_aio.py` maps that 404, and only
-that status, onto the contract. Without the mapping, a failed verification that never wrote a
-snapshot pointer could not persist its report on GCS.
+that status, onto the contract (and a 412 on a create-only upload onto "already exists").
+Without the mapping, a failed verification that never wrote a snapshot pointer could not
+persist its report on GCS.
 
 ---
 
@@ -629,4 +708,4 @@ when one starts firing in production.
 
 A start exception does not prove that Temporal rejected the workflow. The API deletes a ledger row only for a definitive invalid-request rejection. For uncertain outcomes it describes the same ID and verifies the original input/owner from the first history event. A matching accepted start returns its existing handle; otherwise the API retains the ledger and returns 503 with the workflow ID for polling, without starting another execution. A retained uncertain row may have no history, so the legacy “no longer retained” detail alone does not prove execution.
 
-If a failed/terminated/timed-out/canceled execution cannot answer its query (including termination before the first worker task), the API reconstructs a FAILED output from that same history event and the described terminal state. Original ownership checks apply before the output is returned. This needs retained Temporal history, not a worker replay or a ledger schema change.
+A failed/terminated/timed-out/canceled execution is never answered from its query view. GET reads its history instead: the computed output, if the workflow scheduled the persist activity, otherwise the one deterministic FAILED report built from the start event and the close time (see "Verification report persistence and history recovery" above). Original ownership checks apply before the output is returned. This needs retained Temporal history, not a worker replay or a ledger schema change.
