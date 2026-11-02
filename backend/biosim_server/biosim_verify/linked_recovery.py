@@ -30,6 +30,11 @@ from biosim_server.biosim_omex.models import OmexFile
 from biosim_server.biosim_runs.models import BiosimulatorVersion
 from biosim_server.biosim_verify.database import IdempotencyConflict, VerificationDatabaseService
 from biosim_server.biosim_verify.models import (
+    DERIVED_LINKS_OTHERS_LIMIT,
+    DERIVED_LINKS_OWN_LIMIT,
+    DERIVED_LINKS_PRIORITY_LIMIT,
+    MAX_DERIVED_PER_SOURCE_PER_DAY_ANONYMOUS,
+    MAX_DERIVED_PER_SOURCE_PER_DAY_AUTHENTICATED,
     REVERIFY_DEFAULT_ABS_TOL_MIN,
     REVERIFY_DEFAULT_ABS_TOL_SCALE,
     REVERIFY_DEFAULT_CACHE_BUSTER,
@@ -42,6 +47,7 @@ from biosim_server.biosim_verify.models import (
     CompareSettings,
     DerivationKind,
     DerivedVerificationLink,
+    InitiatorRelation,
     LinkedRecoveryAccepted,
     NumericalInputSnapshot,
     ReconstructOffer,
@@ -63,6 +69,7 @@ from biosim_server.biosim_verify.reconstruct_workflow import (
 from biosim_server.biosim_verify.report_codec import encode_report
 from biosim_server.biosim_verify.snapshots import SKIPPED_WORK_LIMIT
 from biosim_server.common.auth import AuthenticatedUser
+from biosim_server.common.auth.roles import ADMIN_ROLE
 from biosim_server.common.ratelimit import _enforce_rate_limit, client_identity
 from biosim_server.dependencies import (
     get_file_service,
@@ -301,13 +308,16 @@ def annotate_output(
     record: VerificationRecord | None,
     provenance: VerificationProvenance | None,
     links: list[DerivedVerificationLink],
+    total: int,
 ) -> VerifyWorkflowOutput:
     """Overlay derivation metadata and derived links onto a response without writing the stored report.
 
     Recovery offers are not part of a report response; ``GET /verify/{id}/recovery``
     computes them when a caller asks.
     """
-    update: dict[str, object] = {"derived_verifications": links}
+    update: dict[str, object] = {"derived_verifications": links, "derived_verifications_total": total}
+    if record is not None and record.custom_settings is not None:
+        update["custom_settings"] = record.custom_settings
     if record is not None and record.source_verification_id:
         update["source_verification_id"] = record.source_verification_id
     if record is not None and record.derivation_kind:
@@ -326,29 +336,74 @@ def annotate_output(
     return output.model_copy(update=update)
 
 
-async def derived_links(source_id: str) -> list[DerivedVerificationLink]:
+_PRIORITY_RELATIONS = (InitiatorRelation.OWNER, InitiatorRelation.ADMIN)
+
+
+async def derived_links(
+    source_id: str, user: AuthenticatedUser | None,
+) -> tuple[list[DerivedVerificationLink], int]:
+    """The derived verifications a permalink lists, and how many there are in all.
+
+    Newest first within each group: every owner- or admin-started one, then the
+    caller's own, each capped at 10, then the 5 newest started by anyone else.
+    Many requests from others can therefore never push the owner's, an
+    admin's or the caller's own off the page.  Links say who started them only
+    as a relation, never as an identity.
+    """
     ledger = get_verification_database_service()
     if ledger is None:
-        return []
+        return [], 0
     try:
-        rows = await ledger.list_derived(source_id)
+        groups = [await ledger.list_derived(source_id, limit=DERIVED_LINKS_PRIORITY_LIMIT, relations=_PRIORITY_RELATIONS)]
+        if user is not None:
+            groups.append(await ledger.list_derived(source_id, limit=DERIVED_LINKS_OWN_LIMIT, initiator_sub=user.sub))
+        groups.append(await ledger.list_derived(
+            source_id, limit=DERIVED_LINKS_OTHERS_LIMIT, exclude_relations=_PRIORITY_RELATIONS,
+            exclude_initiator_sub=None if user is None else user.sub,
+        ))
+        total = (await ledger.list_derived(source_id, limit=1)).total
     except Exception:
         logger.error("derived verification lookup failed for %s", source_id)
-        return []
-    if not isinstance(rows, list):
-        return []
+        return [], 0
     links: list[DerivedVerificationLink] = []
-    for row in rows:
-        if not isinstance(row, VerificationRecord) or row.derivation_kind not in {
+    seen: set[str] = set()
+    for row in (row for group in groups for row in group.items):
+        if row.workflow_id in seen or row.derivation_kind not in {
             DerivationKind.RECONSTRUCTION, DerivationKind.REVERIFICATION,
         }:
             continue
+        seen.add(row.workflow_id)
         links.append(DerivedVerificationLink(
             workflow_id=row.workflow_id,
             derivation_kind=DerivationKind(row.derivation_kind),
             created=row.created,
+            initiator_relation=row.initiator_relation,
+            is_yours=user is not None and row.initiator_sub == user.sub,
+            custom_settings=bool(row.custom_settings),
         ))
-    return links
+    return links, total
+
+
+def initiator_relation(user: AuthenticatedUser | None, source: VerificationRecord) -> InitiatorRelation:
+    """The caller's relation to the source, decided now: a later role change does not alter it."""
+    if user is None:
+        return InitiatorRelation.ANONYMOUS
+    if source.owner_sub is not None and user.sub == source.owner_sub:
+        return InitiatorRelation.OWNER
+    if ADMIN_ROLE in user.roles:
+        return InitiatorRelation.ADMIN
+    return InitiatorRelation.OTHER
+
+
+def custom_settings(settings: CompareSettings) -> bool:
+    """Whether comparison settings differ from the documented re-verification defaults."""
+    defaults = documented_reverify_settings()
+    return (
+        settings.rel_tol != defaults.rel_tol
+        or settings.abs_tol_min != defaults.abs_tol_min
+        or settings.abs_tol_scale != defaults.abs_tol_scale
+        or settings.observables is not None
+    )
 
 
 def _request_hash(body: BaseModel) -> str:
@@ -432,13 +487,30 @@ async def _insert_or_match(record: VerificationRecord) -> None:
             raise HTTPException(status_code=503, detail=_UNKNOWN_START)
 
 
-async def _charge_new_reservation(*, request: Request, user: AuthenticatedUser | None) -> None:
-    """Charge the shared workflow budget for a reservation that does not exist yet.
+async def _charge_new_reservation(*, request: Request, user: AuthenticatedUser | None, source_id: str) -> None:
+    """Admit and charge a reservation that does not exist yet.
 
-    A retry of an existing reservation is never charged, so a lost reply can
-    converge after the quota is spent.  Concurrent identical requests may each
-    be charged; the unique index still keeps one id.
+    First the per-source daily cap: one caller may start at most 10 derived
+    verifications of one source a day (3 anonymously).  It is counted from the
+    caller's reservations and checked before the shared workflow budget, so a
+    capped request costs nothing.  Then the shared budget is charged.
+
+    A retry of an existing reservation is never charged or counted, so a lost
+    reply can converge after the quota is spent.  Concurrent requests may each
+    pass the cap check, so it can be exceeded by the requests in flight.
     """
+    ledger = await _require_ledger()
+    caller_key, authenticated = client_identity(user, request)
+    cap = MAX_DERIVED_PER_SOURCE_PER_DAY_AUTHENTICATED if authenticated else MAX_DERIVED_PER_SOURCE_PER_DAY_ANONYMOUS
+    try:
+        recent = await ledger.count_recent_recoveries(caller_key, source_id, datetime.now(UTC) - timedelta(days=1))
+    except Exception as exc:
+        logger.error("recovery cap lookup failed for %s", source_id)
+        raise HTTPException(status_code=503, detail="Verification database service not available") from exc
+    if recent >= cap:
+        raise RecoveryRejected(
+            429, f"At most {cap} derived verifications of one verification can be started per day.", "derived_limit",
+        )
     _enforce_rate_limit(request, user)
 
 
@@ -512,12 +584,13 @@ async def _start_reserved(
 
 def _record(
     workflow_id: str, source: VerificationRecord, kind: DerivationKind, user: AuthenticatedUser | None,
-    workflow_input: BaseModel, omex_hash: str | None,
+    workflow_input: BaseModel, omex_hash: str | None, *, custom: bool = False,
 ) -> VerificationRecord:
     dumped = workflow_input.model_dump(mode="json")
     return VerificationRecord(
         workflow_id=workflow_id, verify_type=VerificationType.OMEX if kind == DerivationKind.REVERIFICATION else VerificationType.RUNS,
         owner_sub=source.owner_sub, initiator_sub=None if user is None else user.sub,
+        initiator_relation=initiator_relation(user, source), custom_settings=custom,
         created=datetime.now(UTC), omex_hash=omex_hash, source_verification_id=source.workflow_id,
         derivation_kind=kind.value, workflow_input=dumped, request_hash=encode_report(dumped)[3],
     )
@@ -647,7 +720,7 @@ async def accept_reconstruction(
     offer = await _matching_snapshots(body, provenance)
     # Every refusal so far was in memory.  Charge before any storage I/O.
     if existing is None:
-        await _charge_new_reservation(request=request, user=user)
+        await _charge_new_reservation(request=request, user=user, source_id=source.workflow_id)
     await _require_snapshots_exist(provenance.input_snapshots)
     workflow_id = existing.workflow_id if existing is not None else await _reserve_workflow_id(
         request=request, user=user, source_id=source.workflow_id, operation=DerivationKind.RECONSTRUCTION,
@@ -702,7 +775,7 @@ async def accept_reverification(
             )
     # Charge before the archive lookup and its storage metadata call.
     if existing is None:
-        await _charge_new_reservation(request=request, user=user)
+        await _charge_new_reservation(request=request, user=user, source_id=source.workflow_id)
     archive, omex = await _archive(source)
     if archive == "unavailable":
         raise HTTPException(status_code=503, detail="Archive storage is unavailable")
@@ -729,7 +802,8 @@ async def accept_reverification(
     )
     handle = await _start_reserved(
         temporal=temporal, workflow_id=workflow_id,
-        record=_record(workflow_id, source, DerivationKind.REVERIFICATION, user, workflow_input, source.omex_hash),
+        record=_record(workflow_id, source, DerivationKind.REVERIFICATION, user, workflow_input, source.omex_hash,
+                       custom=custom_settings(settings)),
         workflow_input=workflow_input, workflow_type="OmexVerifyWorkflow", input_type=OmexVerifyWorkflowInput,
         start_workflow=lambda: temporal.start_workflow(
             cast(Any, OmexVerifyWorkflow.run),

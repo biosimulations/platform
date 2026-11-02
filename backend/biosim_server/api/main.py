@@ -251,10 +251,12 @@ class _ResultsNoLongerRetained(Exception):
 
     def __init__(
         self, detail: str, recovery: VerificationRecovery | None, derived: list[DerivedVerificationLink],
+        derived_total: int = 0,
     ) -> None:
         self.detail = detail
         self.recovery = recovery
         self.derived = derived
+        self.derived_total = derived_total
         super().__init__(detail)
 
 
@@ -275,6 +277,7 @@ async def _results_no_longer_retained(_request: Request, exc: _ResultsNoLongerRe
         body["recovery"] = exc.recovery.model_dump(mode="json")
     if exc.derived:
         body["derived_verifications"] = [link.model_dump(mode="json") for link in exc.derived]
+        body["derived_verifications_total"] = exc.derived_total
     if exc.recovery is not None or exc.derived:
         headers["Cache-Control"] = "private, no-store"
     return JSONResponse(status_code=404, content=body, headers=headers)
@@ -838,7 +841,9 @@ async def _publish_recovered_output(
         return output.model_copy(update={"persistence_state": ReportPersistenceState.PENDING, "report_available": False})
 
 
-async def _annotated(output: VerifyWorkflowOutput, row: VerificationRecord | None) -> VerifyWorkflowOutput:
+async def _annotated(
+    output: VerifyWorkflowOutput, row: VerificationRecord | None, user: AuthenticatedUser | None,
+) -> VerifyWorkflowOutput:
     """Add derivation metadata and derived links to a finished report.
 
     A verification that is still running gets progress only: no provenance,
@@ -856,7 +861,8 @@ async def _annotated(output: VerifyWorkflowOutput, row: VerificationRecord | Non
             loaded = await store.get_provenance(output.workflow_id)
             if isinstance(loaded, VerificationProvenance):
                 provenance = loaded
-        return annotate_output(output, row, provenance, await derived_links(output.workflow_id))
+        links, total = await derived_links(output.workflow_id, user)
+        return annotate_output(output, row, provenance, links, total)
     except Exception:
         logger.error("verification annotation failed for %s", output.workflow_id)
         return output
@@ -900,7 +906,7 @@ async def get_verify_output(
                 saved = await report_store.get(workflow_id)
                 if saved is not None:
                     _authorize_verification_read(user, saved.owner_sub)
-                    return await _annotated(saved, row)
+                    return await _annotated(saved, row, user)
         except HTTPException:
             raise
         except (ReportCorrupt, ReportUnavailable) as exc:
@@ -944,7 +950,7 @@ async def get_verify_output(
             recovered.output, origin=recovered.origin, provenance=recovered.provenance,
         )
         await _record_terminal_status(output)
-        return await _annotated(output, row)
+        return await _annotated(output, row, user)
 
     # Pin both result retrieval and progress queries to the described execution.
     handle = temporal_client.get_workflow_handle(
@@ -1005,7 +1011,7 @@ async def get_verify_output(
             )
             raise HTTPException(status_code=503, detail="Stored verification report is unavailable")
         _authorize_verification_read(user, saved.owner_sub)
-        return await _annotated(saved, row)
+        return await _annotated(saved, row, user)
 
     # Step 4: D1 fix — reconcile a stuck IN_PROGRESS against Temporal's execution status.
     workflow_output = _reconcile_terminal_status(workflow_output, desc.status)
@@ -1016,7 +1022,7 @@ async def get_verify_output(
     # Step 5: remember the terminal status for the listing (after authorization).
     await _record_terminal_status(workflow_output)
 
-    return await _annotated(workflow_output, row)
+    return await _annotated(workflow_output, row, user)
 
 
 async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None) -> NoReturn:
@@ -1046,10 +1052,10 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None)
                         logger.error("verification recovery annotation failed for %s", workflow_id)
                     # The permalink keeps showing the original's unavailability; it
                     # links to derived verifications instead of redirecting to one.
+                    links, total = await derived_links(workflow_id, user)
                     raise _ResultsNoLongerRetained(
                         f"Verification {workflow_id} exists but its results are no longer retained.",
-                        recovery,
-                        await derived_links(workflow_id),
+                        recovery, links, total,
                     )
         except (HTTPException, _ResultsNoLongerRetained):
             raise

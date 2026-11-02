@@ -12,7 +12,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
@@ -22,6 +22,7 @@ from pymongo.errors import DuplicateKeyError
 from biosim_server.biosim_verify.models import (
     MAX_WORKFLOW_ID_BYTES,
     VERIFICATION_IDS_MAX_PAGE_SIZE,
+    InitiatorRelation,
     PersistenceAck,
     RecoveryReservation,
     VerificationRecord,
@@ -101,6 +102,15 @@ def _summary_from_doc(doc: Mapping[str, Any]) -> VerificationSummary:
         source_verification_id=doc.get("source_verification_id"),
         derivation_kind=doc.get("derivation_kind"),
     )
+
+
+@dataclass(frozen=True)
+class DerivedPage:
+    """One page of a source's derived verifications, newest first."""
+
+    items: list[VerificationRecord]
+    total: int  # every row the filter matches
+    truncated: bool  # total > len(items)
 
 
 class LeaseLost(RuntimeError):
@@ -246,8 +256,22 @@ class VerificationDatabaseService(ABC):
         ...
 
     @abstractmethod
-    async def list_derived(self, source_verification_id: str) -> list[VerificationRecord]:
-        """Return verifications linked to *source_verification_id*, oldest first."""
+    async def list_derived(
+        self, source_verification_id: str, *, limit: int = 100,
+        relations: Sequence[InitiatorRelation] | None = None, initiator_sub: str | None = None,
+        exclude_relations: Sequence[InitiatorRelation] = (), exclude_initiator_sub: str | None = None,
+    ) -> DerivedPage:
+        """Verifications linked to *source_verification_id*, newest first, with the filter's total.
+
+        ``relations``/``exclude_relations`` select on ``initiator_relation`` (a row
+        without one counts as excluded from neither list), and
+        ``initiator_sub``/``exclude_initiator_sub`` on who started it.
+        """
+        ...
+
+    @abstractmethod
+    async def count_recent_recoveries(self, caller_key: str, source_verification_id: str, since: datetime) -> int:
+        """Reservations this caller made for this source at or after *since*."""
         ...
 
     @abstractmethod
@@ -303,6 +327,12 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
         # A hash-filtered page is served in listing order from the index, not sorted in memory.
         await self._collection.create_index([("omex_hash", ASCENDING), *_LISTING_SORT])
         await self._collection.create_index("source_verification_id")
+        # Serves a permalink's derived links, newest first, whatever the filter on initiator.
+        await self._collection.create_index([("source_verification_id", ASCENDING), ("created", DESCENDING)])
+        # Serves the per-caller, per-source daily cap on recovery requests.
+        await self._idempotency.create_index(
+            [("caller_key", ASCENDING), ("source_verification_id", ASCENDING), ("created", ASCENDING)],
+        )
         await self._idempotency.create_index(
             [
                 ("caller_key", ASCENDING), ("source_verification_id", ASCENDING),
@@ -496,11 +526,33 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
             {"$set": {"workflow_run_id": workflow_run_id}},
         )
 
-    async def list_derived(self, source_verification_id: str) -> list[VerificationRecord]:
-        docs = await self._collection.find(
-            {"source_verification_id": source_verification_id}, projection={"_id": 0},
-        ).sort([("created", ASCENDING), ("workflow_id", ASCENDING)]).limit(100).to_list(100)
-        return [VerificationRecord.model_validate(doc) for doc in docs]
+    async def list_derived(
+        self, source_verification_id: str, *, limit: int = 100,
+        relations: Sequence[InitiatorRelation] | None = None, initiator_sub: str | None = None,
+        exclude_relations: Sequence[InitiatorRelation] = (), exclude_initiator_sub: str | None = None,
+    ) -> DerivedPage:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        query: dict[str, object] = {"source_verification_id": source_verification_id}
+        if relations is not None:
+            query["initiator_relation"] = {"$in": [relation.value for relation in relations]}
+        elif exclude_relations:
+            query["initiator_relation"] = {"$nin": [relation.value for relation in exclude_relations]}
+        if initiator_sub is not None:
+            query["initiator_sub"] = initiator_sub
+        elif exclude_initiator_sub is not None:
+            query["initiator_sub"] = {"$ne": exclude_initiator_sub}
+        docs = await self._collection.find(query, projection={"_id": 0}).sort(
+            [("created", DESCENDING), ("workflow_id", DESCENDING)],
+        ).limit(limit).to_list(limit)
+        items = [VerificationRecord.model_validate(doc) for doc in docs]
+        total = len(items) if len(items) < limit else await self._collection.count_documents(query)
+        return DerivedPage(items=items, total=total, truncated=total > len(items))
+
+    async def count_recent_recoveries(self, caller_key: str, source_verification_id: str, since: datetime) -> int:
+        return await self._idempotency.count_documents({
+            "caller_key": caller_key, "source_verification_id": source_verification_id, "created": {"$gte": since},
+        })
 
     async def find_recovery(
         self, caller_key: str, source_verification_id: str, operation: str, idempotency_key: str,

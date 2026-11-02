@@ -16,6 +16,15 @@ MAX_VERIFY_SIMULATORS: Final = 10
 # One snapshot is one dataset of one run. The cap bounds download and comparison
 # work for a single recovery, on top of the run-id limit.
 MAX_VERIFY_SNAPSHOTS: Final = 200
+# Derived verifications one caller may start from one source in a day (D4, D5),
+# counted before the shared workflow budget is charged.
+MAX_DERIVED_PER_SOURCE_PER_DAY_AUTHENTICATED: Final = 10
+MAX_DERIVED_PER_SOURCE_PER_DAY_ANONYMOUS: Final = 3
+# What a permalink lists of its derived verifications: every owner- or admin-started
+# one and every one of the caller's own (each capped), then the newest others.
+DERIVED_LINKS_PRIORITY_LIMIT: Final = 10
+DERIVED_LINKS_OWN_LIMIT: Final = 10
+DERIVED_LINKS_OTHERS_LIMIT: Final = 5
 MAX_SNAPSHOT_CONCURRENCY: Final = 4
 
 # Documented defaults for POST /verify/{id}/reverify when the caller omits a field.
@@ -146,6 +155,18 @@ class DerivationKind(StrEnum):
     REVERIFICATION = "reverification"
 
 
+class InitiatorRelation(StrEnum):
+    """Who started a derived verification, relative to its source.  Never an identity.
+
+    Decided when the verification is reserved: a caller's admin role at that
+    moment, not later, is what counts.
+    """
+    OWNER = "owner"
+    ADMIN = "admin"
+    OTHER = "other"
+    ANONYMOUS = "anonymous"
+
+
 class RecoveryAction(BaseModel):
     eligible: bool
     reason: Optional[str] = None
@@ -183,6 +204,14 @@ class DerivedVerificationLink(BaseModel):
     workflow_id: str
     derivation_kind: DerivationKind
     created: datetime
+    initiator_relation: Optional[InitiatorRelation] = Field(
+        default=None,
+        description="Who started it relative to the source: owner, admin, other or anonymous. Never an identity.",
+    )
+    is_yours: bool = Field(default=False, description="Started by the authenticated caller.")
+    custom_settings: bool = Field(
+        default=False, description="Its comparison settings differ from the documented re-verification defaults.",
+    )
 
 
 class VerifyWorkflowOutput(BaseModel):
@@ -214,6 +243,11 @@ class VerifyWorkflowOutput(BaseModel):
     # "new_calculation" for reconstruction. Byte-identical restoration is not claimed.
     calculation: Optional[str] = None
     derived_verifications: list[DerivedVerificationLink] = Field(default_factory=list)
+    derived_verifications_total: int = Field(
+        default=0, description="All derived verifications of this one; more than are listed when some are omitted.",
+    )
+    # On a derived re-verification: its settings differ from the documented defaults.
+    custom_settings: Optional[bool] = None
     recovery: Optional[VerificationRecovery] = Field(
         default=None,
         description="Not set on a report response. GET /verify/{workflow_id}/recovery returns the offers on demand.",
@@ -339,6 +373,8 @@ class VerificationRecord(BaseModel):
     derivation_kind: str | None = None
     # Caller who requested recovery. Quota and audit use this; owner_sub stays the source owner.
     initiator_sub: str | None = None
+    initiator_relation: InitiatorRelation | None = None
+    custom_settings: bool | None = None
     persistence_ack: PersistenceAck | None = None
 
     @property

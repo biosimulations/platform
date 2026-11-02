@@ -1913,6 +1913,23 @@ components:
           type: string
           format: date-time
           title: Created
+        initiator_relation:
+          anyOf:
+          - $ref: '#/components/schemas/InitiatorRelation'
+          - type: 'null'
+          description: 'Who started it relative to the source: owner, admin, other
+            or anonymous. Never an identity.'
+        is_yours:
+          type: boolean
+          title: Is Yours
+          description: Started by the authenticated caller.
+          default: false
+        custom_settings:
+          type: boolean
+          title: Custom Settings
+          description: Its comparison settings differ from the documented re-verification
+            defaults.
+          default: false
       type: object
       required:
       - workflow_id
@@ -2123,6 +2140,21 @@ components:
       - shape
       - values
       title: Hdf5DataValues
+    InitiatorRelation:
+      type: string
+      enum:
+      - owner
+      - admin
+      - other
+      - anonymous
+      title: InitiatorRelation
+      description: 'Who started a derived verification, relative to its source.  Never
+        an identity.
+
+
+        Decided when the verification is reserved: a caller''s admin role at that
+
+        moment, not later, is what counts.'
     JobLogs:
       properties:
         jobId:
@@ -4082,6 +4114,17 @@ components:
             $ref: '#/components/schemas/DerivedVerificationLink'
           type: array
           title: Derived Verifications
+        derived_verifications_total:
+          type: integer
+          title: Derived Verifications Total
+          description: All derived verifications of this one; more than are listed
+            when some are omitted.
+          default: 0
+        custom_settings:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Custom Settings
         recovery:
           anyOf:
           - $ref: '#/components/schemas/VerificationRecovery'

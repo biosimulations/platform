@@ -357,7 +357,7 @@ async def test_identical_requests_converge_and_conflicts_fail(recovery_world: An
     assert conflict.status_code == 409
     assert conflict.json()["code"] == "idempotency_conflict"
     assert len(set(recovery_world.temporal.started)) == 1
-    assert len(await recovery_world.ledger.list_derived("source-converge")) == 1
+    assert (await recovery_world.ledger.list_derived("source-converge")).total == 1
 
 
 @pytest.mark.asyncio
@@ -375,25 +375,38 @@ async def test_lost_reply_retries_the_reserved_id(recovery_world: Any) -> None:
         )
     assert recovered.status_code == 202
     assert recovery_world.temporal.started == [recovered.json()["workflow_id"]]
-    assert len(await recovery_world.ledger.list_derived("source-lost")) == 1
+    assert (await recovery_world.ledger.list_derived("source-lost")).total == 1
 
 
 @pytest.mark.asyncio
 async def test_anonymous_quota_charges_new_reservations_only(recovery_world: Any) -> None:
-    archived = await _archive_source(recovery_world, "source-quota")
+    """Anonymous: 3 per source per day, then the shared budget of 5 across sources."""
+    first = await _archive_source(recovery_world, "source-quota")
+    second = await _archive_source(recovery_world, "source-quota-2")
     async with await _client() as client:
-        for index in range(5):
+        for index in range(3):
             response = await client.post(
-                "/verify/source-quota/reconstruct", headers={"Idempotency-Key": f"quota-key-{index}"}, json=_body(archived),
+                "/verify/source-quota/reconstruct", headers={"Idempotency-Key": f"quota-key-{index}"}, json=_body(first),
+            )
+            assert response.status_code == 202, response.text
+        capped = await client.post(
+            "/verify/source-quota/reconstruct", headers={"Idempotency-Key": "quota-key-extra"}, json=_body(first),
+        )
+        for index in range(2):
+            response = await client.post(
+                "/verify/source-quota-2/reconstruct", headers={"Idempotency-Key": f"quota-2-key-{index}"},
+                json=_body(second),
             )
             assert response.status_code == 202, response.text
         limited = await client.post(
-            "/verify/source-quota/reconstruct", headers={"Idempotency-Key": "quota-key-extra"}, json=_body(archived),
+            "/verify/source-quota-2/reconstruct", headers={"Idempotency-Key": "quota-2-key-extra"}, json=_body(second),
         )
         retry = await client.post(
-            "/verify/source-quota/reconstruct", headers={"Idempotency-Key": "quota-key-0"}, json=_body(archived),
+            "/verify/source-quota/reconstruct", headers={"Idempotency-Key": "quota-key-0"}, json=_body(first),
         )
-    assert limited.status_code == 429
+    assert capped.status_code == 429 and capped.json()["code"] == "derived_limit"
+    # The capped request was not charged: the shared budget still had room for two more.
+    assert limited.status_code == 429 and "code" not in limited.json()
     assert retry.status_code == 202
     assert len(set(recovery_world.temporal.started)) == 5
 
@@ -737,7 +750,7 @@ async def _omex_source(world: Any, workflow_id: str, owner: str | None = None) -
 
 async def _terminate_derived(world: Any, temporal: Any, source_id: str) -> None:
     """Started without a worker; a later test's worker must never pick these up."""
-    for row in await world.ledger.list_derived(source_id):
+    for row in (await world.ledger.list_derived(source_id)).items:
         try:
             await temporal.get_workflow_handle(row.workflow_id).terminate(reason="test cleanup")
         except Exception:
@@ -843,7 +856,7 @@ async def test_reverify_idempotency_converges_on_real_temporal(
                 )
         assert conflict.status_code == 409
         assert conflict.json()["code"] == "idempotency_conflict"
-        derived = await recovery_world.ledger.list_derived("source-reverify-live")
+        derived = (await recovery_world.ledger.list_derived("source-reverify-live")).items
         assert sorted(row.workflow_id for row in derived) == sorted({
             first.json()["workflow_id"], accepted.json()["workflow_id"], started.json()["workflow_id"],
         })
@@ -910,7 +923,7 @@ async def test_reverify_access_privacy_quota_and_unavailable_permalink(
         with patch("biosim_server.api.main.get_biosim_service", return_value=_catalog()):
             async with await _client() as client:
                 quota_url = "/verify/source-reverify-quota/reverify"
-                for index in range(5):
+                for index in range(3):
                     response = await client.post(quota_url, headers={"Idempotency-Key": f"quota-key-{index}"}, json={})
                     assert response.status_code == 202, response.text
                 limited = await client.post(quota_url, headers={"Idempotency-Key": "quota-key-extra"}, json={})
@@ -919,9 +932,9 @@ async def test_reverify_access_privacy_quota_and_unavailable_permalink(
                     quota_url, headers={"Idempotency-Key": "quota-key-wide"},
                     json={"simulators": [f"sim{index}" for index in range(MAX_VERIFY_SIMULATORS + 1)]},
                 )
-        assert limited.status_code == 429
+        assert limited.status_code == 429 and limited.json()["code"] == "derived_limit"
         assert retry.status_code == 202
         assert too_many.status_code == 422
-        assert len(await recovery_world.ledger.list_derived("source-reverify-quota")) == 5
+        assert (await recovery_world.ledger.list_derived("source-reverify-quota")).total == 3
     finally:
         await _terminate_derived(recovery_world, temporal_client, "source-reverify-quota")
