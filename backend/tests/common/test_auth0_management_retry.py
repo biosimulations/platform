@@ -56,9 +56,14 @@ class _Script:
         return item
 
 
-def _response(status: int, body: dict[str, object] | None = None,
-              headers: dict[str, str] | None = None) -> httpx.Response:
-    return httpx.Response(status, json=body if body is not None else {}, headers=headers or {})
+def _response(
+    status: int,
+    body: dict[str, object] | None = None,
+    headers: dict[str, str] | None = None,
+) -> httpx.Response:
+    return httpx.Response(
+        status, json=body if body is not None else {}, headers=headers or {}
+    )
 
 
 @pytest.fixture
@@ -72,7 +77,9 @@ def patch_mgmt(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         management_client_secret=_MGMT_SECRET,
     )
     monkeypatch.setattr(mgmt, "get_settings", lambda: SimpleNamespace(auth0=stub_auth0))
-    monkeypatch.setattr(mgmt, "_get_management_token", AsyncMock(return_value=_MGMT_TOKEN))
+    monkeypatch.setattr(
+        mgmt, "_get_management_token", AsyncMock(return_value=_MGMT_TOKEN)
+    )
     sleep_mock = AsyncMock()
     # Patch the real module objects the helper references (`asyncio.sleep`,
     # `httpx.AsyncClient`) rather than reaching through the re-exports on `mgmt`.
@@ -132,6 +139,49 @@ async def test_exhausted_429_raises_rate_limited_with_retry_after(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw", "expected", "calls"),
+    [
+        ("0.2", 1, 3),
+        ("1", 1, 3),
+        ("2", 2, 3),
+        ("7.5", 8, 3),
+        # 900 is clamped to 30s, which is already past the 15s retry budget, so
+        # the loop stops after the first response instead of sleeping past it.
+        ("900", mgmt._MGMT_RETRY_AFTER_CEILING_SECONDS, 1),
+        ("nan", mgmt._MGMT_EXHAUSTED_RETRY_AFTER_SECONDS, 3),
+        ("inf", mgmt._MGMT_EXHAUSTED_RETRY_AFTER_SECONDS, 3),
+        ("-inf", mgmt._MGMT_EXHAUSTED_RETRY_AFTER_SECONDS, 3),
+        ("soon", mgmt._MGMT_EXHAUSTED_RETRY_AFTER_SECONDS, 3),
+    ],
+    ids=[
+        "below-one",
+        "integer-one",
+        "integer",
+        "above-one",
+        "clamped",
+        "nan",
+        "infinity",
+        "negative-infinity",
+        "malformed",
+    ],
+)
+async def test_exhausted_429_hint_is_a_positive_ceiled_integer(
+    patch_mgmt: SimpleNamespace,
+    raw: str,
+    expected: int,
+    calls: int,
+) -> None:
+    """Resource retries advertise a whole second at least as long as Auth0 asked."""
+    script = _Script([_response(429, headers={"Retry-After": raw})] * 3)
+    patch_mgmt.install(script)
+    with pytest.raises(Auth0ManagementRateLimited) as exc_info:
+        await get_auth0_user("auth0|abc")
+    assert exc_info.value.retry_after == expected
+    assert script.calls == calls
+
+
+@pytest.mark.asyncio
 async def test_non_retryable_4xx_is_not_retried(patch_mgmt: SimpleNamespace) -> None:
     script = _Script([_response(404, {"error": "not found"})])
     patch_mgmt.install(script)
@@ -142,11 +192,15 @@ async def test_non_retryable_4xx_is_not_retried(patch_mgmt: SimpleNamespace) -> 
 
 
 @pytest.mark.asyncio
-async def test_honours_429_retry_after_before_retrying(patch_mgmt: SimpleNamespace) -> None:
-    script = _Script([
-        _response(429, headers={"Retry-After": "1"}),
-        _response(200, {"name": "Jane"}),
-    ])
+async def test_honours_429_retry_after_before_retrying(
+    patch_mgmt: SimpleNamespace,
+) -> None:
+    script = _Script(
+        [
+            _response(429, headers={"Retry-After": "1"}),
+            _response(200, {"name": "Jane"}),
+        ]
+    )
     patch_mgmt.install(script)
     assert await get_auth0_user("auth0|abc") == {"name": "Jane"}
     assert patch_mgmt.sleep.await_count == 1
@@ -155,7 +209,9 @@ async def test_honours_429_retry_after_before_retrying(patch_mgmt: SimpleNamespa
 
 
 @pytest.mark.asyncio
-async def test_transport_error_retried_then_unavailable(patch_mgmt: SimpleNamespace) -> None:
+async def test_transport_error_retried_then_unavailable(
+    patch_mgmt: SimpleNamespace,
+) -> None:
     script = _Script([_TRANSPORT_ERROR, _TRANSPORT_ERROR, _TRANSPORT_ERROR])
     patch_mgmt.install(script)
     with pytest.raises(Auth0ManagementUnavailable):
@@ -165,15 +221,20 @@ async def test_transport_error_retried_then_unavailable(patch_mgmt: SimpleNamesp
 
 @pytest.mark.asyncio
 async def test_retry_logs_never_leak_token_or_secret_and_name_the_status(
-    patch_mgmt: SimpleNamespace, caplog: pytest.LogCaptureFixture,
+    patch_mgmt: SimpleNamespace,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    script = _Script([
-        _response(500),
-        _response(429, headers={"Retry-After": "1"}),
-        _response(200, {"name": "Jane"}),
-    ])
+    script = _Script(
+        [
+            _response(500),
+            _response(429, headers={"Retry-After": "1"}),
+            _response(200, {"name": "Jane"}),
+        ]
+    )
     patch_mgmt.install(script)
-    with caplog.at_level(logging.WARNING, logger="biosim_server.common.auth.auth0_management"):
+    with caplog.at_level(
+        logging.WARNING, logger="biosim_server.common.auth.auth0_management"
+    ):
         assert await get_auth0_user("auth0|abc") == {"name": "Jane"}
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert _MGMT_TOKEN not in text

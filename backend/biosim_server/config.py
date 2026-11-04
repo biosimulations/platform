@@ -351,6 +351,13 @@ class RateLimitSettings(BaseSettings):
     password_reset_window_seconds: int = Field(
         default=300, gt=0, alias="RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS"
     )
+    # Engineering defaults, per process; not a provider capacity guarantee.
+    verification_email_per_window: int = Field(
+        default=3, gt=0, alias="RATE_LIMIT_VERIFICATION_EMAIL_PER_WINDOW"
+    )
+    verification_email_window_seconds: int = Field(
+        default=600, gt=0, alias="RATE_LIMIT_VERIFICATION_EMAIL_WINDOW_SECONDS"
+    )
     # The platform page aggregations are the public browsing path: each request
     # fans out to 3-4 calls against the upstream API this project does not own,
     # so the bucket must bound that amplifier while staying well clear of normal
