@@ -22,7 +22,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import HTMLResponse, JSONResponse
 
 from biosim_server.biosim_omex import OmexFile, get_cached_omex_file_from_upload
-from biosim_server.biosim_runs import BiosimulatorVersion, HDF5File
+from biosim_server.biosim_runs import BiosimulatorVersion
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.biosim_verify.activities import PersistVerificationReportActivityInput, prepare_report
 from biosim_server.biosim_verify.compatibility import find_common_datasets
@@ -34,8 +34,11 @@ from biosim_server.biosim_verify.database import (
     decode_verification_cursor,
     encode_verification_cursor,
 )
+from biosim_server.biosim_verify.precheck import _reject_duplicate_selections, load_run_inputs
+from biosim_server.biosim_verify.precheck_router import router as precheck_router
 from biosim_server.compatibility import compatibility_router
 from biosim_server.simulations import run_summary_router, simulations_router
+from biosim_server.simulators import simulators_router
 from biosim_server.projects.router import router as projects_router
 from biosim_server.common.auth import AuthenticatedUser, get_optional_user
 from biosim_server.common.auth.auth0 import JwksCache, get_jwks_cache
@@ -306,6 +309,8 @@ app.include_router(simulations_router)
 app.include_router(run_summary_router)
 app.include_router(projects_router)
 app.include_router(users_router)
+app.include_router(simulators_router)
+app.include_router(precheck_router)
 
 
 def register_demo_router(app: FastAPI, *, enabled: bool) -> None:
@@ -489,16 +494,6 @@ async def verify_omex(
         owner_sub=owner_sub
     )
     return omex_verify_workflow_output
-
-
-def _reject_duplicate_selections(values: list[str], *, label: str) -> None:
-    """400 when a selection repeats: a duplicate has no meaning in a pairwise
-    comparison and would only multiply workflow work for one quota unit."""
-    duplicates = sorted({value for value in values if values.count(value) > 1})
-    if duplicates:
-        raise HTTPException(
-            status_code=400, detail=f"Duplicate {label} are not allowed: {', '.join(duplicates)}"
-        )
 
 
 def _resolve_requested_simulators(
@@ -1302,8 +1297,15 @@ async def verify_runs(
     owner_sub = user.sub if user is not None else None
 
     # ---- model-compatibility preflight (Step 9) ---- #
+    # The shared loader and overlap matching with GET /verify/runs/precheck (plan §4.4);
+    # the 400 conditions are unchanged and a metadata failure is still a skip.
     if len(biosimulations_run_ids) >= 2:
-        hdf5_files = await _load_hdf5_metadata_for_preflight(biosimulations_run_ids)
+        run_inputs = await load_run_inputs(biosimulations_run_ids, include_run_records=False)
+        hdf5_files = {
+            run_id: item.hdf5_file
+            for run_id, item in run_inputs.items()
+            if item.hdf5_file is not None
+        }
         if len(hdf5_files) >= 2:
             common = find_common_datasets(hdf5_files)
             if not common:
@@ -1401,43 +1403,6 @@ async def _derive_omex_hash_for_runs(run_ids: list[str]) -> tuple[str | None, bo
         logger.info("Runs span %d archives; not linking the verification to one hash", len(hashes))
         return None, True
     return None, False
-
-
-async def _load_hdf5_metadata_for_preflight(
-    run_ids: list[str],
-) -> dict[str, HDF5File]:
-    """Fetch HDF5 metadata for preflight overlap check.
-
-    Tries Mongo cache first; falls back to live BiosimService.  Runs whose
-    metadata can't be fetched are logged and skipped — the workflow already
-    handles those via RUN_ID_NOT_FOUND / FAILED.
-    Returns a dict of run_id -> HDF5File for runs where metadata is available.
-    """
-    results: dict[str, HDF5File] = {}
-    db_service = get_database_service()
-    biosim_svc = get_biosim_service()
-
-    for run_id in dict.fromkeys(run_ids):
-        hdf5: HDF5File | None = None
-        # Try Mongo cache first
-        if db_service is not None:
-            try:
-                cached_list = await db_service.get_biosimulator_workflow_runs_by_biosim_runid(run_id)
-                for cached in cached_list:
-                    if cached.hdf5_file is not None:
-                        hdf5 = cached.hdf5_file
-                        break
-            except Exception:
-                logger.warning("Cached verification metadata unavailable for %s", run_id, exc_info=True)
-        # Fall back to live fetch
-        if hdf5 is None and biosim_svc is not None:
-            try:
-                hdf5 = await biosim_svc.get_hdf5_metadata(run_id)
-            except Exception:
-                logger.warning("Verification metadata unavailable for %s", run_id, exc_info=True)
-        if hdf5 is not None:
-            results[run_id] = hdf5
-    return results
 
 
 @app.get(
