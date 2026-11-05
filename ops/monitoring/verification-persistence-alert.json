@@ -1,0 +1,17 @@
+{
+  "displayName": "Verification report persistence requires attention",
+  "documentation": {
+    "content": "Investigate the rows the verification_reconcile_summary and verification_persistence_attention events count. Then either fix the cause and rerun reconciliation (with --include-acknowledged for acknowledged blocked rows) before Temporal history expires, or acknowledge the row with a reason: python -m scripts.ack_verification_persistence --workflow-id WF --expect-state STATE --by NAME --reason TEXT --apply. An acknowledgement lapses if the row fails differently. See docs/verification-report-retention.md. Never delete or replace an original report to clear an alert.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [{
+    "displayName": "Unacknowledged persistence attention, a failing persist attempt, or a corrupt stored object",
+    "conditionMatchedLog": {
+      "filter": "resource.type=\"k8s_container\" AND resource.labels.namespace_name=\"biosim-gke\" AND (jsonPayload.event=\"verification_persistence_attention\" OR textPayload:\"verification_persistence_attention\" OR textPayload:\"verification_persistence_failure\" OR textPayload:\"verification_object_integrity_conflict\")"
+    }
+  }],
+  "alertStrategy": {"notificationRateLimit": {"period": "900s"}, "autoClose": "86400s"},
+  "notificationChannels": ["projects/PROJECT_ID/notificationChannels/CHANNEL_ID"],
+  "enabled": true
+}

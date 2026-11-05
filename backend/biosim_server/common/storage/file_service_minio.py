@@ -13,16 +13,20 @@ which is used as the S3 object key. The legacy parameter name is kept across
 the family of services for symmetry; it is *not* a GCS-only construct.
 """
 
+import hashlib
 import logging
+import re
 import uuid
 from temporalio import workflow
 with workflow.unsafe.imports_passed_through():
     from datetime import datetime
+from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Optional
 
 from aiobotocore.session import AioSession, get_session
+from botocore.exceptions import ClientError
 from types_aiobotocore_s3 import S3Client
 from typing_extensions import override
 
@@ -31,6 +35,22 @@ from biosim_server.config import get_local_cache_dir, get_settings
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# Error codes of a server that does not support conditional writes (If-None-Match).
+_CONDITIONAL_WRITE_UNSUPPORTED = frozenset({"NotImplemented", "InvalidArgument", "InvalidRequest"})
+
+
+def _status(error: ClientError) -> int | None:
+    status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return status if isinstance(status, int) else None
+
+
+def _code(error: ClientError) -> str:
+    return str(error.response.get("Error", {}).get("Code", ""))
+
+
+def _is_missing(error: ClientError) -> bool:
+    return _status(error) == 404 or _code(error) in {"404", "NoSuchKey", "NotFound"}
 
 
 class FileServiceMinio(FileService):
@@ -82,9 +102,59 @@ class FileServiceMinio(FileService):
         return str(gcs_path)
 
     @override
+    async def put_if_absent(self, file_contents: bytes, gcs_path: str) -> bool:
+        async with self._client() as s3:
+            try:
+                response = await s3.put_object(Bucket=self._bucket, Key=gcs_path, Body=file_contents,
+                                               IfNoneMatch="*")
+            except ClientError as e:
+                if _status(e) == 412 or _code(e) == "PreconditionFailed":
+                    return False
+                if _status(e) != 501 and _code(e) not in _CONDITIONAL_WRITE_UNSUPPORTED:
+                    raise
+                # No conditional writes: check, then put.  A race can only rewrite a
+                # content-addressed name with the same bytes, which is harmless.
+                logger.info(f"Conditional put unsupported; checking {gcs_path} before writing")
+                try:
+                    await s3.head_object(Bucket=self._bucket, Key=gcs_path)
+                    return False
+                except ClientError as missing:
+                    if not _is_missing(missing):
+                        raise
+                response = await s3.put_object(Bucket=self._bucket, Key=gcs_path, Body=file_contents)
+        # A single-part upload's ETag is the MD5 of the stored bytes; others are opaque.
+        etag = str(response.get("ETag", "")).strip('"')
+        if re.fullmatch(r"[0-9a-f]{32}", etag) and etag != hashlib.md5(file_contents, usedforsecurity=False).hexdigest():
+            raise IOError(f"stored object {gcs_path} does not match the uploaded bytes")
+        return True
+
+    @override
+    async def exists(self, gcs_path: str) -> bool:
+        async with self._client() as s3:
+            try:
+                await s3.head_object(Bucket=self._bucket, Key=gcs_path)
+                return True
+            except ClientError as e:
+                if _is_missing(e):
+                    return False
+                raise
+
+    @override
+    async def delete_file(self, gcs_path: str) -> None:
+        async with self._client() as s3:
+            # S3 deletes are idempotent: a missing key is not an error.
+            await s3.delete_object(Bucket=self._bucket, Key=gcs_path)
+
+    @override
     async def get_modified_date(self, gcs_path: str) -> datetime:
         async with self._client() as s3:
-            head = await s3.head_object(Bucket=self._bucket, Key=gcs_path)
+            try:
+                head = await s3.head_object(Bucket=self._bucket, Key=gcs_path)
+            except ClientError as e:
+                # The FileService contract: a missing object is FileNotFoundError.
+                if _is_missing(e):
+                    raise FileNotFoundError(gcs_path) from e
+                raise
         return head["LastModified"]
 
     @override
@@ -101,6 +171,15 @@ class FileServiceMinio(FileService):
                         Size=obj["Size"],
                     ))
         return items
+
+    @override
+    async def iter_objects(self, prefix: str) -> AsyncIterator[ListingItem]:
+        async with self._client() as s3:
+            paginator = s3.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    yield ListingItem(Key=obj["Key"], LastModified=obj["LastModified"], ETag=obj["ETag"],
+                                      Size=obj["Size"])
 
     @override
     async def get_file_contents(self, gcs_path: str) -> bytes | None:

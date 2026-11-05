@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Opt-in, not part of base: the CronJob runs scripts.reconcile_verification_reports
+# from the platform-api image, and images older than the retention release do not
+# contain that module. Enable it in the same deploy PR that moves an overlay's
+# platform-api tag to a backend release that does:
+#
+#   components:
+#   - ../../components/verification-reconcile
+resources:
+  - verification-reconcile-cronjob.yaml

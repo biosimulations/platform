@@ -250,7 +250,10 @@ async def test_page_read_is_bounded(owner: str | None, after: VerificationCursor
                         {"$nor": [{"created": after.created,
                                    "workflow_id": {"$lte": after.workflow_id}}]}])
     assert collection.find_calls == [(({"$and": clauses},), {
-        "projection": {"workflow_id": 1, "verify_type": 1, "created": 1, "omex_hash": 1, "status": 1, "_id": 0},
+        "projection": {
+            "workflow_id": 1, "verify_type": 1, "created": 1, "omex_hash": 1, "status": 1,
+            "source_verification_id": 1, "derivation_kind": 1, "_id": 0,
+        },
     })]
 
     assert cursor.limits == [5]
@@ -440,7 +443,10 @@ async def test_summaries_carry_no_owner_and_an_aware_utc_created(svc: Verificati
     page = await svc.list_verification_ids("alice", limit=10)
     [summary] = page.verifications
     assert isinstance(summary, VerificationSummary)
-    assert set(summary.model_dump()) == {"workflow_id", "verify_type", "created", "omex_hash", "status"}
+    assert set(summary.model_dump()) == {
+        "workflow_id", "verify_type", "created", "omex_hash", "status",
+        "source_verification_id", "derivation_kind",
+    }
     assert summary.created == _utc(2025, 3, 4, 5)
     assert summary.created.tzinfo is not None and summary.created.utcoffset() == timedelta(0)
     assert summary.status is None
@@ -472,3 +478,25 @@ async def test_record_terminal_status_writes_once(svc: VerificationDatabaseServi
 async def test_hash_index_serves_the_listing_sort(svc: VerificationDatabaseServiceMongo) -> None:
     indexes = await svc._collection.index_information()
     assert any(spec["key"] == [("omex_hash", 1), ("created", -1), ("workflow_id", 1)] for spec in indexes.values())
+
+
+# ---------------------------------------------------------------------------
+# persistence state — a stored report is never demoted
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_unavailable_never_overwrites_a_stored_report(svc: VerificationDatabaseServiceMongo) -> None:
+    from biosim_server.biosim_verify.models import ReportPersistenceState, VerifyWorkflowStatus
+    await svc.insert_verification(_omex_record("stored", None, _utc(2026, 10, 30)))
+    await svc.insert_verification(_omex_record("pending", None, _utc(2026, 10, 30)))
+    await svc.record_report_persisted("stored", "stored", VerifyWorkflowStatus.COMPLETED)
+
+    # A late catch-up that lost the race to the writer that stored the report.
+    await svc.mark_persistence_unavailable("stored", "Temporal history is unavailable")
+    await svc.mark_persistence_unavailable("pending", "Temporal history is unavailable")
+
+    stored = await svc.get_verification("stored")
+    pending = await svc.get_verification("pending")
+    assert stored is not None and stored.persistence_state == ReportPersistenceState.STORED
+    assert stored.persistence_error is None
+    assert pending is not None and pending.persistence_state == ReportPersistenceState.UNAVAILABLE
