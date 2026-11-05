@@ -46,6 +46,21 @@ def persistence_issue(blocked: bool) -> tuple[ReportPersistenceState, str]:
         return ReportPersistenceState.BLOCKED, BLOCKED_PERSISTENCE_ERROR
     return ReportPersistenceState.PENDING, DEPENDENCY_PERSISTENCE_ERROR
 
+
+def persistence_issue_after(
+    state: ReportPersistenceState, error: str | None, blocked: bool,
+) -> tuple[ReportPersistenceState, str | None]:
+    """The state and error a row has after :meth:`mark_persistence_issue`.
+
+    A stored row never changes.  A dependency error never replaces BLOCKED:
+    a transient failure while retrying a blocked row says nothing new about
+    it, and recording it as PENDING would hide the permanent failure and void
+    its acknowledgement.
+    """
+    if state == ReportPersistenceState.STORED or (not blocked and state == ReportPersistenceState.BLOCKED):
+        return state, error
+    return persistence_issue(blocked)
+
 # Listing order: newest first, workflow_id (unique) as the tie-breaker, so the
 # order is total and a (created, workflow_id) position is a stable continuation.
 _LISTING_SORT = [("created", DESCENDING), ("workflow_id", ASCENDING)]
@@ -227,6 +242,7 @@ class VerificationDatabaseService(ABC):
 
     @abstractmethod
     async def mark_persistence_issue(self, workflow_id: str, blocked: bool) -> None:
+        """Record a persistence failure, as :func:`persistence_issue_after` describes."""
         ...
 
     @abstractmethod
@@ -481,8 +497,13 @@ class VerificationDatabaseServiceMongo(VerificationDatabaseService):
 
     async def mark_persistence_issue(self, workflow_id: str, blocked: bool) -> None:
         state, error = persistence_issue(blocked)
+        # Keep in step with persistence_issue_after: STORED never changes, and
+        # only a permanent failure may write over BLOCKED.
+        kept = [ReportPersistenceState.STORED.value]
+        if not blocked:
+            kept.append(ReportPersistenceState.BLOCKED.value)
         await self._collection.update_one(
-            {"workflow_id": workflow_id, "persistence_state": {"$ne": ReportPersistenceState.STORED.value}},
+            {"workflow_id": workflow_id, "persistence_state": {"$nin": kept}},
             {"$set": {"persistence_state": state.value, "persistence_error": error,
                       "persistence_attempted_at": datetime.now(UTC)}},
         )

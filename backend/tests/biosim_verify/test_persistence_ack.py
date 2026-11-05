@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
-from biosim_server.biosim_verify.database import BLOCKED_PERSISTENCE_ERROR, VerificationDatabaseServiceMongo
+from biosim_server.biosim_verify.database import (
+    BLOCKED_PERSISTENCE_ERROR,
+    VerificationDatabaseServiceMongo,
+    persistence_issue_after,
+)
 from biosim_server.biosim_verify.models import ReportPersistenceState, VerificationRecord
 from scripts import reconcile_verification_reports as job
 from scripts.ack_verification_persistence import acknowledge, main
@@ -84,17 +88,75 @@ async def test_a_changed_error_invalidates_the_acknowledgement(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome, attention", [("saved", 0), ("integrity_conflict", 0), ("dependency_error", 1)])
+@pytest.mark.parametrize("outcome", ["saved", "integrity_conflict", "permanent_failure", "dependency_error"])
 async def test_include_acknowledged_retries_the_row(
-    ledger: VerificationDatabaseServiceMongo, caplog: pytest.LogCaptureFixture, outcome: str, attention: int,
+    ledger: VerificationDatabaseServiceMongo, caplog: pytest.LogCaptureFixture, outcome: str,
 ) -> None:
-    """After a fix release the row is retried.  Failing the same way stays acknowledged; a new way alerts."""
+    """After a fix release the row is retried.
+
+    Failing again, permanently or for a dependency, leaves the acknowledged problem as it was: the
+    row stays BLOCKED with the same error, so it stays acknowledged and silent.
+    """
     await _insert(ledger, state=ReportPersistenceState.BLOCKED, error=BLOCKED_PERSISTENCE_ERROR)
     assert await _ack(ledger) == 0
     summary, _, process = await _reconcile(ledger, caplog, outcome=outcome, include_acknowledged=True)
     process.assert_awaited_once()
-    assert summary["attention"] == attention
-    assert summary["acknowledged"] == int(outcome == "integrity_conflict")
+    assert summary["attention"] == 0
+    assert summary["acknowledged"] == int(outcome != "saved")
+    row = await ledger.get_verification("wf")
+    assert row is not None and row.persistence_state == ReportPersistenceState.BLOCKED
+    assert row.persistence_error == BLOCKED_PERSISTENCE_ERROR and row.persistence_acknowledged
+
+
+@pytest.mark.asyncio
+async def test_a_dependency_error_never_demotes_a_blocked_row(
+    ledger: VerificationDatabaseServiceMongo, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A timeout or an outage while retrying a blocked row says nothing new about it."""
+    await _insert(ledger, state=ReportPersistenceState.BLOCKED, error=BLOCKED_PERSISTENCE_ERROR)
+    summary, events, _ = await _reconcile(ledger, caplog, outcome="dependency_error")
+    assert events[-1] == "verification_persistence_attention"
+    assert summary["blocked"] == 1 and summary["dependency_error"] == 1
+    row = await ledger.get_verification("wf")
+    assert row is not None and row.persistence_state == ReportPersistenceState.BLOCKED
+    assert row.persistence_error == BLOCKED_PERSISTENCE_ERROR
+    assert await _ack(ledger) == 0  # the runbook's --expect-state blocked still applies
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_failure_found_by_the_reconciler_blocks_the_row(
+    ledger: VerificationDatabaseServiceMongo, caplog: pytest.LogCaptureFixture,
+) -> None:
+    await _insert(ledger, state=ReportPersistenceState.PENDING, error=None)
+    summary, events, _ = await _reconcile(ledger, caplog, outcome="permanent_failure")
+    assert events[-1] == "verification_persistence_attention"
+    assert summary["permanent_failure"] == 1 and summary["attention"] == 1
+    row = await ledger.get_verification("wf")
+    assert row is not None and row.persistence_state == ReportPersistenceState.BLOCKED
+    assert row.persistence_error == BLOCKED_PERSISTENCE_ERROR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state, blocked, expected", [
+    (ReportPersistenceState.PENDING, False, ReportPersistenceState.PENDING),
+    (ReportPersistenceState.PENDING, True, ReportPersistenceState.BLOCKED),
+    (ReportPersistenceState.BLOCKED, False, ReportPersistenceState.BLOCKED),
+    (ReportPersistenceState.BLOCKED, True, ReportPersistenceState.BLOCKED),
+    (ReportPersistenceState.STORED, False, ReportPersistenceState.STORED),
+    (ReportPersistenceState.STORED, True, ReportPersistenceState.STORED),
+    (ReportPersistenceState.UNAVAILABLE, False, ReportPersistenceState.PENDING),
+], ids=str)
+async def test_marking_an_issue_matches_its_prediction(
+    ledger: VerificationDatabaseServiceMongo, state: ReportPersistenceState, blocked: bool,
+    expected: ReportPersistenceState,
+) -> None:
+    """The ledger write and persistence_issue_after, which the reconciler's acknowledgement check uses, agree."""
+    await _insert(ledger, state=state, error="before")
+    await ledger.mark_persistence_issue("wf", blocked)
+    row = await ledger.get_verification("wf")
+    assert row is not None
+    assert (row.persistence_state, row.persistence_error) == persistence_issue_after(state, "before", blocked)
+    assert row.persistence_state == expected
 
 
 @pytest.mark.asyncio

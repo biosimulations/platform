@@ -7,6 +7,7 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from biosim_server.biosim_verify.models import (
     CompareSettings,
+    GenerateStatisticsArtifactReference,
     VerificationProvenance,
     VerificationRecord,
     VerificationReportEnvelope,
@@ -16,6 +17,12 @@ from biosim_server.biosim_verify.models import (
 )
 from biosim_server.biosim_verify.history import terminal_failure_output
 from biosim_server.biosim_verify.report_recovery import process_record
+from biosim_server.biosim_verify.report_storage import (
+    ReportArtifactMissing,
+    ReportCorrupt,
+    ReportIntegrityConflict,
+    ReportUnavailable,
+)
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
 
 pytestmark = pytest.mark.filterwarnings("error::UserWarning")
@@ -68,6 +75,46 @@ async def test_completed_recovery_uses_pinned_result_not_query() -> None:
     assert await process_record(record=record, ledger=ledger, store=store, temporal=temporal, apply=True) == "saved"
     handle.result.assert_awaited_once()
     assert not hasattr(handle, "query") or not handle.query.called
+
+
+def _completed(result: VerifyWorkflowOutput) -> MagicMock:
+    handle = MagicMock()
+    handle.describe = AsyncMock(return_value=MagicMock(status=WorkflowExecutionStatus.COMPLETED, run_id="run"))
+    handle.result = AsyncMock(return_value=result)
+    temporal = MagicMock()
+    temporal.get_workflow_handle.return_value = handle
+    return temporal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error, outcome", [
+    (ValueError("verification report exceeds archival size limit"), "permanent_failure"),
+    (ReportCorrupt("verification report payload is corrupt"), "permanent_failure"),
+    (ReportArtifactMissing("statistics artifact is unavailable"), "permanent_failure"),
+    (ReportIntegrityConflict("conflicting report"), "integrity_conflict"),
+    (ConnectionError("storage reset"), "dependency_error"),
+    (ReportUnavailable("report artifact storage is unavailable"), "dependency_error"),
+], ids=lambda value: type(value).__name__ if isinstance(value, Exception) else str(value))
+async def test_a_failed_save_is_classified_as_the_persist_activity_would(error: Exception, outcome: str) -> None:
+    """A permanent failure is not a dependency outage: it must not send the operator to fix a dependency."""
+    ledger, store = AsyncMock(), AsyncMock()
+    store.get.return_value = None
+    store.save.side_effect = error
+    assert await process_record(record=_record(), ledger=ledger, store=store, temporal=_completed(_output()),
+                                apply=True) == outcome
+
+
+@pytest.mark.asyncio
+async def test_a_missing_statistics_artifact_is_permanent() -> None:
+    ledger, store = AsyncMock(), AsyncMock()
+    store.get.return_value = None
+    store.hydrate_activity_reference.side_effect = ReportArtifactMissing("statistics artifact is unavailable")
+    result = _output().model_copy(update={"workflow_results_reference": GenerateStatisticsArtifactReference(
+        artifact_reference="verification-activity/wf/x.json.gz", content_sha256="0" * 64, encoding="x",
+        uncompressed_bytes=1)})
+    assert await process_record(record=_record(), ledger=ledger, store=store, temporal=_completed(result),
+                                apply=True) == "permanent_failure"
+    store.save.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -199,12 +199,16 @@ the module, by adding `components: [../../components/verification-reconcile]` ne
 | Initialization failure, a lost lease, or an unexpected exception | 1 | `verification_reconcile_job_failed` (ERROR) with the reason and exception type, never the message |
 
 Rows are never a job failure. The summary carries counts only, never request payloads or owner identifiers:
-`scanned`, `saved`, `already_present`, `pending`, `missing_history`, `integrity_conflict`, `dependency_error`,
-`blocked`, `acknowledged`, `persist_retrying`, `computing`, `stale_persist`, `stale_running`, `attention` and
+`scanned`, `saved`, `already_present`, `pending`, `missing_history`, `integrity_conflict`, `permanent_failure`,
+`dependency_error`, `blocked`, `acknowledged`, `persist_retrying`, `computing`, `stale_persist`, `stale_running`, `attention` and
 `scan_partial`.
 
-A row needs an operator (`attention`) when it has a dependency error or an integrity conflict, when it is `blocked`,
-or when its execution is stale:
+A row needs an operator (`attention`) when it has a dependency error, an integrity conflict or a permanent failure,
+when it is `blocked`, or when its execution is stale. The reconciler classifies a failed save as the persist activity
+does: an integrity conflict or a permanent failure (a `ValueError` such as the archival size limit, a corrupt
+artifact, or a missing statistics artifact) marks the row `blocked`; anything else is a `dependency_error` and marks
+it `pending`. A dependency error never replaces `blocked`: a timeout or an outage while retrying a blocked row leaves
+the row, its error and its acknowledgement as they were.
 
 - `persist_retrying`: the persist activity is pending at attempt 3 or later. Its age is the sum of the retry
   intervals up to that attempt, a lower bound, because Temporal does not report when the first attempt started. It
@@ -259,6 +263,7 @@ suspended CronJob are detected through the missing heartbeat, not the per-report
 
 - `dependency_error` or `stale_persist`: restore the dependency and let the next run save the report, before the
   history expires.
+- `permanent_failure`: retrying cannot store this report; the row is now `blocked` (see below).
 - `integrity_conflict` or `verification_object_integrity_conflict`: investigate; never delete or replace an original
   report to clear it. A content-address conflict left a `.repair-<uuid>` copy beside the object.
 - `blocked`: the computed result is in the completed workflow's result, and a completed workflow's history is subject

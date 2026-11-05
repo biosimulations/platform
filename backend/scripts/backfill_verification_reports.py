@@ -114,7 +114,7 @@ def main() -> None:
                 state = await run(checkpoint=args.checkpoint, apply=args.apply, limit=args.limit,
                                   inventory=args.inventory, since=args.since, until=args.until)
                 if state["complete"]:
-                    if any(state["outcomes"].get(k) for k in ("dependency_error", "integrity_conflict", "unknown_ownership", "pending")):
+                    if any(state["outcomes"].get(k) for k in ("dependency_error", "integrity_conflict", "permanent_failure", "unknown_ownership", "pending")):
                         raise RuntimeError("Backfill completed with unresolved entries; inspect checkpoint before migration")
                     return
             raise RuntimeError("Backfill paused at page budget; resume before migration")

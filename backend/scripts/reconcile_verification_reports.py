@@ -31,7 +31,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from biosim_server.biosim_verify.database import LeaseLost, persistence_issue
+from biosim_server.biosim_verify.database import LeaseLost, persistence_issue_after
 from biosim_server.biosim_verify.models import ReportPersistenceState
 from biosim_server.biosim_verify.report_recovery import RunningState, process_record, running_state
 from biosim_server.config import get_settings
@@ -43,7 +43,9 @@ from biosim_server.dependencies import (
 logger = logging.getLogger(__name__)
 
 # Outcomes that are a row problem for an operator, not a job failure.
-_ATTENTION_OUTCOMES = frozenset({"dependency_error", "integrity_conflict"})
+_ATTENTION_OUTCOMES = frozenset({"dependency_error", "integrity_conflict", "permanent_failure"})
+# The ones retrying cannot fix: the row is marked BLOCKED, as the persist activity would mark it.
+_BLOCKING_OUTCOMES = frozenset({"integrity_conflict", "permanent_failure"})
 _ROW_BUDGET_SECONDS = 45
 
 
@@ -68,7 +70,7 @@ async def reconcile(limit: int, apply: bool, *, max_seconds: float = 150, max_re
         raise ReconcileSetupError("invalid reconciliation budget")
     counters: dict[str, Any] = {
         "scanned": 0, "saved": 0, "already_present": 0, "pending": 0, "missing_history": 0,
-        "integrity_conflict": 0, "dependency_error": 0, "blocked": 0, "acknowledged": 0,
+        "integrity_conflict": 0, "permanent_failure": 0, "dependency_error": 0, "blocked": 0, "acknowledged": 0,
         "persist_retrying": 0, "computing": 0, "stale_persist": 0, "stale_running": 0,
         "attention": 0, "scan_partial": 0, "apply": int(apply), "limit": limit,
     }
@@ -123,7 +125,7 @@ async def reconcile(limit: int, apply: bool, *, max_seconds: float = 150, max_re
                 counters[outcome] += 1
                 needs_attention = outcome in _ATTENTION_OUTCOMES
                 if needs_attention and apply:
-                    await ledger.mark_persistence_issue(row.workflow_id, outcome == "integrity_conflict")
+                    await ledger.mark_persistence_issue(row.workflow_id, outcome in _BLOCKING_OUTCOMES)
                 if state is not None:
                     counters[state.kind] += 1
                     threshold = stale_persist_after if state.kind == "persist_retrying" else stale_running_after
@@ -135,9 +137,10 @@ async def reconcile(limit: int, apply: bool, *, max_seconds: float = 150, max_re
                     needs_attention = True
                 if needs_attention and row.persistence_ack is not None:
                     # The state and error the row has after this run, as mark_persistence_issue records them.
-                    after_state, after_error = (persistence_issue(outcome == "integrity_conflict")
-                                                if outcome in _ATTENTION_OUTCOMES
-                                                else (row.persistence_state, row.persistence_error))
+                    after_state, after_error = (
+                        persistence_issue_after(row.persistence_state, row.persistence_error,
+                                                outcome in _BLOCKING_OUTCOMES)
+                        if outcome in _ATTENTION_OUTCOMES else (row.persistence_state, row.persistence_error))
                     if row.persistence_ack.covers(after_state, after_error):
                         counters["acknowledged"] += 1
                         needs_attention = False

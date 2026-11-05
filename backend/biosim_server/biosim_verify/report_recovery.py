@@ -7,7 +7,7 @@ from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.common import RetryPolicy
 from temporalio.service import RPCError, RPCStatusCode
 
-from biosim_server.biosim_verify.activities import prepare_report
+from biosim_server.biosim_verify.activities import PERMANENT_ERRORS, prepare_report
 from biosim_server.biosim_verify.database import VerificationDatabaseService
 from biosim_server.biosim_verify.history import (
     PERSIST_ACTIVITY_TYPE,
@@ -92,6 +92,10 @@ class _IntegrityConflict(Exception):
     """The workflow history does not match the ledger row."""
 
 
+class _PermanentFailure(Exception):
+    """Retrying cannot store this report, as the persist activity classifies it (PERMANENT_ERRORS)."""
+
+
 async def _recover_computed_output(
     *,
     temporal: Client,
@@ -119,6 +123,8 @@ async def _recover_computed_output(
         return None
     try:
         output, provenance = await prepare_report(computed, store=store, row=record)
+    except PERMANENT_ERRORS as exc:
+        raise _PermanentFailure() from exc
     except Exception as exc:
         raise _DependencyError() from exc
     return output, provenance.model_copy(update={"origin": "recovered_from_history"})
@@ -231,6 +237,8 @@ async def process_record(
                 )
             except _IntegrityConflict:
                 return "integrity_conflict"
+            except _PermanentFailure:
+                return "permanent_failure"
             except _DependencyError:
                 return "dependency_error"
             if recovered is None:
@@ -239,6 +247,8 @@ async def process_record(
         elif output.workflow_results_reference is not None:
             try:
                 output = await store.hydrate_activity_reference(output)
+            except PERMANENT_ERRORS:
+                return "permanent_failure"
             except Exception:
                 return "dependency_error"
     else:
@@ -256,6 +266,8 @@ async def process_record(
             )
         except _IntegrityConflict:
             return "integrity_conflict"
+        except _PermanentFailure:
+            return "permanent_failure"
         except _DependencyError:
             return "dependency_error"
         if recovered is not None:
@@ -291,6 +303,9 @@ async def process_record(
             await ledger.record_report_persisted(record.workflow_id, envelope.report_id, output.workflow_status)
         except ReportIntegrityConflict:
             return "integrity_conflict"
+        except PERMANENT_ERRORS:
+            # The persist activity would block this report; retrying cannot store it.
+            return "permanent_failure"
         except Exception:
             return "dependency_error"
     return "saved"
