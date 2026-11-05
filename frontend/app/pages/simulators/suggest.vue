@@ -4,7 +4,6 @@ import type { BreadcrumbItem } from '#ui/components/Breadcrumb.vue';
 import type { AccordionItem } from '#ui/components/Accordion.vue';
 import type { TableColumn } from '@nuxt/ui';
 import {
-  type RawSimulator,
   type SimulatorCurationStatus,
   getSimulatorCurationStatus,
   getSimulatorCurationStatusMessage,
@@ -15,6 +14,7 @@ import {
   type AlgorithmSubstitutionPolicy
 } from '~/models/combine-api';
 import { useCombineApi } from '~/composables/useCombineApi';
+import { useSimulators } from '~/composables/useSimulators';
 
 definePageMeta({
   alias: ['/utilities/suggest-simulator']
@@ -30,6 +30,7 @@ useSeoMeta({
 const route = useRoute();
 const router = useRouter();
 const combineApi = useCombineApi();
+const { fetchRawSimulators } = useSimulators();
 
 const isFromUtilities = computed(() => route.path.startsWith('/utilities'));
 
@@ -212,10 +213,8 @@ async function loadData() {
   error.value = null;
 
   try {
-    // 1. Fetch latest simulators from api.biosimulators.org
-    const rawSimulators = await $fetch<RawSimulator[]>('https://api.biosimulators.org/simulators/latest', {
-      credentials: 'omit'
-    });
+    // 1. Fetch latest simulators through the same-origin legacy BioSimulators proxy
+    const rawSimulators = await fetchRawSimulators();
 
     const simMap = new Map<string, SimulatorItem>();
     const algNames = new Map<string, string>();

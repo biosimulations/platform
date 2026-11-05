@@ -565,8 +565,7 @@ async function submitRunsVerification(customRunIds?: string[]) {
 
   try {
     // Step 1: Automatic Pre-check
-    const apiUrl = config.public.legacy_api_url
-    const result = await precheckRunIds(idsToVerify, apiUrl)
+    const result = await precheckRunIds(idsToVerify)
     isPrechecking.value = false
 
     if (!result.can_proceed || result.valid_runs.length < 2) {
