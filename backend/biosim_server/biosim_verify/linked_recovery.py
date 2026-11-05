@@ -53,6 +53,7 @@ from biosim_server.biosim_verify.models import (
     ReconstructOffer,
     ReconstructRequest,
     RecoveryReservation,
+    ReportPersistenceState,
     ReverifyOffer,
     ReverifyRequest,
     VerificationProvenance,
@@ -437,6 +438,42 @@ async def _run_id_if_started(temporal: Client, workflow_id: str) -> str | None:
     return desc.run_id
 
 
+def _start_recorded(row: VerificationRecord) -> bool:
+    """Whether the ledger shows that a reserved verification's workflow was started.
+
+    The run id recorded after the start, a terminal status, or a saved report
+    each prove it.  A row inserted before a start that failed has none of them.
+    """
+    return (
+        row.workflow_run_id is not None
+        or row.status is not None
+        or row.report_id is not None
+        or row.persistence_state in (ReportPersistenceState.STORED, ReportPersistenceState.BLOCKED)
+    )
+
+
+async def _reserved_run(temporal: Client, workflow_id: str) -> tuple[bool, str | None]:
+    """Whether a reserved verification was started, and its run id when one is known.
+
+    Temporal forgets a closed run once retention removes its history, so
+    NOT_FOUND alone is no proof that the reservation never started: replaying
+    its Idempotency-Key a day later would otherwise run the derived workflow
+    again, uncharged.  The ledger row keeps the evidence.
+    """
+    run_id = await _run_id_if_started(temporal, workflow_id)
+    if run_id is not None:
+        return True, run_id
+    ledger = await _require_ledger()
+    try:
+        row = await ledger.get_verification(workflow_id)
+    except Exception as exc:
+        logger.error("ledger lookup failed for reserved verification %s", workflow_id)
+        raise HTTPException(status_code=503, detail="Verification database service not available") from exc
+    if row is not None and _start_recorded(row):
+        return True, row.workflow_run_id
+    return False, None
+
+
 async def _read_started_input(
     temporal: Client, workflow_id: str, run_id: str | None, workflow_type: str, input_type: type[_InputT],
 ) -> _InputT:
@@ -703,8 +740,8 @@ async def accept_reconstruction(
         idempotency_key=idempotency_key, request_hash=request_hash,
     )
     if existing is not None:
-        run_id = await _run_id_if_started(temporal, existing.workflow_id)
-        if run_id is not None:
+        started, run_id = await _reserved_run(temporal, existing.workflow_id)
+        if started:
             return _accepted(
                 workflow_id=existing.workflow_id, source_id=source.workflow_id, kind=DerivationKind.RECONSTRUCTION,
                 run_id=run_id, settings=body.compare_settings, may_start_simulations=False, defaults_applied=[],
@@ -766,8 +803,8 @@ async def accept_reverification(
         idempotency_key=idempotency_key, request_hash=request_hash,
     )
     if existing is not None:
-        run_id = await _run_id_if_started(temporal, existing.workflow_id)
-        if run_id is not None:
+        started, run_id = await _reserved_run(temporal, existing.workflow_id)
+        if started:
             return _accepted(
                 workflow_id=existing.workflow_id, source_id=source.workflow_id, kind=DerivationKind.REVERIFICATION,
                 run_id=run_id, settings=settings, may_start_simulations=True,

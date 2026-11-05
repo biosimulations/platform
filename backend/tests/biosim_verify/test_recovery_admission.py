@@ -128,6 +128,38 @@ async def test_a_missing_snapshot_is_refused_and_stays_charged(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["reconstruct", "reverify"])
+async def test_a_key_replayed_after_retention_does_not_start_the_work_again(
+    recovery_world: Any, monkeypatch: pytest.MonkeyPatch, operation: str,  # noqa: F811
+) -> None:
+    """Temporal forgets the derived run after retention; the ledger row still proves it started."""
+    source_id = f"source-retained-{operation}"
+    if operation == "reconstruct":
+        body: dict[str, Any] = _body(await _archive_source(recovery_world, source_id))
+    else:
+        await _omex_source(recovery_world, source_id)
+        body = {}
+    charge = _charge_spy(monkeypatch)
+    with patch("biosim_server.api.main.get_biosim_service", return_value=_catalog()):
+        async with await _client() as client:
+            first = await client.post(f"/verify/{source_id}/{operation}", headers={"Idempotency-Key": _KEY},
+                                      json=body)
+            assert first.status_code == 202, first.text
+            derived_id = first.json()["workflow_id"]
+            # Retention removes the closed run: describe answers NOT_FOUND from now on.
+            del recovery_world.temporal._runs[derived_id]
+            calls = _spy_storage(recovery_world.files, monkeypatch)
+            replay = await client.post(f"/verify/{source_id}/{operation}", headers={"Idempotency-Key": _KEY},
+                                       json=body)
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["workflow_id"] == derived_id
+    assert replay.json()["workflow_run_id"] == "run-1"
+    assert recovery_world.temporal.started == [derived_id]
+    assert calls == []
+    charge.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["error", "timeout"])
 async def test_a_storage_failure_during_the_existence_check_is_503(
     recovery_world: Any, monkeypatch: pytest.MonkeyPatch, failure: str,  # noqa: F811
