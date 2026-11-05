@@ -196,7 +196,7 @@ the module, by adding `components: [../../components/verification-reconcile]` ne
 | --- | --- | --- |
 | A scan ran, complete or budget-limited, whatever its rows need | 0 | `verification_reconcile_summary` (INFO); `verification_persistence_attention` (ERROR) as well when a row needs an operator |
 | Another job holds the lease | 0 | `verification_reconcile_summary` with `skipped="lease_busy"`; the lease expires by itself within five minutes |
-| Initialization failure, a lost lease, or an unexpected exception | 1 | `verification_reconcile_job_failed` (ERROR) with the reason and exception type, never the message |
+| Initialization failure, an unreachable Temporal (`reason="temporal_unavailable"`), a lost lease, or an unexpected exception | 1 | `verification_reconcile_job_failed` (ERROR) with the reason and exception type, never the message. No row is touched and no summary is logged |
 
 Rows are never a job failure. The summary carries counts only, never request payloads or owner identifiers:
 `scanned`, `saved`, `already_present`, `pending`, `missing_history`, `integrity_conflict`, `permanent_failure`,

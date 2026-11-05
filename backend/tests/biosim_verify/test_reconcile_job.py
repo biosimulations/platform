@@ -42,13 +42,16 @@ def _ledger(rows: list[VerificationRecord]) -> AsyncMock:
 
 @contextmanager
 def _job(ledger: Any, *, outcome: str = "pending", temporal: Any = None,
-         init: AsyncMock | None = None) -> Iterator[AsyncMock]:
+         init: AsyncMock | None = None, temporal_down: bool = False) -> Iterator[AsyncMock]:
+    """Run the job against *ledger*.  Temporal is reachable, with nothing running, unless given or down."""
     process = AsyncMock(return_value=outcome)
+    if temporal is None and not temporal_down:
+        temporal = _temporal(started=datetime.now(UTC), status=WorkflowExecutionStatus.COMPLETED)
     with patch(f"{SCRIPT}.init_standalone", new=init or AsyncMock()), \
          patch(f"{SCRIPT}.shutdown_standalone", new=AsyncMock()), \
          patch(f"{SCRIPT}.get_verification_database_service", return_value=ledger), \
          patch(f"{SCRIPT}.get_verification_report_store", return_value=MagicMock()), \
-         patch(f"{SCRIPT}.get_temporal_client", return_value=temporal), \
+         patch(f"{SCRIPT}.get_temporal_client", return_value=None if temporal_down else temporal), \
          patch(f"{SCRIPT}.process_record", new=process):
         yield process
 
@@ -137,6 +140,24 @@ async def test_initialization_and_unexpected_failures_exit_one(
     failed = _events(caplog)[-1]
     assert failed["event"] == "verification_reconcile_job_failed" and failed["reason"] == reason
     assert "secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("apply", [True, False])
+async def test_an_unreachable_temporal_fails_the_job_and_touches_no_row(
+    caplog: pytest.LogCaptureFixture, apply: bool,
+) -> None:
+    """init_standalone tolerates a Temporal outage for the API's sake; the job must not look healthy (I-5)."""
+    ledger = _ledger([_blocked()])
+    with _job(ledger, temporal_down=True) as process, caplog.at_level(logging.INFO):
+        status = await job.run(_args(apply=apply))
+    assert status == 1
+    # No heartbeat either, so the absence policy fires too.
+    assert _events(caplog) == [{"event": "verification_reconcile_job_failed", "reason": "temporal_unavailable",
+                                "error": "TemporalUnavailable"}]
+    process.assert_not_awaited()
+    ledger.acquire_persistence_scan.assert_not_awaited()
+    ledger.mark_persistence_issue.assert_not_awaited()
 
 
 @pytest.mark.asyncio

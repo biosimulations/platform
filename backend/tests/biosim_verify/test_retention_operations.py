@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any
 
 import pytest
+from temporalio.client import WorkflowExecutionStatus
 
 from biosim_server.biosim_verify.report_recovery import inventory_retained_executions
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
 from tests.biosim_verify.test_report_recovery import _record, _output
+from tests.biosim_verify.test_reconcile_job import _temporal
 from tests.biosim_verify.test_report_storage import _provenance
 from biosim_server.biosim_verify.report_backup import export_bundle, restore_bundle
 from biosim_server.biosim_verify.report_storage import VerificationReportStore
@@ -72,6 +74,11 @@ async def test_backfill_both_cursors_time_bounds_and_late_closure(tmp_path: Path
         assert four['complete'] and four['outcomes']['saved'] == 1
 
 
+def _idle_temporal() -> MagicMock:
+    """A reachable Temporal with nothing running: the job refuses to scan without one."""
+    return _temporal(started=datetime.now(UTC), status=WorkflowExecutionStatus.COMPLETED)
+
+
 @pytest.mark.asyncio
 async def test_reconcile_alarms_without_exposing_private_request(caplog: pytest.LogCaptureFixture) -> None:
     from scripts.reconcile_verification_reports import reconcile
@@ -82,7 +89,7 @@ async def test_reconcile_alarms_without_exposing_private_request(caplog: pytest.
     ledger.acquire_persistence_scan.return_value = (None, None)
     with patch('scripts.reconcile_verification_reports.get_verification_database_service', return_value=ledger), \
          patch('scripts.reconcile_verification_reports.get_verification_report_store', return_value=store), \
-         patch('scripts.reconcile_verification_reports.get_temporal_client', return_value=None), \
+         patch('scripts.reconcile_verification_reports.get_temporal_client', return_value=_idle_temporal()), \
          patch('scripts.reconcile_verification_reports.process_record', new=AsyncMock(return_value='dependency_error')), \
          caplog.at_level(logging.INFO):
         counts = await reconcile(100, True)
@@ -183,6 +190,7 @@ async def test_scheduled_reconciliation_resumes_and_fences_cursor(mongo_test_cli
 
     with patch('scripts.reconcile_verification_reports.get_verification_database_service', return_value=ledger), \
          patch('scripts.reconcile_verification_reports.get_verification_report_store', return_value=MagicMock()), \
+         patch('scripts.reconcile_verification_reports.get_temporal_client', return_value=_idle_temporal()), \
          patch('scripts.reconcile_verification_reports.process_record', new=pending):
         for _ in range(3):
             result = await reconcile(2, True, max_records=1)

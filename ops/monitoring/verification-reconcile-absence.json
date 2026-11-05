@@ -1,6 +1,6 @@
 {
   "displayName": "Verification reconciliation heartbeat missing",
-  "documentation": {"content": "No reconciliation summary for 30 minutes. A run that fails logs verification_reconcile_job_failed with its reason (initialization, lease_lost or unexpected). Check CronJob suspension, failed initialization, image version, storage permissions and Temporal connectivity. See docs/verification-report-retention.md.", "mimeType": "text/markdown"},
+  "documentation": {"content": "No reconciliation summary for 30 minutes. A run that fails logs verification_reconcile_job_failed with its reason (initialization, temporal_unavailable, lease_lost or unexpected). Check CronJob suspension, failed initialization, image version, storage permissions and Temporal connectivity. See docs/verification-report-retention.md.", "mimeType": "text/markdown"},
   "combiner": "OR",
   "conditions": [{
     "displayName": "No reconciliation runs for 30 minutes",

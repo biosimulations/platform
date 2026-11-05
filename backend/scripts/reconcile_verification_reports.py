@@ -11,8 +11,9 @@ The exit status reflects the job's health, never the rows it found (I-5):
   operator;
 * a lease held by another job exits 0 with ``skipped="lease_busy"``; that lease
   expires by itself within five minutes;
-* initialization failure, a lost lease or an unexpected exception exits 1 with
-  ``verification_reconcile_job_failed``.  The next scheduled run is the retry.
+* initialization failure, an unreachable Temporal, a lost lease or an
+  unexpected exception exits 1 with ``verification_reconcile_job_failed``.  The
+  next scheduled run is the retry.
 
 An operator can acknowledge a row's problem with
 ``scripts.ack_verification_persistence``.  Acknowledged ``blocked`` rows are
@@ -53,6 +54,16 @@ class ReconcileSetupError(RuntimeError):
     """The job could not start: persistence is unavailable or misconfigured."""
 
 
+class TemporalUnavailable(ReconcileSetupError):
+    """Temporal could not be reached.
+
+    ``init_standalone`` leaves the client unset instead of failing, so that the
+    API can serve saved reports while Temporal is down.  The reconciler cannot
+    do its work without Temporal: scanning anyway would mark every candidate as
+    a dependency error and still report a healthy run.
+    """
+
+
 def _log(level: int, event: str, fields: dict[str, Any]) -> None:
     logger.log(level, json.dumps({"event": event, **fields}, sort_keys=True))
 
@@ -75,6 +86,8 @@ async def reconcile(limit: int, apply: bool, *, max_seconds: float = 150, max_re
         "attention": 0, "scan_partial": 0, "apply": int(apply), "limit": limit,
     }
     temporal = get_temporal_client()
+    if temporal is None:
+        raise TemporalUnavailable("Temporal is unavailable")
     settings = get_settings()
     key = settings.temporal_namespace + ":" + hashlib.sha256(settings.temporal_service_url.encode()).hexdigest()
     owner = uuid4().hex
@@ -181,6 +194,8 @@ async def run(args: argparse.Namespace) -> int:
                         stale_running_after=timedelta(seconds=args.stale_running_after),
                         include_acknowledged=args.include_acknowledged)
         return 0
+    except TemporalUnavailable as exc:
+        return _job_failed("temporal_unavailable", exc)
     except ReconcileSetupError as exc:
         return _job_failed("initialization", exc)
     except LeaseLost as exc:
