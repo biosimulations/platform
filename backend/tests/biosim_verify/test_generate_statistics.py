@@ -1,14 +1,27 @@
 """Exercise the activity with real comparison math and mocked data downloads."""
+import dataclasses
+from datetime import timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from temporalio.exceptions import ApplicationError
 from temporalio.testing import ActivityEnvironment
 
 from biosim_server.biosim_runs.models import (
     BiosimSimulationRun, BiosimSimulationRunStatus, BiosimulatorVersion, Hdf5DataValues,
 )
-from biosim_server.biosim_verify.activities import GenerateStatisticsActivityInput, generate_statistics_activity, generate_statistics_activity_v2
+from biosim_server.biosim_verify.activities import (
+    STATISTICS_COMPUTE_FAILED_TYPE,
+    STATISTICS_COMPUTE_MAX_ATTEMPTS,
+    STATISTICS_RETRY,
+    STATISTICS_SCHEDULE_TO_CLOSE,
+    STATISTICS_STORAGE_UNAVAILABLE_TYPE,
+    GenerateStatisticsActivityInput,
+    generate_statistics_activity,
+    generate_statistics_activity_v2,
+)
 from biosim_server.biosim_verify.models import CompareSettings, SimulationRunInfo
 from tests.biosim_verify.test_compatibility import _file
 
@@ -99,3 +112,83 @@ async def test_oversized_statistics_crosses_activity_boundary_as_reference() -> 
     workflow_id = environment.info.workflow_id
     assert name == f"verification-activity/{workflow_id}/{result.reference.content_sha256}.json.gz"
     assert result.reference.artifact_reference == name
+
+
+# --- Retrying: a storage outage never uses up the compute budget (I-1) ---------------------
+
+
+def _statistics_input() -> GenerateStatisticsActivityInput:
+    run = SimulationRunInfo(
+        biosim_sim_run=BiosimSimulationRun(
+            id="run", name="run", status=BiosimSimulationRunStatus.SUCCEEDED,
+            simulator_version=BiosimulatorVersion(
+                id="sim", name="sim", version="1", image_url="image", image_digest="digest",
+                created="2026-01-01", updated="2026-01-01",
+            ),
+        ),
+        hdf5_file=_file("run", {"a": ["t", "x"]}),
+    )
+    settings = CompareSettings(user_description="test", include_outputs=True, rel_tol=1e-4,
+                               abs_tol_min=1e-3, abs_tol_scale=1e-5)
+    return GenerateStatisticsActivityInput(sim_run_info_list=[run], compare_settings=settings, workflow_id="wf")
+
+
+async def _run_v2(attempt: int, *, hdf5: AsyncMock, put_if_absent: AsyncMock,
+                  max_decompressed_bytes: int = 64 * 1024 * 1024) -> Any:
+    """Run the v2 activity as attempt *attempt*, with statistics that must be externalized."""
+    environment = ActivityEnvironment()
+    environment.info = dataclasses.replace(environment.info, attempt=attempt)
+    with (
+        patch("biosim_server.biosim_verify.activities.BiosimServiceRest.get_hdf5_data", new=hdf5),
+        patch("biosim_server.biosim_verify.activities.get_settings",
+              return_value=SimpleNamespace(verification_report_max_decompressed_bytes=max_decompressed_bytes,
+                                           verification_activity_inline_max_bytes=1)),
+        patch("biosim_server.biosim_verify.activities.get_file_service",
+              return_value=SimpleNamespace(put_if_absent=put_if_absent)),
+    ):
+        return await environment.run(generate_statistics_activity_v2, _statistics_input())
+
+
+_DATA = Hdf5DataValues(shape=[2, 3], values=[0, 1, 2, 3, 4, 5])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attempt, delay", [
+    (1, timedelta(seconds=1)), (4, timedelta(seconds=8)),
+    # Far past the compute budget: still retryable, at the persist activity's ceiling.
+    (STATISTICS_COMPUTE_MAX_ATTEMPTS + 50, timedelta(minutes=5)),
+])
+async def test_a_storage_failure_is_retried_with_backoff_whatever_the_attempt(
+    attempt: int, delay: timedelta,
+) -> None:
+    with pytest.raises(ApplicationError) as raised:
+        await _run_v2(attempt, hdf5=AsyncMock(return_value=_DATA),
+                      put_if_absent=AsyncMock(side_effect=ConnectionError("storage unreachable")))
+    assert raised.value.type == STATISTICS_STORAGE_UNAVAILABLE_TYPE
+    assert not raised.value.non_retryable
+    assert raised.value.next_retry_delay == delay
+
+
+@pytest.mark.asyncio
+async def test_a_compute_failure_keeps_the_budget_it_had() -> None:
+    upstream_down = AsyncMock(side_effect=ConnectionError("biosimulations.org unreachable"))
+    with pytest.raises(ConnectionError):  # retried by the policy, as before
+        await _run_v2(STATISTICS_COMPUTE_MAX_ATTEMPTS - 1, hdf5=upstream_down, put_if_absent=AsyncMock())
+    with pytest.raises(ApplicationError) as raised:
+        await _run_v2(STATISTICS_COMPUTE_MAX_ATTEMPTS, hdf5=upstream_down, put_if_absent=AsyncMock())
+    assert raised.value.type == STATISTICS_COMPUTE_FAILED_TYPE and raised.value.non_retryable
+
+
+@pytest.mark.asyncio
+async def test_statistics_over_the_archival_limit_are_still_permanent() -> None:
+    put_if_absent = AsyncMock()
+    with pytest.raises(ApplicationError) as raised:
+        await _run_v2(1, hdf5=AsyncMock(return_value=_DATA), put_if_absent=put_if_absent, max_decompressed_bytes=1)
+    assert raised.value.non_retryable
+    assert raised.value.message == "Statistics exceed archival size limit"
+    put_if_absent.assert_not_awaited()
+
+
+def test_the_server_does_not_cap_statistics_attempts() -> None:
+    assert STATISTICS_RETRY.maximum_attempts == 0
+    assert STATISTICS_SCHEDULE_TO_CLOSE == timedelta(days=1)

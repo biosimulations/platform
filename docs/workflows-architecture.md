@@ -115,6 +115,13 @@ call site and one retry policy:
   `verification_activity_inline_max_bytes` (512 KiB) cross Temporal inline in the statistics
   activity's result and the persist activity's input; larger ones are externalized
   (`externalize_statistics`) and only a reference crosses.
+- The statistics activity (`generate_statistics_activity_v2`) retries its two kinds of failure
+  apart. A compute failure (fetching or comparing the runs' data) keeps its old budget of
+  `STATISTICS_COMPUTE_MAX_ATTEMPTS` (100), after which it is `StatisticsComputationFailed`,
+  non-retryable. A failure to write externalized statistics is `StatisticsStorageUnavailable`,
+  retried with `next_retry_delay` (1s doubling, 5 min maximum) and never counted against that
+  budget. `STATISTICS_RETRY` puts no attempt limit on the server; a one-day
+  `schedule_to_close_timeout` bounds the activity, crashes and timeouts included.
 - After storing, the activity deletes the workflow's transient objects (statistics artifact and
   snapshot index pointer). A retry that finds the report already stored for the same run and
   owner only acknowledges it, because the objects it would read may be gone.

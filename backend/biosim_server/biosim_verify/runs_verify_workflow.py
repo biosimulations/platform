@@ -11,7 +11,8 @@ from biosim_server.biosim_runs import BiosimSimulationRunStatus, BiosimulatorWor
 from biosim_server.biosim_runs.activities import GetExistingBiosimSimulationRunActivityOutput
 from biosim_server.biosim_verify.models import VerificationProvenance, GenerateStatisticsActivityResult
 from biosim_server.biosim_verify import CompareSettings
-from biosim_server.biosim_verify.activities import generate_statistics_activity, generate_statistics_activity_v2, GenerateStatisticsActivityInput
+from biosim_server.biosim_verify.activities import generate_statistics_activity, generate_statistics_activity_v2, GenerateStatisticsActivityInput, \
+    STATISTICS_RETRY, STATISTICS_SCHEDULE_TO_CLOSE
 from biosim_server.biosim_verify.models import GenerateStatisticsActivityOutput, SimulationRunInfo, \
     ReportPersistenceState, VerifyWorkflowOutput, VerifyWorkflowStatus
 from biosim_server.biosim_verify.workflow_persistence import persist_report
@@ -131,7 +132,8 @@ async def generate_statistics(sim_workflow_runs: list[BiosimulatorWorkflowRun], 
             return await workflow.execute_activity(
                 generate_statistics_activity_v2, arg=generate_statistics_input,
                 start_to_close_timeout=timedelta(minutes=10),
-                retry_policy=RetryPolicy(maximum_attempts=100, maximum_interval=timedelta(seconds=10)),
+                schedule_to_close_timeout=STATISTICS_SCHEDULE_TO_CLOSE,
+                retry_policy=STATISTICS_RETRY,
             )
         generate_statistics_output: GenerateStatisticsActivityOutput = await workflow.execute_activity(
             generate_statistics_activity,

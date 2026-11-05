@@ -37,6 +37,7 @@ from biosim_server.biosim_runs.models import (
     BiosimulatorWorkflowRun,
     Hdf5DataValues,
 )
+from biosim_server.biosim_verify import activities as verify_activities
 from biosim_server.biosim_verify import workflow_persistence
 from biosim_server.biosim_verify.activities import PERMANENT_ERROR_TYPE
 from biosim_server.biosim_verify.activities import (
@@ -68,6 +69,7 @@ from biosim_server.biosim_verify.report_storage import (
 )
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflow, RunsVerifyWorkflowInput
 from biosim_server.common.auth import get_optional_user
+from biosim_server.common.storage.content_addressed import publish_content_addressed
 from biosim_server.common.storage.file_service_local import FileServiceLocal
 from biosim_server.common.temporal import pydantic_data_converter
 from biosim_server.config import get_settings
@@ -307,6 +309,49 @@ async def test_transient_failures_are_retried_until_the_report_is_stored(world: 
     assert content(saved) == content(attempted)
     row = await world.ledger.get_verification(handle.id)
     assert row is not None and row.persistence_state == ReportPersistenceState.STORED
+
+
+@pytest.mark.integration_local
+@pytest.mark.asyncio
+async def test_a_statistics_storage_outage_outlasting_the_compute_budget_still_stores_the_report(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Externalized statistics wait for storage; the outage never fails the comparison (I-1)."""
+    # A small compute budget keeps the test fast; the outage outlasts it.
+    monkeypatch.setattr(verify_activities, "STATISTICS_COMPUTE_MAX_ATTEMPTS", 3)
+    failures = 5
+    writes = 0
+
+    async def storage_down_for_a_while(*args: Any, **kwargs: Any) -> str:
+        nonlocal writes
+        writes += 1
+        if writes <= failures:
+            raise ConnectionError("object storage unavailable")
+        return await publish_content_addressed(*args, **kwargs)
+
+    monkeypatch.setattr("biosim_server.biosim_verify.activities.publish_content_addressed", storage_down_for_a_while)
+    # Shorten only the waits: the attempt counting under test stays the production one.
+    monkeypatch.setattr(verify_activities, "statistics_storage_retry_delay", lambda _: timedelta(milliseconds=10))
+    monkeypatch.setattr(get_settings(), "verification_activity_inline_max_bytes", 1)
+    handle = await world.start()
+    result = await asyncio.wait_for(handle.result(), 120)
+
+    assert writes == failures + 1
+    assert result.workflow_status == VerifyWorkflowStatus.COMPLETED
+    assert result.persistence_state == ReportPersistenceState.STORED
+    saved = await world.store.get(handle.id)
+    assert saved is not None and saved.workflow_status == VerifyWorkflowStatus.COMPLETED
+    assert saved.workflow_results is not None and saved.workflow_results.comparison_statistics
+    # The server never caps the attempts; one day bounds the activity.
+    async for event in handle.fetch_history_events():
+        if event.HasField("activity_task_scheduled_event_attributes"):
+            scheduled = event.activity_task_scheduled_event_attributes
+            if scheduled.activity_type.name == "generate_statistics_activity_v2":
+                assert scheduled.retry_policy.maximum_attempts == 0
+                assert scheduled.schedule_to_close_timeout.ToTimedelta() == timedelta(days=1)
+                break
+    else:
+        pytest.fail("the statistics activity was never scheduled")
 
 
 @pytest.mark.integration_local

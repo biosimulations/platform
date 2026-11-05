@@ -1,7 +1,9 @@
+from datetime import timedelta
 from importlib.metadata import version
 
 from pydantic import BaseModel
 from temporalio import activity
+from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 
 from biosim_server.biosim_runs import Hdf5DataValues, BiosimServiceRest
@@ -41,6 +43,32 @@ PERMANENT_ERROR_TYPE = "ReportBlocked"
 PERMANENT_ERRORS: tuple[type[BaseException], ...] = (
     ValueError, ReportIntegrityConflict, ReportCorrupt, ReportArtifactMissing,
 )
+
+# The statistics activity has two kinds of failure, and they are retried
+# differently.  Computing (fetching the runs' data from biosimulations.org and
+# comparing it) keeps the budget it had before the activity wrote to object
+# storage.  Writing an oversized result to object storage is retried with the
+# persist activity's backoff and never uses that budget up, so a storage outage
+# does not turn a computed comparison into a FAILED verification (I-1).  The
+# server no longer caps attempts; the activity caps computing itself, and the
+# whole activity, crashes and timeouts included, is bounded by a day.
+
+#: Attempts the statistics activity gets when computing fails.
+STATISTICS_COMPUTE_MAX_ATTEMPTS = 100
+#: The longest wait between attempts while object storage refuses the statistics.
+STATISTICS_STORAGE_MAX_RETRY_DELAY = timedelta(minutes=5)
+STATISTICS_COMPUTE_FAILED_TYPE = "StatisticsComputationFailed"
+STATISTICS_STORAGE_UNAVAILABLE_TYPE = "StatisticsStorageUnavailable"
+#: The workflow's policy for the statistics activity: fast retries for a
+#: compute failure, as before, and no server-side attempt cap.
+STATISTICS_RETRY = RetryPolicy(maximum_interval=timedelta(seconds=10), maximum_attempts=0)
+#: The bound on the statistics activity, all attempts and waits included.
+STATISTICS_SCHEDULE_TO_CLOSE = timedelta(days=1)
+
+
+def statistics_storage_retry_delay(attempt: int) -> timedelta:
+    """Wait before retrying a statistics write: 1s, 2s, 4s, ... up to five minutes."""
+    return min(STATISTICS_STORAGE_MAX_RETRY_DELAY, timedelta(seconds=2 ** min(max(attempt - 1, 0), 16)))
 
 
 class GenerateStatisticsActivityInput(BaseModel):
@@ -103,8 +131,25 @@ async def generate_statistics_activity_v2(gen_stats_input: GenerateStatisticsAct
     # no transient artifact, and history recovery can still read them when
     # object storage is unavailable.  Only a payload that would approach
     # Temporal's limit is externalized.
-    output = await generate_statistics_activity(gen_stats_input)
-    return await externalize_statistics(output, activity.info().workflow_id or "")
+    attempt = activity.info().attempt
+    try:
+        output = await generate_statistics_activity(gen_stats_input)
+    except Exception as exc:
+        if attempt >= STATISTICS_COMPUTE_MAX_ATTEMPTS:
+            raise ApplicationError(
+                "Statistics computation failed", type=STATISTICS_COMPUTE_FAILED_TYPE, non_retryable=True,
+            ) from exc
+        raise
+    try:
+        return await externalize_statistics(output, activity.info().workflow_id or "")
+    except ApplicationError:
+        raise  # the archival size limit: permanent
+    except Exception as exc:
+        activity.logger.warning("verification_statistics_storage_unavailable attempt=%s", attempt)
+        raise ApplicationError(
+            "Statistics artifact storage is unavailable", type=STATISTICS_STORAGE_UNAVAILABLE_TYPE,
+            next_retry_delay=statistics_storage_retry_delay(attempt),
+        ) from exc
 
 
 async def prepare_report(

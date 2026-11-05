@@ -29,6 +29,10 @@ it updates the ledger pointer or acknowledges completion.
   2 minutes per attempt. A workflow that is retrying stays RUNNING, and Temporal retention only starts when a
   workflow closes, so the computed output stays in its history until storage accepts it. A storage outage delays a
   report; it never turns a computed result into a failure, and it is never reported as durable completion.
+- **Externalized statistics wait for storage too.** Statistics above 512 KiB are written to object storage by the
+  statistics activity, before the persist activity runs. A failed write there is retried with the same backoff and
+  never uses the 100 attempts that computing (fetching and comparing the runs' data) gets, so a storage outage
+  shorter than a day does not fail the verification. One day bounds the statistics activity as a whole.
 - **Permanent failures complete the workflow as `BLOCKED`**: a `ValueError`, an integrity conflict, a corrupt
   artifact, or a missing artifact. The ledger row is marked `blocked`, and the workflow completes with the computed
   output marked `persistence_state=blocked`. A successful verification is never reported as FAILED. Unconfigured or
