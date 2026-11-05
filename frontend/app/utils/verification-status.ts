@@ -5,6 +5,16 @@ export function verificationIsDone(output: VerifyWorkflowOutput | null): boolean
     && output.persistence_state !== 'pending' && output.persistence_state !== 'blocked'
 }
 
+// The result is computed and its report is being saved: the persist step is running
+// (report_available is false), or a finished result is not stored yet. A verification that
+// is still computing also reports persistence_state 'pending', the field's default, but it
+// is not saving anything yet.
+export function verificationIsSaving(output: VerifyWorkflowOutput | null): boolean {
+  if (!output || output.persistence_state !== 'pending') return false
+  return output.report_available === false
+    || ['COMPLETED', 'FAILED', 'RUN_ID_NOT_FOUND'].includes(output.workflow_status)
+}
+
 export function verificationDisplayStatus(output: VerifyWorkflowOutput | null, halted: boolean): string {
   if (halted) return 'UNAVAILABLE'
   return output?.workflow_status || 'PENDING'

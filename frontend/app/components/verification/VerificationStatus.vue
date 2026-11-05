@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useClipboard } from '@vueuse/core'
-import { verificationIsDone, verificationDisplayStatus, isUnavailableVerification, recoveryMode } from '~/utils/verification-status'
+import { verificationIsDone, verificationIsSaving, verificationDisplayStatus, isUnavailableVerification, recoveryMode } from '~/utils/verification-status'
 import {
   MAX_REVERIFY_SIMULATORS,
   groupDerivedLinks,
@@ -196,9 +196,10 @@ async function submitRecovery(operation: RecoveryOperation) {
 
 const status = computed(() => verificationDisplayStatus(workflowData.value, halted.value))
 const isDone = computed(() => verificationIsDone(workflowData.value))
+const isSaving = computed(() => verificationIsSaving(workflowData.value))
 
 const statusBadgeColor = computed(() => {
-  if (workflowData.value?.persistence_state === 'pending' && status.value !== 'PENDING') return 'warning'
+  if (isSaving.value) return 'warning'
   switch (status.value) {
     case 'COMPLETED':
       return 'success'
@@ -387,7 +388,7 @@ onUnmounted(() => {
         >
           <UIcon :name="statusIcon" class="size-4" />
           <span>{{ status }}</span>
-          <span v-if="workflowData?.persistence_state === 'pending' && workflowData?.report_available === false" class="text-xs">Saving report</span>
+          <span v-if="isSaving" class="text-xs">Saving report</span>
         </UBadge>
         <div>
           <h3 class="text-base font-semibold text-neutral-900 flex items-center gap-2">

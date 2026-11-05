@@ -88,6 +88,26 @@ test('actual component keeps polling while saving and emits completion after ack
   view.unmount()
 })
 
+test('actual component colours a running verification as running, not as saving', async () => {
+  const polls = [
+    { workflow_id: 'a', workflow_status: 'IN_PROGRESS', persistence_state: 'pending' },
+    { workflow_id: 'a', workflow_status: 'IN_PROGRESS', persistence_state: 'pending', report_available: false },
+    output('a', 'stored')
+  ]
+  let calls = 0
+  const view = mountStatus(async () => polls[Math.min(calls++, polls.length - 1)])
+  await flush()
+  assert.equal(view.state().statusBadgeColor, 'primary')
+  assert.equal(view.state().isSaving, false)
+  for (let i = 0; i < 5 && calls < 2; i++) await view.tick()
+  assert.equal(view.state().statusBadgeColor, 'warning')
+  assert.equal(view.state().isSaving, true)
+  for (let i = 0; i < 10 && calls < 3; i++) await view.tick()
+  assert.equal(view.state().statusBadgeColor, 'success')
+  assert.equal(view.state().isSaving, false)
+  view.unmount()
+})
+
 test('actual component aborts switched requests and discards late success and failure', async () => {
   for (const rejectOld of [false, true]) {
     const first = deferred()
