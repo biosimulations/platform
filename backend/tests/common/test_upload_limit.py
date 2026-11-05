@@ -206,7 +206,7 @@ async def test_query_only_verify_runs_is_untouched() -> None:
     temporal.start_workflow = AsyncMock(side_effect=_start)
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=AsyncMock()), \
-         patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=AsyncMock(return_value={})):
+         patch("biosim_server.api.main.load_run_inputs", new=AsyncMock(return_value={})):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/verify/runs")
     assert response.status_code == 200, response.text
