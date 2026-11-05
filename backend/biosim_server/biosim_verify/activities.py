@@ -174,7 +174,11 @@ async def prepare_report(
     })
     try:
         index = await read_snapshot_manifest(payload.output.workflow_id)
-    except (SnapshotMissing, SnapshotMismatch, OSError, ValueError, TypeError):
+    except (SnapshotMissing, SnapshotMismatch, ValueError, TypeError):
+        # Only a missing or corrupt manifest goes without snapshots.  An I/O
+        # failure (a timeout or a dropped connection, both OSErrors) propagates
+        # and is retried: the report and its provenance are stored once, so a
+        # read that merely failed would make reconstruction impossible for good.
         activity.logger.error("verification_snapshot_manifest_unreadable")
         index = None
     if index is not None and index.skipped:

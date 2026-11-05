@@ -6,6 +6,7 @@ recovery writers (GET and the reconciler) see healthy storage.
 """
 import asyncio
 import dataclasses
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -42,6 +43,7 @@ from biosim_server.biosim_verify import workflow_persistence
 from biosim_server.biosim_verify.activities import PERMANENT_ERROR_TYPE
 from biosim_server.biosim_verify.activities import (
     PersistVerificationReportActivityInput,
+    prepare_report,
     generate_statistics_activity,
     generate_statistics_activity_v2,
     persist_verification_report_activity,
@@ -59,6 +61,8 @@ from biosim_server.biosim_verify.models import (
     VerifyWorkflowOutput,
     VerifyWorkflowStatus,
 )
+from biosim_server.biosim_verify.object_names import snapshot_index_path
+from biosim_server.biosim_verify.report_codec import CODEC_VERSION
 from biosim_server.biosim_verify.report_recovery import process_record
 from biosim_server.biosim_verify.report_storage import (
     ReportArtifactMissing,
@@ -268,6 +272,41 @@ async def test_ledger_read_failure_is_retried_not_swallowed() -> None:
         await ActivityEnvironment().run(persist_verification_report_activity, _payload())
     store.save.assert_not_awaited()
     ledger.mark_persistence_issue.assert_awaited_once_with("wf", False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [TimeoutError("storage read timed out"), ConnectionResetError("reset by peer")],
+                         ids=lambda value: type(value).__name__)
+async def test_a_transient_snapshot_read_is_retried_not_stored_without_snapshots(error: Exception) -> None:
+    """Provenance is stored once: a read that merely failed must not drop the snapshots for good."""
+    store, ledger = AsyncMock(), AsyncMock()
+    ledger.get_verification.return_value = None
+    store.find_envelope.return_value = None
+    store.hydrate_activity_reference.side_effect = lambda output: output
+    with patch("biosim_server.biosim_verify.activities.get_verification_report_store", return_value=store), \
+         patch("biosim_server.biosim_verify.activities.get_verification_database_service", return_value=ledger), \
+         patch("biosim_server.biosim_verify.activities.get_mongo_client", return_value=MagicMock()), \
+         patch("biosim_server.biosim_verify.activities.read_snapshot_manifest", AsyncMock(side_effect=error)), \
+         pytest.raises(Exception) as raised:
+        await ActivityEnvironment().run(persist_verification_report_activity, _payload())
+    assert raised.value is error  # retried, never BLOCKED
+    store.save.assert_not_awaited()
+    ledger.mark_persistence_issue.assert_awaited_once_with("wf", False)
+
+
+@pytest.mark.asyncio
+async def test_a_corrupt_snapshot_manifest_is_stored_without_snapshots(tmp_path: Path) -> None:
+    files = FileServiceLocal(tmp_path)
+    await files.upload_bytes(b"not a gzip stream", "verification-snapshots/manifests/wf.json.gz")
+    await files.upload_bytes(json.dumps({
+        "reference": "verification-snapshots/manifests/wf.json.gz", "encoding": CODEC_VERSION, "sha256": "0" * 64,
+    }).encode(), snapshot_index_path("wf"))
+    store = AsyncMock()
+    store.hydrate_activity_reference.side_effect = lambda output: output
+    with patch("biosim_server.biosim_verify.snapshots.get_file_service", return_value=files):
+        output, provenance = await prepare_report(_payload(), store=store, row=None)
+    assert output.workflow_id == "wf"
+    assert provenance.input_snapshots == [] and provenance.snapshot_manifest_reference is None
 
 
 @pytest.mark.asyncio

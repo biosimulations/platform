@@ -56,7 +56,9 @@ def decode_report(payload: bytes, *, encoding: str = CODEC_VERSION, max_decompre
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(payload)) as decompressor:
             raw = decompressor.read(max_decompressed_bytes + 1)
-    except zlib.error as exc:
+    except (zlib.error, gzip.BadGzipFile, EOFError) as exc:
+        # BadGzipFile is an OSError: left alone it would look like an I/O
+        # failure, and callers retry those instead of treating them as corrupt.
         raise ValueError("corrupt payload") from exc
     if len(raw) > max_decompressed_bytes:
         raise ValueError("verification report exceeds decompression limit")

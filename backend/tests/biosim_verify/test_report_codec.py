@@ -46,3 +46,17 @@ def test_invalid_deflate_block_is_classified_as_corruption() -> None:
     with pytest.raises(ValueError, match='corrupt payload') as error:
         decode_report(bytes(corrupt), encoding=encoding)
     assert isinstance(error.value.__cause__, zlib.error)
+
+
+@pytest.mark.parametrize("damage", ["not_gzip", "truncated", "bad_deflate"])
+def test_any_damaged_stream_is_corrupt_not_an_io_error(damage: str) -> None:
+    """A decoding failure must never look like an OSError, which callers retry as I/O."""
+    payload, encoding, _, _ = encode_report({"values": list(range(1000))})
+    if damage == "not_gzip":
+        payload = b"not a gzip stream"  # gzip.BadGzipFile, an OSError
+    elif damage == "truncated":
+        payload = payload[: len(payload) // 2]  # EOFError
+    else:
+        payload = payload[:10] + b"\xff" * (len(payload) - 10)  # zlib.error
+    with pytest.raises(ValueError, match="corrupt payload"):
+        decode_report(payload, encoding=encoding)
