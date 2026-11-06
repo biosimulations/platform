@@ -195,11 +195,16 @@ async def _load_run_metadata(run_id: str, db_service: object) -> tuple[_Outcome,
 
 
 async def _load_one_run(run_id: str, db_service: object, include_run_records: bool) -> RunInputs:
-    record_outcome: _Outcome | None = None
-    record: _UpstreamRunRecord | None = None
-    if include_run_records:
-        record_outcome, record = await _load_run_record(run_id)
-    metadata_outcome, hdf5_file = await _load_run_metadata(run_id, db_service)
+    if not include_run_records:
+        metadata_outcome, hdf5_file = await _load_run_metadata(run_id, db_service)
+        return RunInputs(hdf5_file=hdf5_file, metadata_outcome=metadata_outcome)
+    # The record and the metadata are independent, so they load side by side: one run is
+    # one upstream hop deep, which is what PRECHECK_TIME_BUDGET_SECONDS is sized for.
+    async with asyncio.TaskGroup() as group:
+        record_task = group.create_task(_load_run_record(run_id))
+        metadata_task = group.create_task(_load_run_metadata(run_id, db_service))
+    record_outcome, record = record_task.result()
+    metadata_outcome, hdf5_file = metadata_task.result()
     return RunInputs(
         hdf5_file=hdf5_file, record=record, record_outcome=record_outcome, metadata_outcome=metadata_outcome
     )
