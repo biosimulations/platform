@@ -345,6 +345,44 @@ def legacy_rate_limit(request: Request) -> None:
     )
 
 
+def simulators_rate_limit(request: Request) -> None:
+    """Enforce the owned simulator-registry read budget (plan §4.6).
+
+    Wire into every `/simulators/*` and `/ontologies/*` route. Like
+    ``page_rate_limit``: its own ``simulators:`` prefix, a generous ceiling
+    (a list view costs up to 3 requests and a detail view up to 4), and
+    deliberately **no** user dependency -- the routes resolve no identity, so a
+    stale or invalid bearer token must never turn a public read into a 401, and
+    rotating tokens cannot dodge the bound.
+    """
+    settings = get_settings().ratelimit
+    _enforce_rate_limit(
+        request,
+        None,
+        key_prefix="simulators",
+        per_window=settings.simulators_per_window,
+        window_seconds=settings.simulators_window_seconds,
+    )
+
+
+def precheck_rate_limit(request: Request) -> None:
+    """Enforce the run-precheck budget (plan §4.4).
+
+    One precheck makes up to 20 upstream requests for one incoming GET, so it
+    gets its own small ``precheck:`` bucket instead of sharing the simulators
+    budget. IP-keyed with no user dependency, for the same reason as the
+    simulators bucket: the route resolves no identity and must never 401.
+    """
+    settings = get_settings().ratelimit
+    _enforce_rate_limit(
+        request,
+        None,
+        key_prefix="precheck",
+        per_window=settings.precheck_per_window,
+        window_seconds=settings.precheck_window_seconds,
+    )
+
+
 def password_reset_rate_limit(request: Request, user: AuthenticatedUser) -> None:
     """Separate self-service budget; caller supplies the required principal.
 

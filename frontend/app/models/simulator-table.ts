@@ -7,7 +7,8 @@ export enum SimulatorCurationStatus {
 }
 
 export interface RawSimulatorAlgorithm {
-  id: string
+  // Null on some upstream algorithms; readers fall back to kisaoId
+  id?: string | null
   name?: string | null
   kisaoId?: { id: string; namespace: string } | null
   modelingFrameworks?: Array<{ id: string; namespace: string }> | null
@@ -66,6 +67,37 @@ export interface RawSimulator {
     id: string
     namespace: string
   } | null
+}
+
+// The Platform API wraps its simulator-registry lists in named envelopes so they can gain
+// fields without breaking clients (backend biosim_server/simulators/models.py)
+export interface SimulatorListResponse {
+  simulators: RawSimulator[]
+}
+
+export interface SimulatorVersionListResponse {
+  simulatorId: string
+  versions: RawSimulator[]
+}
+
+// Trimmed to what the name cache reads; EDAM relationship terms carry no name
+export interface OntologyTerm {
+  id: string
+  name?: string | null
+}
+
+export interface OntologyTermListResponse {
+  namespace: string
+  terms: OntologyTerm[]
+}
+
+const BIOSIMULATORS_REGISTRY_URL = 'https://api.biosimulators.org'
+
+// The full BioSimulators specification of one resolved version. Pass the version from the
+// returned record, never 'latest', so the link matches what the page shows. Opened as a
+// top-level navigation, so the registry's CORS allowlist does not apply.
+export function canonicalSpecificationUrl(id: string, version: string): string {
+  return `${BIOSIMULATORS_REGISTRY_URL}/simulators/${encodeURIComponent(id)}/${encodeURIComponent(version)}`
 }
 
 export interface TableSimulator {

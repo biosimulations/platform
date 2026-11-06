@@ -12,8 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from biosim_server.api.main import app
 from biosim_server.biosim_omex import OmexDatabaseServiceMongo, OmexFile
-from biosim_server.biosim_runs import BiosimServiceRest, BiosimulatorVersion, DatabaseServiceMongo
+from biosim_server.biosim_runs import BiosimServiceRest, BiosimulatorVersion, DatabaseServiceMongo, HDF5File
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflowInput
+from biosim_server.biosim_verify.precheck import RunInputs
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflowInput
 from biosim_server.biosim_verify.database import (
     VERIFICATION_CURSOR_MAX_LENGTH,
@@ -629,7 +630,7 @@ async def test_verify_runs_anonymous_start_is_ownerless() -> None:
     temporal, ledger = _make_temporal_for_runs(), AsyncMock()
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
-         patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=AsyncMock(return_value={})):
+         patch("biosim_server.api.main.load_run_inputs", new=AsyncMock(return_value={})):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
             response = await test_client.post("/verify/runs")
     assert response.status_code == 200, response.text
@@ -1433,7 +1434,7 @@ def _make_temporal_for_runs() -> MagicMock:
     return temporal
 
 
-def _make_hdf5_file(run_id: str, datasets: dict[str, list[str]]) -> "object":
+def _make_hdf5_file(run_id: str, datasets: dict[str, list[str]]) -> HDF5File:
     from biosim_server.biosim_runs.models import HDF5File, HDF5Group, HDF5Dataset, HDF5Attribute
     groups = []
     for name, labels in datasets.items():
@@ -1459,8 +1460,8 @@ async def test_verify_runs_disjoint_metadata_returns_400() -> None:
     try:
         with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
              patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
-             patch("biosim_server.api.main._load_hdf5_metadata_for_preflight",
-                   new=AsyncMock(return_value={"r1": r1, "r2": r2})):
+             patch("biosim_server.api.main.load_run_inputs",
+                   new=AsyncMock(return_value={"r1": RunInputs(hdf5_file=r1), "r2": RunInputs(hdf5_file=r2)})):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 resp = await c.post(
                     "/verify/runs",
@@ -1492,8 +1493,8 @@ async def test_verify_runs_overlapping_metadata_proceeds() -> None:
     try:
         with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
              patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
-             patch("biosim_server.api.main._load_hdf5_metadata_for_preflight",
-                   new=AsyncMock(return_value={"r1": r1, "r2": r2})):
+             patch("biosim_server.api.main.load_run_inputs",
+                   new=AsyncMock(return_value={"r1": RunInputs(hdf5_file=r1), "r2": RunInputs(hdf5_file=r2)})):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 resp = await c.post(
                     "/verify/runs",
@@ -1521,8 +1522,8 @@ async def test_verify_runs_preflight_skipped_when_only_one_metadata_available() 
     try:
         with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
              patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
-             patch("biosim_server.api.main._load_hdf5_metadata_for_preflight",
-                   new=AsyncMock(return_value={"r1": r1})):
+             patch("biosim_server.api.main.load_run_inputs",
+                   new=AsyncMock(return_value={"r1": RunInputs(hdf5_file=r1)})):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 resp = await c.post(
                     "/verify/runs",
@@ -1545,7 +1546,7 @@ async def _post_verify_runs_anonymously(run_ids: list[str]) -> tuple[Response, M
     temporal, ledger, preflight = _make_temporal_for_runs(), AsyncMock(), AsyncMock(return_value={})
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
-         patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=preflight):
+         patch("biosim_server.api.main.load_run_inputs", new=preflight):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/verify/runs", params={"biosimulations_run_ids": run_ids})
     return response, temporal, ledger, preflight
@@ -1712,7 +1713,7 @@ async def _post_verify_runs_with_hash(
         with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
              patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
              patch("biosim_server.api.main.get_database_service", return_value=db), \
-             patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=AsyncMock(return_value={})):
+             patch("biosim_server.api.main.load_run_inputs", new=AsyncMock(return_value={})):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.post("/verify/runs", params=params)
     finally:
@@ -1773,7 +1774,7 @@ async def test_verify_runs_cache_failure_falls_back_to_no_derived_hash() -> None
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
          patch("biosim_server.api.main.get_database_service", return_value=db), \
-         patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=AsyncMock(return_value={})):
+         patch("biosim_server.api.main.load_run_inputs", new=AsyncMock(return_value={})):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/verify/runs", params={"biosimulations_run_ids": ["r1", "r2"]})
     assert response.status_code == 200, response.text
@@ -1787,7 +1788,7 @@ async def test_verify_runs_malformed_omex_hash_is_422_before_any_work(omex_hash:
     temporal, ledger, preflight = _make_temporal_for_runs(), AsyncMock(), AsyncMock(return_value={})
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
-         patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=preflight):
+         patch("biosim_server.api.main.load_run_inputs", new=preflight):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/verify/runs", params={"biosimulations_run_ids": ["r1"], "omex_hash": omex_hash})
     assert response.status_code == 422, response.text
