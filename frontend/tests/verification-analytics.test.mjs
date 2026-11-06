@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { useVerificationAnalytics } from '../app/composables/useVerificationAnalytics.ts'
 
-// Nuxt normally supplies this global; individual precheck tests mock it.
+// Nuxt normally supplies these globals; individual precheck tests mock $fetch.
+const api = 'https://api.biosim.example'
+globalThis.useRuntimeConfig = () => ({ public: { api_url: api } })
 globalThis.$fetch = async () => {
   throw new Error('$fetch must be mocked in tests')
 }
@@ -140,51 +142,209 @@ test('variable rows combine pair statistics, trajectory errors and consensus', (
   assert.equal(row.consensus_status, 'discordant')
 })
 
-test('run precheck uses credential-free same-origin requests and preserves common datasets', async (t) => {
+
+// GET /verify/runs/precheck response pieces, shaped like backend biosim_verify/precheck.py
+const dataset = (name, shape, ids = ['time', 'x']) => ({ name, shape, sedml_data_set_ids: ids, sedml_data_set_labels: ids })
+const eligibleRun = (runId, datasets = [dataset('report', [2, 10])], simulator = 'vcell:7.7.0.13') => ({
+  run_id: runId, eligible: true, simulator, run_status: 'SUCCEEDED', exclusion: null, reason: null, datasets
+})
+const precheckUrl = ids => `${api}/verify/runs/precheck?${ids.map(id => `biosimulations_run_ids=${id}`).join('&')}`
+// The page keeps the result in sessionStorage; this is what it reads back
+const saved = result => JSON.parse(JSON.stringify(result))
+
+function mockPrecheck(t, respond) {
   const requests = []
   t.mock.method(globalThis, '$fetch', async (url, options) => {
     requests.push({ url, options })
-    return url.endsWith('/metadata')
-      ? { groups: [{ datasets: [{ name: 'report', shape: [2, 10], attributes: [{ key: 'sedmlDataSetIds', value: ['time', 'x'] }] }] }] }
-      : { status: 'SUCCEEDED', simulator: 'test', simulatorVersion: '1' }
+    return respond(url)
   })
-  const result = await useVerificationAnalytics().precheckRunIds([' run-1 ', 'run_2'])
+  return requests
+}
+
+test('run precheck trims and dedupes the IDs, then makes one credential-free Platform API call', async (t) => {
+  const requests = mockPrecheck(t, () => ({
+    runs: [eligibleRun('run-1'), eligibleRun('run_2')],
+    eligible: true,
+    ineligible_reason: null,
+    common_datasets: { report: ['time', 'x'] },
+    warnings: []
+  }))
+  const result = await useVerificationAnalytics().precheckRunIds([' run-1 ', 'run_2', 'run-1', '  '])
+  assert.deepEqual(requests, [{ url: precheckUrl(['run-1', 'run_2']), options: { credentials: 'omit' } }])
+  // The unchanged RunPrecheckResult shape, as saved results already have it
+  assert.deepEqual(saved(result), {
+    valid_runs: ['run-1', 'run_2'],
+    excluded_runs: [],
+    common_datasets: ['report'],
+    dataset_shapes: { report: [2, 10] },
+    dataset_var_names: { report: ['time', 'x'] },
+    can_proceed: true
+  })
+})
+
+test('run precheck reads shapes and variable names from the first eligible run with metadata', async (t) => {
+  mockPrecheck(t, () => ({
+    runs: [
+      { run_id: 'gone', eligible: false, exclusion: 'not_found', reason: 'Run not found in BioSimulations.', datasets: null },
+      eligibleRun('no-metadata', null),
+      eligibleRun('first', [dataset('report', [3, 5], ['time', 'a', 'b']), dataset('other', [1, 5], ['time'])]),
+      eligibleRun('second', [dataset('report', [3, 5], ['t', 'a', 'b'])])
+    ],
+    eligible: true,
+    common_datasets: { report: ['time', 'a', 'b'] },
+    warnings: [{ code: 'metadata_unavailable', run_ids: ['no-metadata'], dataset: null }]
+  }))
+  const result = await useVerificationAnalytics().precheckRunIds(['gone', 'no-metadata', 'first', 'second'])
   assert.equal(result.can_proceed, true)
-  assert.deepEqual(result.valid_runs, ['run-1', 'run_2'])
+  assert.deepEqual(result.valid_runs, ['no-metadata', 'first', 'second'])
   assert.deepEqual(result.common_datasets, ['report'])
-  assert.deepEqual(result.dataset_shapes.report, [2, 10])
-  assert.deepEqual(result.dataset_var_names.report, ['time', 'x'])
-  assert.deepEqual(requests.map(r => r.url), [
-    '/biosimulations-api/runs/run-1', '/simdata-api/datasets/run-1/metadata',
-    '/biosimulations-api/runs/run_2', '/simdata-api/datasets/run_2/metadata'
-  ])
-  for (const { options } of requests) {
-    assert.deepEqual(options, { credentials: 'omit', headers: { accept: 'application/json' } })
-  }
+  assert.deepEqual(result.dataset_shapes, { report: [3, 5] })
+  assert.deepEqual(result.dataset_var_names, { report: ['time', 'a', 'b'] })
 })
 
-test('run precheck excludes missing runs with a clear reason and blocks fewer than two', async (t) => {
-  const requests = []
-  t.mock.method(globalThis, '$fetch', async (url) => {
-    requests.push(url)
-    if (url.includes('missing%2Fid')) throw Object.assign(new Error('Not Found'), { statusCode: 404 })
-    return url.endsWith('/metadata') ? { groups: [] } : { status: 'SUCCEEDED' }
-  })
-  const result = await useVerificationAnalytics().precheckRunIds(['valid', 'missing/id'])
+test('run precheck maps exclusions in request order and keeps the saved shape', async (t) => {
+  mockPrecheck(t, () => ({
+    runs: [
+      eligibleRun('good'),
+      { run_id: 'missing', eligible: false, simulator: null, run_status: null, exclusion: 'not_found', reason: 'Run not found in BioSimulations.', datasets: null },
+      { run_id: 'running', eligible: false, simulator: 'copasi:4.45', run_status: 'RUNNING', exclusion: 'not_succeeded', reason: 'Run status is RUNNING; only successful runs can be compared.', datasets: null },
+      { run_id: 'flaky', eligible: false, exclusion: 'upstream_unavailable', datasets: null }
+    ],
+    eligible: false,
+    ineligible_reason: 'fewer_than_two_eligible_runs',
+    common_datasets: {},
+    warnings: []
+  }))
+  const result = await useVerificationAnalytics().precheckRunIds(['good', 'missing', 'running', 'flaky'])
   assert.equal(result.can_proceed, false)
-  assert.deepEqual(result.valid_runs, ['valid'])
-  assert.equal(result.excluded_runs[0].reason, 'Run not found in BioSimulations database')
-  assert.equal(requests.at(-1), '/biosimulations-api/runs/missing%2Fid')
+  assert.deepEqual(result.valid_runs, ['good'])
+  assert.deepEqual(saved(result).excluded_runs, [
+    { run_id: 'missing', reason: 'Run not found in BioSimulations.' },
+    { run_id: 'running', simulator: 'copasi:4.45', status: 'RUNNING', reason: 'Run status is RUNNING; only successful runs can be compared.' },
+    // A response without reason copy still says why
+    { run_id: 'flaky', reason: 'Could not check this run. Please retry.' }
+  ])
+  assert.equal(result.warning_message, [
+    'At least two successful runs are required for comparison.',
+    'Excluded missing: Run not found in BioSimulations.',
+    'Excluded running: Run status is RUNNING; only successful runs can be compared.',
+    'Excluded flaky: Could not check this run. Please retry.'
+  ].join(' '))
 })
 
-test('run precheck retains successful runs when simdata fails and excludes unfinished runs', async (t) => {
-  t.mock.method(globalThis, '$fetch', async (url) => {
-    if (url.endsWith('/metadata')) throw Object.assign(new Error('Bad Gateway'), { statusCode: 502 })
-    return { status: url.endsWith('/running') ? 'RUNNING' : 'SUCCEEDED' }
-  })
-  const result = await useVerificationAnalytics().precheckRunIds(['first', 'second', 'running'])
-  assert.equal(result.can_proceed, true)
-  assert.deepEqual(result.valid_runs, ['first', 'second'])
+test('run precheck blocks a selection the backend found to share no datasets', async (t) => {
+  mockPrecheck(t, () => ({
+    runs: [eligibleRun('a', [dataset('report', [2, 10], ['x'])]), eligibleRun('b', [dataset('report', [2, 10], ['y'])])],
+    eligible: false,
+    ineligible_reason: 'no_common_datasets',
+    common_datasets: {},
+    warnings: []
+  }))
+  const result = await useVerificationAnalytics().precheckRunIds(['a', 'b'])
+  assert.equal(result.can_proceed, false)
+  // Both runs succeeded; the batch is what cannot be compared
+  assert.deepEqual(result.valid_runs, ['a', 'b'])
+  assert.deepEqual(result.excluded_runs, [])
   assert.deepEqual(result.common_datasets, [])
-  assert.equal(result.excluded_runs[0].status, 'RUNNING')
+  assert.equal(result.warning_message, 'The selected runs have no datasets in common.')
+})
+
+test('run precheck lets shape and metadata warnings through without one hiding another', async (t) => {
+  mockPrecheck(t, () => ({
+    runs: [
+      eligibleRun('a', [dataset('report', [2, 10])]),
+      eligibleRun('b', [dataset('report', [2, 11])]),
+      eligibleRun('c', null),
+      { run_id: 'd', eligible: false, run_status: 'FAILED', exclusion: 'not_succeeded', reason: 'Run status is FAILED; only successful runs can be compared.' }
+    ],
+    eligible: true,
+    common_datasets: { report: ['time', 'x'] },
+    warnings: [
+      { code: 'shape_mismatch', run_ids: ['a', 'b'], dataset: 'report' },
+      { code: 'metadata_unavailable', run_ids: ['c'], dataset: null }
+    ]
+  }))
+  const result = await useVerificationAnalytics().precheckRunIds(['a', 'b', 'c', 'd'])
+  assert.equal(result.can_proceed, true)
+  assert.deepEqual(result.valid_runs, ['a', 'b', 'c'])
+  assert.equal(result.warning_message, [
+    'Excluded d: Run status is FAILED; only successful runs can be compared.',
+    'Some shared datasets have different shapes (report in a, b). Comparison may be incomplete.',
+    'Dataset compatibility could not be fully checked; comparison may fail (no dataset metadata for c).'
+  ].join(' '))
+})
+
+test('run precheck excludes malformed IDs itself instead of failing the whole request', async (t) => {
+  const requests = mockPrecheck(t, () => ({
+    runs: [eligibleRun('ok-1'), eligibleRun('ok_2')],
+    eligible: true,
+    common_datasets: { report: ['time', 'x'] },
+    warnings: []
+  }))
+  // The backend's per-item rule is ASCII: a slash, a dot or a non-ASCII letter would be a 422
+  const result = await useVerificationAnalytics().precheckRunIds(['ok-1', 'missing/id', 'ok_2', 'héllo', 'a.b'])
+  assert.deepEqual(requests.map(r => r.url), [precheckUrl(['ok-1', 'ok_2'])])
+  assert.equal(result.can_proceed, true)
+  assert.deepEqual(result.valid_runs, ['ok-1', 'ok_2'])
+  assert.deepEqual(result.excluded_runs.map(r => [r.run_id, r.reason]), [
+    ['missing/id', 'Not a valid BioSimulations run ID.'],
+    ['héllo', 'Not a valid BioSimulations run ID.'],
+    ['a.b', 'Not a valid BioSimulations run ID.']
+  ])
+
+  const onlyMalformed = await useVerificationAnalytics().precheckRunIds(['x/y', 'z z'])
+  assert.equal(requests.length, 1)
+  assert.equal(onlyMalformed.can_proceed, false)
+  assert.equal(onlyMalformed.excluded_runs.length, 2)
+  assert.match(onlyMalformed.warning_message, /^At least two successful runs are required for comparison\./)
+})
+
+test('run precheck refuses empty and oversized selections without calling the API', async (t) => {
+  const requests = mockPrecheck(t, () => {
+    throw new Error('unexpected request')
+  })
+  const empty = await useVerificationAnalytics().precheckRunIds([' ', ''])
+  assert.equal(empty.can_proceed, false)
+  assert.equal(empty.warning_message, 'Please provide at least two simulation run IDs.')
+
+  const eleven = Array.from({ length: 11 }, (_, k) => `run${k}`)
+  const oversized = await useVerificationAnalytics().precheckRunIds([...eleven, 'run0'])
+  assert.equal(oversized.can_proceed, false)
+  assert.equal(oversized.warning_message, 'At most 10 runs can be compared at once; 11 were given.')
+  assert.equal(requests.length, 0)
+})
+
+test('run precheck keeps the unreachable-server message when the Platform API cannot be reached', async (t) => {
+  mockPrecheck(t, () => {
+    throw new TypeError('Failed to fetch')
+  })
+  const result = await useVerificationAnalytics().precheckRunIds(['a', 'b'])
+  const message = 'Unable to reach the server to fetch run metadata. Please check your connection and try again.'
+  assert.equal(result.can_proceed, false)
+  assert.equal(result.warning_message, message)
+  assert.deepEqual(result.valid_runs, [])
+  assert.deepEqual(result.excluded_runs, [{ run_id: 'a', reason: message }, { run_id: 'b', reason: message }])
+})
+
+test('run precheck turns API errors into readable messages', async (t) => {
+  const fetchError = (status, data, headers = {}) => Object.assign(new Error(`HTTP ${status}`), {
+    statusCode: status, data, response: { status, headers: new Headers(headers) }
+  })
+  let error
+  mockPrecheck(t, () => {
+    throw error
+  })
+  error = fetchError(429, { detail: 'Rate limit exceeded. Slow down and retry after the indicated delay.' }, { 'Retry-After': '42' })
+  assert.equal((await useVerificationAnalytics().precheckRunIds(['a', 'b'])).warning_message,
+    'Too many pre-checks from this network. Please wait 42 seconds and try again.')
+
+  error = fetchError(400, { detail: 'Duplicate run IDs are not allowed: a' })
+  assert.equal((await useVerificationAnalytics().precheckRunIds(['a', 'b'])).warning_message,
+    'The run pre-check failed: Duplicate run IDs are not allowed: a')
+
+  // FastAPI's 422 detail is a list; it must not render as [object Object]
+  error = fetchError(422, { detail: [{ loc: ['query', 'biosimulations_run_ids', 0], msg: 'String should match pattern' }] })
+  const invalid = await useVerificationAnalytics().precheckRunIds(['a', 'b'])
+  assert.equal(invalid.can_proceed, false)
+  assert.equal(invalid.warning_message, 'The run pre-check failed (HTTP 422). Please try again.')
 })

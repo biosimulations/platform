@@ -1,7 +1,11 @@
 import { ref } from 'vue'
 import {
+  type OntologyTermListResponse,
   type RawSimulator,
+  type SimulatorListResponse,
+  type SimulatorVersionListResponse,
   type TableSimulator,
+  canonicalSpecificationUrl,
   getSimulatorCurationStatus,
   getSimulatorCurationStatusMessage,
   KNOWN_EDAM_FORMATS,
@@ -36,16 +40,19 @@ const ontologyCache = ref<{
 const pendingOntologyFetches = new Set<string>()
 
 export function useSimulators() {
-  const runtimeConfig = useRuntimeConfig()
-  const legacySimulatorsApi = runtimeConfig.public.legacy_simulators_api_url || '/biosimulators-api'
+  // The Platform API owns the simulator registry contract (GET /simulators/*, /ontologies/*).
+  // These are public reads: credentials are omitted, though the auth0 plugin still attaches the
+  // token of a signed-in user, which these routes ignore.
+  const apiUrl = useRuntimeConfig().public.api_url
 
   async function fetchOntologyNamespace(namespace: 'EDAM' | 'SBO' | 'KISAO' | 'SPDX') {
     if (pendingOntologyFetches.has(namespace)) return
     pendingOntologyFetches.add(namespace)
     try {
-      const terms = await $fetch<Array<{ id: string; name?: string }>>(`${legacySimulatorsApi}/ontologies/${namespace}`, {
+      const response = await $fetch<OntologyTermListResponse>(`${apiUrl}/ontologies/${namespace}`, {
         credentials: 'omit',
       })
+      const terms = response?.terms
       if (Array.isArray(terms)) {
         for (const term of terms) {
           if (term.id && term.name) {
@@ -173,10 +180,10 @@ export function useSimulators() {
   }
 
   async function fetchRawSimulators(): Promise<RawSimulator[]> {
-    const rawList = await $fetch<RawSimulator[]>(`${legacySimulatorsApi}/simulators/latest`, {
+    const response = await $fetch<SimulatorListResponse>(`${apiUrl}/simulators/latest`, {
       credentials: 'omit',
     })
-    return rawList || []
+    return response?.simulators || []
   }
 
   async function fetchSimulators(): Promise<TableSimulator[]> {
@@ -272,12 +279,13 @@ export function useSimulators() {
   async function fetchSimulatorDetail(id: string, version?: string): Promise<SimulatorDetail> {
     const verParam = version && version !== 'latest' ? encodeURIComponent(version) : 'latest'
     const [rawSim, rawVersions] = await Promise.all([
-      $fetch<any>(`${legacySimulatorsApi}/simulators/${encodeURIComponent(id)}/${verParam}?includeTests=true`, {
+      $fetch<any>(`${apiUrl}/simulators/${encodeURIComponent(id)}/${verParam}?include_tests=true`, {
         credentials: 'omit',
       }),
-      $fetch<any[]>(`${legacySimulatorsApi}/simulators/${encodeURIComponent(id)}`, {
+      // The version selector is optional; the page still renders without it
+      $fetch<SimulatorVersionListResponse>(`${apiUrl}/simulators/${encodeURIComponent(id)}`, {
         credentials: 'omit',
-      }).catch(() => []),
+      }).then(response => response?.versions || [], () => []),
     ])
 
     if (!rawSim) {
@@ -439,7 +447,7 @@ export function useSimulators() {
     })
 
     // Versions list
-    const versions: SimulatorVersionItem[] = (rawVersions || []).map((v: any) => {
+    const versions: SimulatorVersionItem[] = rawVersions.map((v: any) => {
       const vStatus = getSimulatorCurationStatus(v)
       return {
         version: v.version,
@@ -497,6 +505,7 @@ export function useSimulators() {
       versions,
       validationTests,
       rawJson: JSON.stringify(rawSim, null, 2),
+      canonicalSpecificationUrl: canonicalSpecificationUrl(rawSim.id, rawSim.version),
     }
   }
 

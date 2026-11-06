@@ -159,7 +159,47 @@ export interface VerifyWorkflowOutput {
   recovery?: VerificationRecovery | null
 }
 
-// Client-side Pre-check types
+// GET /verify/runs/precheck, the server-side eligibility decision (backend biosim_verify/precheck.py).
+// Codes are contract values; the page shows the RunPrecheckResult the composable maps this into.
+export type PrecheckExclusion = 'not_found' | 'not_succeeded' | 'upstream_unavailable'
+export type PrecheckIneligibleReason = 'fewer_than_two_eligible_runs' | 'no_common_datasets'
+
+export interface PrecheckDataset {
+  name: string
+  shape: number[]
+  sedml_data_set_ids?: string[]
+  sedml_data_set_labels?: string[]
+}
+
+export interface PrecheckRun {
+  run_id: string
+  eligible: boolean
+  // "<simulator>:<version>" when the run record names both
+  simulator?: string | null
+  run_status?: string | null
+  exclusion?: PrecheckExclusion | null
+  reason?: string | null
+  // null when the run's metadata could not be loaded
+  datasets?: PrecheckDataset[] | null
+}
+
+export interface PrecheckWarning {
+  code: 'metadata_unavailable' | 'shape_mismatch'
+  run_ids: string[]
+  dataset?: string | null
+}
+
+export interface RunPrecheckResponse {
+  // Request order
+  runs: PrecheckRun[]
+  eligible: boolean
+  ineligible_reason?: PrecheckIneligibleReason | null
+  // Dataset name → the SED-ML labels every eligible run shares for it
+  common_datasets: Record<string, string[]>
+  warnings?: PrecheckWarning[]
+}
+
+// The pre-check result the verify-model page shows and keeps in sessionStorage
 export interface ExcludedRunDetail {
   run_id: string
   simulator?: string

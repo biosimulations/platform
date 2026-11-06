@@ -2400,6 +2400,16 @@ onMounted(() => {
             @update:model-value="onWorkflowOutput"
           />
 
+          <!-- What the run pre-check found on a batch it let through (exclusions, shape and metadata warnings) -->
+          <UAlert
+            v-if="precheckResult?.can_proceed && precheckResult.warning_message"
+            color="warning"
+            variant="subtle"
+            icon="i-lucide-alert-triangle"
+            title="Pre-check notes"
+            :description="precheckResult.warning_message"
+          />
+
           <!-- Results Display when COMPLETED -->
           <div v-if="workflowOutput?.workflow_status === 'COMPLETED'" class="space-y-6">
             <!-- Dataset Selector & KPI Cards -->

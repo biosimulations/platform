@@ -88,14 +88,15 @@ function copyText(text: string, label: string) {
   })
 }
 
-// Download raw JSON
-function downloadSpecificationsJson() {
+// Download the Platform simulator record. Not the canonical BioSimulators specification,
+// so the file name says which it is.
+function downloadPlatformRecordJson() {
   if (!simulator.value) return
   const blob = new Blob([simulator.value.rawJson], { type: 'application/json;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${simulator.value.id}-${simulator.value.version}.json`
+  a.download = `${simulator.value.id}-${simulator.value.version}-platform-record.json`
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -1435,12 +1436,12 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
         </UCollapsible>
       </div>
 
-      <!-- Section 5: Raw Specifications JSON (#specifications) -->
+      <!-- Section 5: Platform simulator record JSON (#specifications, kept for existing links) -->
       <div id="specifications" class="w-full p-6 border border-neutral-200 dark:border-neutral-800 rounded-xl bg-neutral-50/50 dark:bg-neutral-900/50 shadow-sm">
         <UCollapsible class="w-full flex flex-col gap-2" :default-open="false">
           <UButton
             class="group w-full text-lg font-bold text-color cursor-pointer p-0"
-            label="Specifications (JSON)"
+            label="Platform simulator record (JSON)"
             color="neutral"
             variant="link"
             trailing-icon="i-lucide-chevron-down"
@@ -1450,16 +1451,30 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
 
           <template #content>
             <div class="mt-4 flex flex-col gap-3">
-              <div class="flex items-center justify-end gap-2">
+              <p class="text-sm text-muted">
+                The Platform's validated record of this simulator version. It omits BioSimulators fields
+                the Platform does not use; the canonical specification has the complete record.
+              </p>
+              <div class="flex flex-wrap items-center justify-end gap-2">
+                <UButton
+                  size="xs"
+                  color="neutral"
+                  variant="ghost"
+                  icon="i-lucide-external-link"
+                  label="Canonical specification"
+                  aria-label="Open the canonical BioSimulators specification for this version in a new tab"
+                  :to="simulator.canonicalSpecificationUrl"
+                  target="_blank"
+                />
                 <UButton
                   size="xs"
                   color="neutral"
                   variant="outline"
                   icon="i-lucide-copy"
                   label="Copy JSON"
-                  aria-label="Copy specifications JSON to clipboard"
+                  aria-label="Copy the Platform simulator record JSON to clipboard"
                   class="cursor-pointer"
-                  @click="copyText(simulator.rawJson, 'Specifications JSON')"
+                  @click="copyText(simulator.rawJson, 'Platform simulator record (JSON)')"
                 />
                 <UButton
                   size="xs"
@@ -1467,9 +1482,9 @@ simulator.exec_sedml_docs_in_combine_archive('/path/to/archive.omex', '/path/to/
                   variant="soft"
                   icon="i-lucide-download"
                   label="Download JSON"
-                  aria-label="Download simulator specifications JSON file"
+                  aria-label="Download the Platform simulator record JSON file"
                   class="cursor-pointer"
-                  @click="downloadSpecificationsJson"
+                  @click="downloadPlatformRecordJson"
                 />
               </div>
               <pre class="p-4 bg-neutral-900 text-neutral-200 rounded-xl overflow-x-auto text-xs font-mono leading-relaxed max-h-96"><code>{{ simulator.rawJson }}</code></pre>

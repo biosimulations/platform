@@ -1,14 +1,87 @@
 import type {
   ComparisonStatistics,
   ExcludedRunDetail,
+  PrecheckExclusion,
+  PrecheckIneligibleReason,
+  PrecheckWarning,
   RunData,
+  RunPrecheckResponse,
   RunPrecheckResult,
   VariableComparisonRow
 } from '~/models/verification'
 
-// Same-origin proxies: neither upstream CORS allowlist includes our deployed hosts.
-const RUNS_PROXY = '/biosimulations-api'
-const SIMDATA_PROXY = '/simdata-api'
+// GET /verify/runs/precheck limits: the backend's MAX_VERIFY_RUN_IDS and its ASCII run-ID rule
+const MAX_PRECHECK_RUN_IDS = 10
+const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+
+const MALFORMED_RUN_ID_REASON = 'Not a valid BioSimulations run ID.'
+const UNREACHABLE_MESSAGE = 'Unable to reach the server to fetch run metadata. Please check your connection and try again.'
+
+// The copy signed off with the precheck contract. The backend sends each exclusion's reason;
+// these cover a response without one.
+const EXCLUSION_FALLBACK_REASONS: Record<PrecheckExclusion, string> = {
+  not_found: 'Run not found in BioSimulations.',
+  not_succeeded: 'Only successful runs can be compared.',
+  upstream_unavailable: 'Could not check this run. Please retry.'
+}
+
+const INELIGIBLE_MESSAGES: Record<PrecheckIneligibleReason, string> = {
+  fewer_than_two_eligible_runs: 'At least two successful runs are required for comparison.',
+  no_common_datasets: 'The selected runs have no datasets in common.'
+}
+
+function blockedPrecheck(excludedRuns: ExcludedRunDetail[], message: string): RunPrecheckResult {
+  return {
+    valid_runs: [],
+    excluded_runs: excludedRuns,
+    common_datasets: [],
+    dataset_shapes: {},
+    dataset_var_names: {},
+    can_proceed: false,
+    warning_message: message
+  }
+}
+
+function precheckFailureMessage(err: any): string {
+  const status: number | undefined = err?.statusCode ?? err?.response?.status
+  // No HTTP status: the request never reached the Platform API (network, DNS or CORS)
+  if (!status) return UNREACHABLE_MESSAGE
+  if (status === 429) {
+    const retryAfter = err?.response?.headers?.get?.('retry-after')
+    return retryAfter
+      ? `Too many pre-checks from this network. Please wait ${retryAfter} seconds and try again.`
+      : 'Too many pre-checks from this network. Please wait a minute and try again.'
+  }
+  const detail = err?.data?.detail
+  return typeof detail === 'string' && detail
+    ? `The run pre-check failed: ${detail}`
+    : `The run pre-check failed (HTTP ${status}). Please try again.`
+}
+
+// Every condition gets its own sentence: one message must not hide another
+function precheckWarningMessage(
+  ineligibleReason: PrecheckIneligibleReason | null,
+  excludedRuns: ExcludedRunDetail[],
+  warnings: PrecheckWarning[]
+): string | undefined {
+  const parts: string[] = []
+  if (ineligibleReason) {
+    parts.push(INELIGIBLE_MESSAGES[ineligibleReason] ?? 'The selected runs cannot be compared.')
+  }
+  for (const run of excludedRuns) {
+    parts.push(`Excluded ${run.run_id}: ${run.reason}`)
+  }
+  const shapeMismatches = warnings.filter(w => w.code === 'shape_mismatch')
+  if (shapeMismatches.length > 0) {
+    const affected = shapeMismatches.map(w => `${w.dataset ?? 'a dataset'} in ${w.run_ids.join(', ')}`).join('; ')
+    parts.push(`Some shared datasets have different shapes (${affected}). Comparison may be incomplete.`)
+  }
+  const withoutMetadata = warnings.filter(w => w.code === 'metadata_unavailable').flatMap(w => w.run_ids)
+  if (withoutMetadata.length > 0) {
+    parts.push(`Dataset compatibility could not be fully checked; comparison may fail (no dataset metadata for ${withoutMetadata.join(', ')}).`)
+  }
+  return parts.length > 0 ? parts.join(' ') : undefined
+}
 
 export function useVerificationAnalytics() {
   /**
@@ -338,144 +411,82 @@ export function useVerificationAnalytics() {
   }
 
   /**
-   * Client-side precheck for existing run IDs.
-   * Validates each run against the public REST API and checks dataset compatibility.
+   * Pre-checks existing run IDs with one call to the Platform API's GET /verify/runs/precheck,
+   * which applies the same loader and dataset-overlap rule as POST /verify/runs. The response is
+   * mapped into the RunPrecheckResult the page shows and keeps in sessionStorage.
    */
   async function precheckRunIds(
     runIds: string[]
   ): Promise<RunPrecheckResult> {
-    const cleanedIds = runIds.map(id => id.trim()).filter(id => id.length > 0)
-    const validRuns: string[] = []
-    const excludedRuns: ExcludedRunDetail[] = []
-    const datasetShapes: Record<string, number[]> = {}
-    const datasetVarNames: Record<string, string[]> = {}
+    // Resolved before any await, while the caller's Nuxt context is current
+    const apiUrl = useRuntimeConfig().public.api_url
+    // The backend rejects a repeated ID with 400; a repeat adds nothing to a pairwise comparison
+    const cleanedIds = [...new Set(runIds.map(id => id.trim()).filter(id => id.length > 0))]
 
     if (cleanedIds.length === 0) {
-      return {
-        valid_runs: [],
-        excluded_runs: [],
-        common_datasets: [],
-        dataset_shapes: {},
-        dataset_var_names: {},
-        can_proceed: false,
-        warning_message: 'Please provide at least two simulation run IDs.'
+      return blockedPrecheck([], 'Please provide at least two simulation run IDs.')
+    }
+
+    // One malformed ID would fail the whole request with 422, so it is excluded here instead
+    const wellFormedIds = cleanedIds.filter(id => RUN_ID_PATTERN.test(id))
+    if (wellFormedIds.length > MAX_PRECHECK_RUN_IDS) {
+      return blockedPrecheck([], `At most ${MAX_PRECHECK_RUN_IDS} runs can be compared at once; ${wellFormedIds.length} were given.`)
+    }
+
+    let response: RunPrecheckResponse | null = null
+    if (wellFormedIds.length > 0) {
+      const query = new URLSearchParams()
+      for (const id of wellFormedIds) query.append('biosimulations_run_ids', id)
+      try {
+        response = await $fetch<RunPrecheckResponse>(`${apiUrl}/verify/runs/precheck?${query.toString()}`, {
+          credentials: 'omit'
+        })
+      } catch (err: any) {
+        const message = precheckFailureMessage(err)
+        return blockedPrecheck(
+          cleanedIds.map(id => ({ run_id: id, reason: RUN_ID_PATTERN.test(id) ? message : MALFORMED_RUN_ID_REASON })),
+          message
+        )
       }
     }
 
-    // Step 1: Fetch metadata for all runs through the same-origin BioSimulations proxy
-    const runInfos: Array<{
-      id: string
-      status: string
-      simulator: string
-      datasets?: Array<{ name: string, shape: number[], varNames?: string[] }>
-    }> = []
-
+    const runsById = new Map((response?.runs ?? []).map(run => [run.run_id, run]))
+    const validRuns: string[] = []
+    const excludedRuns: ExcludedRunDetail[] = []
     for (const id of cleanedIds) {
-      try {
-        const runRes: any = await $fetch(`${RUNS_PROXY}/runs/${encodeURIComponent(id)}`, {
-          credentials: 'omit',
-          headers: {
-            accept: 'application/json'
-          }
-        })
-        if (!runRes) {
-          excludedRuns.push({ run_id: id, reason: 'Run not found in BioSimulations database' })
-          continue
-        }
-
-        const status = runRes.status?.toUpperCase() || 'UNKNOWN'
-        const simulator = `${runRes.simulator || 'unknown'}:${runRes.simulatorVersion || ''}`
-
-        if (status !== 'SUCCEEDED') {
-          excludedRuns.push({
-            run_id: id,
-            simulator,
-            status,
-            reason: `Simulation status is ${status} (expected SUCCEEDED)`
-          })
-          continue
-        }
-
-        // Try to fetch HDF5 metadata if available
-        let datasets: Array<{ name: string, shape: number[], varNames?: string[] }> = []
-        try {
-          // Fetch simdata metadata through the same-origin proxy
-          const metaRes: any = await $fetch(`${SIMDATA_PROXY}/datasets/${encodeURIComponent(id)}/metadata`, {
-            credentials: 'omit',
-            headers: {
-              accept: 'application/json'
-            }
-          })
-          if (metaRes && metaRes.groups) {
-            for (const group of metaRes.groups) {
-              if (group.datasets) {
-                for (const ds of group.datasets) {
-                  const varIdsAttr = ds.attributes?.find((a: any) => a.key === 'sedmlDataSetIds')
-                  const varNames = varIdsAttr ? varIdsAttr.value : []
-                  datasets.push({
-                    name: ds.name,
-                    shape: ds.shape,
-                    varNames
-                  })
-                }
-              }
-            }
-          }
-        } catch {
-          // If the simdata metadata proxy fails, proceed with runRes
-          // Backend will validate HDF5 directly during execution
-          datasets = []
-        }
-
+      const run = runsById.get(id)
+      if (run?.eligible) {
         validRuns.push(id)
-        runInfos.push({ id, status, simulator, datasets })
-      } catch (err: any) {
-        const msg = err?.data?.detail || err?.message || 'Network error'
-        const reason = err?.statusCode === 404
-          ? 'Run not found in BioSimulations database'
-          : msg.includes('Failed to fetch')
-            ? 'Unable to reach the server to fetch run metadata. Please check your connection and try again.'
-            : `Failed to query run metadata: ${msg}`
+      } else if (!RUN_ID_PATTERN.test(id)) {
+        excludedRuns.push({ run_id: id, reason: MALFORMED_RUN_ID_REASON })
+      } else {
+        // JSON.stringify drops undefined fields, so saved results keep their earlier shape
         excludedRuns.push({
           run_id: id,
-          simulator: 'unknown',
-          reason
+          simulator: run?.simulator ?? undefined,
+          status: run?.run_status ?? undefined,
+          reason: run?.reason || EXCLUSION_FALLBACK_REASONS[run?.exclusion ?? 'upstream_unavailable']
         })
       }
     }
 
-    // Step 2: If we have datasets info, find intersection and check shape compatibility
-    let commonDatasets: string[] = []
-    const runsWithDatasets = runInfos.filter(r => r.datasets && r.datasets.length > 0)
-
-    if (runsWithDatasets.length > 1) {
-      // Find common dataset names across runs that have datasets info
-      const allDsLists = runsWithDatasets.map(r => r.datasets!.map(d => d.name))
-      commonDatasets = allDsLists[0]!.filter(dsName =>
-        allDsLists.every(list => list.includes(dsName))
-      )
-
-      // Check shapes of common datasets
-      for (const dsName of commonDatasets) {
-        const firstDs = runsWithDatasets[0]!.datasets!.find(d => d.name === dsName)
-        if (firstDs) {
-          datasetShapes[dsName] = firstDs.shape
-          if (firstDs.varNames) {
-            datasetVarNames[dsName] = firstDs.varNames
-          }
-        }
+    // Shapes and variable names come from the first eligible run that has metadata
+    const commonDatasets = Object.keys(response?.common_datasets ?? {})
+    const reference = (response?.runs ?? []).find(run => run.eligible && Array.isArray(run.datasets))
+    const datasetShapes: Record<string, number[]> = {}
+    const datasetVarNames: Record<string, string[]> = {}
+    for (const name of commonDatasets) {
+      const dataset = reference?.datasets?.find(d => d.name === name)
+      if (dataset) {
+        datasetShapes[name] = dataset.shape
+        datasetVarNames[name] = dataset.sedml_data_set_ids ?? []
       }
     }
 
-    const canProceed = validRuns.length >= 2
-    let warningMessage: string | undefined = undefined
-
-    if (excludedRuns.length > 0) {
-      warningMessage = `${excludedRuns.length} run(s) excluded due to errors, non-succeeded status, or incompatibility.`
-    } else if (validRuns.length < 2) {
-      warningMessage = 'At least 2 successful runs are required for cross-verification.'
-    }
-
+    const canProceed = Boolean(response?.eligible)
+    const ineligibleReason = canProceed
+      ? null
+      : (response?.ineligible_reason ?? 'fewer_than_two_eligible_runs')
     return {
       valid_runs: validRuns,
       excluded_runs: excludedRuns,
@@ -483,7 +494,7 @@ export function useVerificationAnalytics() {
       dataset_shapes: datasetShapes,
       dataset_var_names: datasetVarNames,
       can_proceed: canProceed,
-      warning_message: warningMessage
+      warning_message: precheckWarningMessage(ineligibleReason, excludedRuns, response?.warnings ?? [])
     }
   }
 
