@@ -12,6 +12,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from biosim_server.api.main import app
+from biosim_server.common.upstream import _PUBLIC_FETCH_HEADERS
 from biosim_server.simulators.models import SimulatorList, SimulatorSpec, SimulatorVersionList
 from biosim_server.simulators.router import get_simulators_service
 from biosim_server.simulators.service import BiosimulatorsService
@@ -20,6 +21,13 @@ FIXTURES = Path(__file__).parent / "fixtures"
 BASE_UPSTREAM = "https://biosimulators.test"
 
 ClientHolder = Callable[[], AbstractAsyncContextManager[AsyncClient]]
+
+# Headers an upstream might send that must never reach our caller (§4.5 response hygiene)
+LEAKY_UPSTREAM_HEADERS = {
+    "Set-Cookie": "upstream-session=1",
+    "Access-Control-Allow-Origin": "*",
+    "X-Upstream-Internal": "1",
+}
 
 
 def _load(name: str) -> Any:
@@ -48,6 +56,13 @@ def registry(monkeypatch: pytest.MonkeyPatch) -> Any:
     )
     app.dependency_overrides[get_simulators_service] = lambda: service
     yield record
+    app.dependency_overrides.pop(get_simulators_service, None)
+
+
+@pytest.fixture(autouse=True)
+def _drop_service_override() -> Any:
+    """`_mount_handler` installs an override; never let it leak into another test."""
+    yield
     app.dependency_overrides.pop(get_simulators_service, None)
 
 
@@ -233,14 +248,23 @@ async def test_simulators_budget_returns_429_with_retry_after(
             )
         ),
     )
-    _mount_handler(lambda request: httpx.Response(200, json=[]))
+    upstream_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        upstream_calls.append(request.url.path)
+        return httpx.Response(200, json=_load("simulator_detail.json"))
+
+    _mount_handler(handler)
     async with client_holder() as client:
-        assert (await client.get("/simulators/latest")).status_code == 200
-        assert (await client.get("/simulators/latest")).status_code == 200
-        exhausted = await client.get("/simulators/latest")
+        # The detail route is uncached, so each admitted request reaches upstream
+        assert (await client.get("/simulators/copasi/4.42.284")).status_code == 200
+        assert (await client.get("/simulators/copasi/4.42.284")).status_code == 200
+        exhausted = await client.get("/simulators/copasi/4.42.284")
 
     assert exhausted.status_code == 429
     assert exhausted.headers["Retry-After"]
+    # A denied request never reaches upstream
+    assert len(upstream_calls) == 2
 
 
 @pytest.mark.asyncio
@@ -255,3 +279,45 @@ async def test_an_invalid_bearer_token_still_gets_200(
         ontology = await client.get("/ontologies/EDAM", headers=headers)
 
     assert latest.status_code == versions.status_code == detail.status_code == ontology.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_caller_credentials_never_reach_upstream_and_no_upstream_header_is_relayed(
+    client_holder: ClientHolder,
+) -> None:
+    """§4.5 header isolation and response hygiene, end to end through all four routes."""
+    seen: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.headers))
+        path = request.url.path
+        if path.startswith("/ontologies/"):
+            body = _load("ontology_terms.json")[path.rsplit("/", 1)[-1]]
+        elif path.count("/") == 2:  # /simulators/latest and /simulators/{id}: arrays
+            body = _load("simulators_latest.json")
+        else:
+            body = _load("simulator_detail.json")
+        return httpx.Response(200, json=body, headers=LEAKY_UPSTREAM_HEADERS)
+
+    _mount_handler(handler)
+    caller = {
+        "Authorization": "Bearer caller-token",
+        "Cookie": "session=caller",
+        # Not an allowed origin, so CORSMiddleware adds nothing and any CORS header would be relayed
+        "Origin": "https://not-allowed.test",
+    }
+    async with client_holder() as client:
+        responses = [
+            await client.get("/simulators/latest", headers=caller),
+            await client.get("/simulators/copasi", headers=caller),
+            await client.get("/simulators/copasi/4.42.284", params={"include_tests": "true"}, headers=caller),
+            await client.get("/ontologies/EDAM", headers=caller),
+        ]
+
+    assert [response.status_code for response in responses] == [200, 200, 200, 200]
+    assert len(seen) == 4
+    for headers in seen:
+        assert headers == {**_PUBLIC_FETCH_HEADERS, "host": "biosimulators.test"}
+    for response in responses:
+        for name in LEAKY_UPSTREAM_HEADERS:
+            assert name.lower() not in response.headers

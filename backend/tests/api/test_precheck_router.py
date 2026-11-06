@@ -1,5 +1,6 @@
 """GET /verify/runs/precheck: the §4.4 decision matrix, the run-ID matrix, and POST parity (plan §4.4)."""
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -13,9 +14,17 @@ from httpx import ASGITransport, AsyncClient
 
 from biosim_server.api.main import app
 from biosim_server.biosim_runs.models import HDF5Attribute, HDF5Dataset, HDF5File, HDF5Group
+from biosim_server.common.upstream import _PUBLIC_FETCH_HEADERS
 from tests.api.test_main import _make_temporal_for_runs
 
 DEFAULT_DATASET = {"shared": ["t", "x"]}
+
+# Headers an upstream might send that must never reach our caller (§4.5 response hygiene)
+LEAKY_UPSTREAM_HEADERS = {
+    "Set-Cookie": "upstream-session=1",
+    "Access-Control-Allow-Origin": "*",
+    "X-Upstream-Internal": "1",
+}
 
 
 def _run_record(status: str = "SUCCEEDED", simulator: str = "copasi", version: str = "7.7.0") -> dict[str, Any]:
@@ -54,23 +63,26 @@ def upstreams(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """
     state: dict[str, Any] = {"records": {}, "no_metadata": set(), "metadata": {}}
     calls: dict[str, list[str]] = {"runs": [], "simdata": []}
+    seen_headers: list[dict[str, str]] = []
 
     def runs_handler(request: httpx.Request) -> httpx.Response:
         run_id = request.url.path.split("/")[2]
         calls["runs"].append(run_id)
+        seen_headers.append(dict(request.headers))
         configured = state["records"].get(run_id, "SUCCEEDED")
         if isinstance(configured, int):
             return httpx.Response(configured, json={"detail": "upstream failure"})
-        return httpx.Response(200, json=_run_record(status=configured))
+        return httpx.Response(200, json=_run_record(status=configured), headers=LEAKY_UPSTREAM_HEADERS)
 
     def simdata_handler(request: httpx.Request) -> httpx.Response:
         run_id = request.url.path.split("/")[2]
         calls["simdata"].append(run_id)
+        seen_headers.append(dict(request.headers))
         if run_id in state["no_metadata"]:
             return httpx.Response(404, json={"detail": "not found"})
         override = state["metadata"].get(run_id)
         datasets, shape = override if override else (DEFAULT_DATASET, (2, 10))
-        return httpx.Response(200, json=_metadata(run_id, datasets, shape))
+        return httpx.Response(200, json=_metadata(run_id, datasets, shape), headers=LEAKY_UPSTREAM_HEADERS)
 
     monkeypatch.setattr(
         "biosim_server.biosim_verify.precheck.get_http_client",
@@ -82,6 +94,7 @@ def upstreams(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     )
     monkeypatch.setattr("biosim_server.biosim_verify.precheck.get_database_service", lambda: None)
     state["calls"] = calls
+    state["seen_headers"] = seen_headers
     return state
 
 
@@ -298,8 +311,81 @@ async def test_the_precheck_budget_returns_429_with_retry_after(
     )
     first = await client.get("/verify/runs/precheck", params={"biosimulations_run_ids": "r1"})
     second = await client.get("/verify/runs/precheck", params={"biosimulations_run_ids": "r1"})
+    admitted_calls = {name: len(made) for name, made in upstreams["calls"].items()}
     exhausted = await client.get("/verify/runs/precheck", params={"biosimulations_run_ids": "r1"})
 
     assert first.status_code == second.status_code == 200
     assert exhausted.status_code == 429
     assert exhausted.headers["Retry-After"]
+    # A denied precheck never reaches either upstream
+    assert {name: len(made) for name, made in upstreams["calls"].items()} == admitted_calls
+
+
+@pytest.mark.asyncio
+async def test_caller_credentials_never_reach_either_upstream_and_no_upstream_header_is_relayed(
+    client: AsyncClient, upstreams: dict[str, Any]
+) -> None:
+    """§4.5 header isolation and response hygiene for the run-record and simdata fetches."""
+    response = await client.get(
+        "/verify/runs/precheck",
+        params=[("biosimulations_run_ids", "r1"), ("biosimulations_run_ids", "r2")],
+        headers={
+            "Authorization": "Bearer caller-token",
+            "Cookie": "session=caller",
+            # Not an allowed origin, so CORSMiddleware adds nothing and any CORS header would be relayed
+            "Origin": "https://not-allowed.test",
+        },
+    )
+
+    assert response.status_code == 200
+    # A run record and the metadata for each of the two runs
+    assert len(upstreams["seen_headers"]) == 4
+    for headers in upstreams["seen_headers"]:
+        assert {name: value for name, value in headers.items() if name != "host"} == _PUBLIC_FETCH_HEADERS
+    for name in LEAKY_UPSTREAM_HEADERS:
+        assert name.lower() not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_a_runs_record_and_metadata_load_concurrently(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One run is one upstream hop deep, which the 40 s budget (one 30 s hop plus slack) assumes (§4.4).
+
+    Each upstream answers only once the other has been asked, so loading them one after
+    the other would leave the run unclassifiable and exclude it as upstream_unavailable.
+    """
+    started: set[str] = set()
+    both_started = asyncio.Event()
+
+    async def wait_for_the_other(kind: str) -> None:
+        started.add(kind)
+        if len(started) == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=2)
+
+    async def runs_handler(request: httpx.Request) -> httpx.Response:
+        await wait_for_the_other("record")
+        return httpx.Response(200, json=_run_record())
+
+    async def simdata_handler(request: httpx.Request) -> httpx.Response:
+        await wait_for_the_other("metadata")
+        return httpx.Response(200, json=_metadata(request.url.path.split("/")[2], DEFAULT_DATASET))
+
+    monkeypatch.setattr(
+        "biosim_server.biosim_verify.precheck.get_http_client",
+        lambda: httpx.AsyncClient(base_url="https://runs.test", transport=httpx.MockTransport(runs_handler)),
+    )
+    monkeypatch.setattr(
+        "biosim_server.biosim_verify.precheck.get_simdata_http_client",
+        lambda: httpx.AsyncClient(base_url="https://simdata.test", transport=httpx.MockTransport(simdata_handler)),
+    )
+    monkeypatch.setattr("biosim_server.biosim_verify.precheck.get_database_service", lambda: None)
+
+    response = await client.get("/verify/runs/precheck", params={"biosimulations_run_ids": "r1"})
+
+    assert response.status_code == 200
+    run = response.json()["runs"][0]
+    assert run["exclusion"] is None
+    assert run["run_status"] == "SUCCEEDED"
+    assert [dataset["name"] for dataset in run["datasets"]] == ["shared"]
