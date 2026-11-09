@@ -37,7 +37,7 @@ const pendingOntologyFetches = new Set<string>()
 
 export function useSimulators() {
   const runtimeConfig = useRuntimeConfig()
-  const legacySimulatorsApi = runtimeConfig.public.legacy_simulators_api_url || 'https://api.biosimulators.org'
+  const legacySimulatorsApi = runtimeConfig.public.legacy_simulators_api_url || '/biosimulators-api'
 
   async function fetchOntologyNamespace(namespace: 'EDAM' | 'SBO' | 'KISAO' | 'SPDX') {
     if (pendingOntologyFetches.has(namespace)) return
@@ -172,11 +172,15 @@ export function useSimulators() {
     }
   }
 
-  async function fetchSimulators(): Promise<TableSimulator[]> {
+  async function fetchRawSimulators(): Promise<RawSimulator[]> {
     const rawList = await $fetch<RawSimulator[]>(`${legacySimulatorsApi}/simulators/latest`, {
       credentials: 'omit',
     })
-    return (rawList || []).map(mapRawSimulator)
+    return rawList || []
+  }
+
+  async function fetchSimulators(): Promise<TableSimulator[]> {
+    return (await fetchRawSimulators()).map(mapRawSimulator)
   }
 
   function formatCitation(citation: any): SimulatorCitation {
@@ -497,6 +501,7 @@ export function useSimulators() {
   }
 
   return {
+    fetchRawSimulators,
     fetchSimulators,
     fetchSimulatorDetail,
     mapRawSimulator,
