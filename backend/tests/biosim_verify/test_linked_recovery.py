@@ -7,7 +7,7 @@ its permalink, and reconstruction never submits a simulator job.
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 from httpx import ASGITransport, AsyncClient
 from temporalio.exceptions import ApplicationError
 from temporalio.service import RPCError, RPCStatusCode
@@ -28,12 +29,14 @@ from biosim_server.biosim_runs.models import (
 )
 from biosim_server.biosim_verify.activities import PersistVerificationReportActivityInput, persist_verification_report_activity
 from biosim_server.biosim_verify.models import (
-    MAX_VERIFY_RUN_IDS, MAX_VERIFY_SIMULATORS, CompareSettings, DerivationKind, NumericalInputSnapshot,
-    ReconstructRequest,
-    ReverifyRequest, RunData, SimulationRunInfo, VerificationProvenance, VerificationRecord, VerificationType,
-    VerifyWorkflowOutput, VerifyWorkflowStatus,
+    MAX_REVERIFY_CACHE_BUSTER_LENGTH, MAX_REVERIFY_DESCRIPTION_LENGTH, MAX_REVERIFY_OBSERVABLE_LENGTH,
+    MAX_REVERIFY_OBSERVABLES, MAX_VERIFY_RUN_IDS, MAX_VERIFY_SIMULATORS, CompareSettings, DerivationKind,
+    NumericalInputSnapshot, ReconstructRequest, ReverifyRequest, RunData, SimulationRunInfo,
+    VerificationProvenance, VerificationRecord, VerificationType, VerifyWorkflowOutput, VerifyWorkflowStatus,
 )
-from biosim_server.biosim_verify.reconstruct_workflow import CompareRetainedSnapshotsInput, compare_retained_snapshots
+from biosim_server.biosim_verify.reconstruct_workflow import (
+    RECONSTRUCT_COMPARE_RETRY, CompareRetainedSnapshotsInput, compare_retained_snapshots,
+)
 from biosim_server.biosim_verify.report_storage import VerificationReportStore
 from biosim_server.biosim_verify.snapshots import capture_input_snapshots
 from biosim_server.common.auth.auth0 import AuthenticatedUser
@@ -603,6 +606,31 @@ def test_reconstruction_request_model_requires_explicit_inputs() -> None:
         ReconstructRequest.model_validate({"compare_settings": _SETTINGS.model_dump()})
     with pytest.raises(Exception):
         ReverifyRequest.model_validate({"simulators": [f"sim{index}" for index in range(MAX_VERIFY_SIMULATORS + 1)]})
+
+
+def test_reverify_request_bounds_description_observables_and_cache_buster() -> None:
+    ReverifyRequest.model_validate({
+        "user_description": "x" * MAX_REVERIFY_DESCRIPTION_LENGTH,
+        "observables": ["v" * MAX_REVERIFY_OBSERVABLE_LENGTH] * MAX_REVERIFY_OBSERVABLES,
+        "cache_buster": "c" * MAX_REVERIFY_CACHE_BUSTER_LENGTH,
+    })
+    with pytest.raises(ValidationError):
+        ReverifyRequest.model_validate({"user_description": "x" * (MAX_REVERIFY_DESCRIPTION_LENGTH + 1)})
+    with pytest.raises(ValidationError):
+        ReverifyRequest.model_validate({"observables": ["v"] * (MAX_REVERIFY_OBSERVABLES + 1)})
+    with pytest.raises(ValidationError):
+        ReverifyRequest.model_validate({"observables": ["v" * (MAX_REVERIFY_OBSERVABLE_LENGTH + 1)]})
+    with pytest.raises(ValidationError):
+        ReverifyRequest.model_validate({"cache_buster": "c" * (MAX_REVERIFY_CACHE_BUSTER_LENGTH + 1)})
+
+
+def test_reconstruction_comparison_retries_storage_without_giving_up() -> None:
+    assert RECONSTRUCT_COMPARE_RETRY.maximum_attempts == 0
+    assert RECONSTRUCT_COMPARE_RETRY.maximum_interval == timedelta(minutes=5)
+    assert "ApplicationError" in (RECONSTRUCT_COMPARE_RETRY.non_retryable_error_types or [])
+    source = Path("biosim_server/biosim_verify/reconstruct_workflow.py").read_text()
+    assert "retry_policy=RECONSTRUCT_COMPARE_RETRY" in source
+    assert "maximum_attempts=5" not in source
 
 
 @pytest.mark.asyncio

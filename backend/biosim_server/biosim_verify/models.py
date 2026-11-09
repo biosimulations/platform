@@ -1,7 +1,7 @@
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Final, Optional
+from typing import Annotated, Final, Optional
 
 from pydantic import AwareDatetime, BaseModel, Field
 
@@ -39,6 +39,12 @@ REVERIFY_DEFAULT_REL_TOL: Final = 0.0001
 REVERIFY_DEFAULT_ABS_TOL_MIN: Final = 0.001
 REVERIFY_DEFAULT_ABS_TOL_SCALE: Final = 0.00001
 REVERIFY_DEFAULT_CACHE_BUSTER: Final = "0"
+# Re-verification body bounds. These strings are stored with the request and
+# echoed into the new verification. Published as OpenAPI maxLength / maxItems.
+MAX_REVERIFY_DESCRIPTION_LENGTH: Final = 2000
+MAX_REVERIFY_OBSERVABLES: Final = 200
+MAX_REVERIFY_OBSERVABLE_LENGTH: Final = 512
+MAX_REVERIFY_CACHE_BUSTER_LENGTH: Final = 128
 
 
 class ComparisonStatistics(BaseModel):
@@ -470,13 +476,15 @@ class ReverifyRequest(BaseModel):
 
     simulators: Optional[list[str]] = Field(default=None, max_length=MAX_VERIFY_SIMULATORS)
     include_outputs: Optional[bool] = None
-    user_description: Optional[str] = None
+    user_description: Optional[str] = Field(default=None, max_length=MAX_REVERIFY_DESCRIPTION_LENGTH)
     # A negative tolerance would fail every comparison; the UI mirrors these bounds.
     rel_tol: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     abs_tol_min: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     abs_tol_scale: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
-    observables: Optional[list[str]] = None
-    cache_buster: Optional[str] = None
+    observables: Optional[list[Annotated[str, Field(max_length=MAX_REVERIFY_OBSERVABLE_LENGTH)]]] = Field(
+        default=None, max_length=MAX_REVERIFY_OBSERVABLES,
+    )
+    cache_buster: Optional[str] = Field(default=None, max_length=MAX_REVERIFY_CACHE_BUSTER_LENGTH)
 
 
 class LinkedRecoveryAccepted(BaseModel):

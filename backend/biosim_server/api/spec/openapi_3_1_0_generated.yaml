@@ -3312,6 +3312,7 @@ components:
         user_description:
           anyOf:
           - type: string
+            maxLength: 2000
           - type: 'null'
           title: User Description
         rel_tol:
@@ -3336,12 +3337,15 @@ components:
           anyOf:
           - items:
               type: string
+              maxLength: 512
             type: array
+            maxItems: 200
           - type: 'null'
           title: Observables
         cache_buster:
           anyOf:
           - type: string
+            maxLength: 128
           - type: 'null'
           title: Cache Buster
       type: object

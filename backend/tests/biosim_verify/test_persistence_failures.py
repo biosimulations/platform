@@ -27,6 +27,7 @@ from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 from biosim_server import dependencies as deps
 from biosim_server.api.main import app
 from biosim_server.biosim_omex.models import OmexFile
+from biosim_server.biosim_runs import BiosimServiceRest
 from biosim_server.biosim_runs.activities import (
     GetExistingBiosimSimulationRunActivityInput,
     GetExistingBiosimSimulationRunActivityOutput,
@@ -355,7 +356,11 @@ async def test_transient_failures_are_retried_until_the_report_is_stored(world: 
 async def test_a_statistics_storage_outage_outlasting_the_compute_budget_still_stores_the_report(
     world: World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Externalized statistics wait for storage; the outage never fails the comparison (I-1)."""
+    """Externalized statistics wait inside the attempt that computed them (I-1).
+
+    A storage outage longer than the compute budget still stores the report, and
+    the datasets are downloaded once.
+    """
     # A small compute budget keeps the test fast; the outage outlasts it.
     monkeypatch.setattr(verify_activities, "STATISTICS_COMPUTE_MAX_ATTEMPTS", 3)
     failures = 5
@@ -376,6 +381,10 @@ async def test_a_statistics_storage_outage_outlasting_the_compute_budget_still_s
     result = await asyncio.wait_for(handle.result(), 120)
 
     assert writes == failures + 1
+    # One dataset, downloaded once: storage retries did not recompute.
+    download = BiosimServiceRest.get_hdf5_data
+    assert isinstance(download, AsyncMock)
+    assert download.await_count == 1
     assert result.workflow_status == VerifyWorkflowStatus.COMPLETED
     assert result.persistence_state == ReportPersistenceState.STORED
     saved = await world.store.get(handle.id)
@@ -388,6 +397,8 @@ async def test_a_statistics_storage_outage_outlasting_the_compute_budget_still_s
             if scheduled.activity_type.name == "generate_statistics_activity_v2":
                 assert scheduled.retry_policy.maximum_attempts == 0
                 assert scheduled.schedule_to_close_timeout.ToTimedelta() == timedelta(days=1)
+                assert scheduled.start_to_close_timeout.ToTimedelta() == timedelta(days=1)
+                assert scheduled.heartbeat_timeout.ToTimedelta() == verify_activities.STATISTICS_HEARTBEAT_TIMEOUT
                 break
     else:
         pytest.fail("the statistics activity was never scheduled")

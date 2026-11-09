@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from biosim_server.biosim_verify.activities import STATISTICS_STORAGE_UNAVAILABLE_EVENT
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -27,6 +29,11 @@ def test_the_heartbeat_counts_summaries_and_the_alert_matches_attention() -> Non
     log_filter = condition["conditionMatchedLog"]["filter"]
     assert "verification_persistence_attention" in log_filter
     assert "verification_persistence_failure" in log_filter
+    # A statistics storage outage is a worker log line, and a JSON log's event
+    # or message. The 24-hour computing staleness signal is not this alert.
+    assert f'textPayload:"{STATISTICS_STORAGE_UNAVAILABLE_EVENT}"' in log_filter
+    assert f'jsonPayload.message:"{STATISTICS_STORAGE_UNAVAILABLE_EVENT}"' in log_filter
+    assert f'jsonPayload.event="{STATISTICS_STORAGE_UNAVAILABLE_EVENT}"' in log_filter
     # A content address holding the wrong bytes is attention too (WP-7a).
     assert "verification_object_integrity_conflict" in log_filter
     assert "verification_reconcile_summary" not in log_filter

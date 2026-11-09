@@ -30,9 +30,16 @@ it updates the ledger pointer or acknowledges completion.
   workflow closes, so the computed output stays in its history until storage accepts it. A storage outage delays a
   report; it never turns a computed result into a failure, and it is never reported as durable completion.
 - **Externalized statistics wait for storage too.** Statistics above 512 KiB are written to object storage by the
-  statistics activity, before the persist activity runs. A failed write there is retried with the same backoff and
-  never uses the 100 attempts that computing (fetching and comparing the runs' data) gets, so a storage outage
-  shorter than a day does not fail the verification. One day bounds the statistics activity as a whole.
+  statistics activity, before the persist activity runs. A failed write is retried inside the attempt that already
+  computed the statistics, with the same backoff as a failed report write (1s, doubling, at most 5 minutes). The
+  computed bytes stay in memory, so those retries do not download the datasets again and do not use the 100
+  attempts that computing gets. Each retry logs `verification_statistics_storage_unavailable`. The attempt holds
+  its worker slot while it waits and heartbeats, so a dead worker is retried; that retry recomputes once. One day
+  bounds the activity, storage waits included, so an outage shorter than a day does not fail the verification.
+- **Reconstruction's comparison activity writes storage too** (the snapshot manifest and, when statistics are
+  large, the statistics artifact). Transient failures retry with the persist backoff and no attempt cap. A
+  checksum mismatch or a missing snapshot is non-retryable, and the derived report completes FAILED. A storage
+  outage delays that derived report; it does not fail it after a few seconds.
 - **Permanent failures complete the workflow as `BLOCKED`**: a `ValueError`, an integrity conflict, a corrupt
   artifact, or a missing artifact. The ledger row is marked `blocked`, and the workflow completes with the computed
   output marked `persistence_state=blocked`. A successful verification is never reported as FAILED. Unconfigured or
@@ -144,9 +151,18 @@ a checksum manifest. It does not back up the entire platform, archive collection
 A failed export has no completion manifest and cannot be restored. Store the directory on encrypted persistent
 backup storage with access equivalent to the source reports; it includes private scientific data.
 
-With submissions drained and after backfill:
+With submissions drained and after backfill, pass that cluster's `MONGODB_DATABASE`. GKE production is
+`biosimulations-prod` (`kustomize/config/biosim-gke/shared.env`). RKE and local are `biosimulations`
+(`kustomize/config/biosim-rke/shared.env`, `kustomize/config/biosim-local/shared.env`).
 
 ```bash
+# GKE
+uv run python -m scripts.backup_verification_reports export \
+  --database biosimulations-prod --directory /persistent/backups/verification-2026-10-29
+```
+
+```bash
+# RKE and local
 uv run python -m scripts.backup_verification_reports export \
   --database biosimulations --directory /persistent/backups/verification-2026-10-29
 ```
@@ -215,11 +231,14 @@ the row, its error and its acknowledgement as they were.
   is attention after `--stale-persist-after` (default 3600 seconds). The alert is never early, but it can be late
   when each attempt hangs until its timeout.
 - `computing`: anything else still running. It is attention after `--stale-running-after` (default 86400 seconds).
+  A statistics storage outage is not this signal.
 
 Other events: the worker logs `verification_persistence_failure` the moment a persist attempt fails;
-`verification_object_integrity_conflict` means an object at a content address did not hold its content (see
-"Object storage"); `verification_snapshot_capture_failed` and `verification_snapshot_capture_skipped` are warnings
-that leave the original report intact and only make it ineligible for reconstruction.
+`verification_statistics_storage_unavailable` on each statistics storage retry, while the activity is still
+waiting in the attempt that computed the comparison; `verification_object_integrity_conflict` means an object at
+a content address did not hold its content (see "Object storage"); `verification_snapshot_capture_failed` and
+`verification_snapshot_capture_skipped` are warnings that leave the original report intact and only make it
+ineligible for reconstruction.
 
 ### Acknowledging a row
 
@@ -245,8 +264,10 @@ when they can be, but they are not attention.
 
 Deployment templates in `ops/monitoring/` cover:
 
-- A log alert on `verification_persistence_attention`, `verification_persistence_failure` and
-  `verification_object_integrity_conflict`, rate limited to one notification per 15 minutes.
+- A log alert on `verification_persistence_attention`, `verification_persistence_failure`,
+  `verification_statistics_storage_unavailable` and `verification_object_integrity_conflict`, rate limited to one
+  notification per 15 minutes. The statistics event fires on each storage retry, so an outage is visible while
+  the activity is still waiting, rather than when the one-day computing staleness threshold arrives.
 - A log-based run counter of `verification_reconcile_summary`, and an absence policy for 30 minutes without one.
   Every run that scanned, or found the lease busy, logs the summary, so the heartbeat counts healthy runs whatever
   their rows need.

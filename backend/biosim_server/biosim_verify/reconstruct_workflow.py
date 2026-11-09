@@ -7,6 +7,7 @@ with a typed error, and the derived report says which check failed in
 ``failure_code`` and ``workflow_error``.
 """
 
+import dataclasses
 import logging
 from datetime import timedelta
 
@@ -36,7 +37,16 @@ from biosim_server.biosim_verify.snapshots import (
     load_verified_snapshots,
     publish_snapshot_manifest,
 )
-from biosim_server.biosim_verify.workflow_persistence import persist_report
+from biosim_server.biosim_verify.workflow_persistence import PERSIST_RETRY, persist_report
+
+# Same backoff as a report write. Checksum mismatch, a missing snapshot, and
+# the archival size limit are ApplicationErrors and stay non-retryable.
+# Transient storage errors retry without a cap: this activity writes the
+# snapshot manifest and any externalized statistics after the caller has
+# already been charged, so a short storage outage must not fail the report.
+RECONSTRUCT_COMPARE_RETRY: RetryPolicy = dataclasses.replace(
+    PERSIST_RETRY, non_retryable_error_types=["ApplicationError"],
+)
 
 
 # The comparison activity's typed failures: failure_code -> the derived report's workflow_error.
@@ -121,9 +131,7 @@ class ReconstructComparisonWorkflow:
                     ordered_run_ids=verify_input.ordered_run_ids,
                 ),
                 start_to_close_timeout=timedelta(minutes=10),
-                retry_policy=RetryPolicy(maximum_attempts=5, non_retryable_error_types=[
-                    "ApplicationError",
-                ]),
+                retry_policy=RECONSTRUCT_COMPARE_RETRY,
             )
             output = self.verify_output.model_copy(update={
                 "workflow_status": VerifyWorkflowStatus.COMPLETED,

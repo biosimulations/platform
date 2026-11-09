@@ -1,5 +1,6 @@
 """Exercise the activity with real comparison math and mocked data downloads."""
 import dataclasses
+import logging
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -13,14 +14,17 @@ from biosim_server.biosim_runs.models import (
     BiosimSimulationRun, BiosimSimulationRunStatus, BiosimulatorVersion, Hdf5DataValues,
 )
 from biosim_server.biosim_verify.activities import (
+    STATISTICS_COMPUTE_ATTEMPT_TIMEOUT,
     STATISTICS_COMPUTE_FAILED_TYPE,
     STATISTICS_COMPUTE_MAX_ATTEMPTS,
+    STATISTICS_HEARTBEAT_TIMEOUT,
     STATISTICS_RETRY,
     STATISTICS_SCHEDULE_TO_CLOSE,
-    STATISTICS_STORAGE_UNAVAILABLE_TYPE,
+    STATISTICS_STORAGE_UNAVAILABLE_EVENT,
     GenerateStatisticsActivityInput,
     generate_statistics_activity,
     generate_statistics_activity_v2,
+    statistics_storage_retry_delay,
 )
 from biosim_server.biosim_verify.models import CompareSettings, SimulationRunInfo
 from tests.biosim_verify.test_compatibility import _file
@@ -152,21 +156,42 @@ async def _run_v2(attempt: int, *, hdf5: AsyncMock, put_if_absent: AsyncMock,
 _DATA = Hdf5DataValues(shape=[2, 3], values=[0, 1, 2, 3, 4, 5])
 
 
+def test_statistics_storage_backoff_caps_at_five_minutes() -> None:
+    assert statistics_storage_retry_delay(1) == timedelta(seconds=1)
+    assert statistics_storage_retry_delay(4) == timedelta(seconds=8)
+    assert statistics_storage_retry_delay(STATISTICS_COMPUTE_MAX_ATTEMPTS + 50) == timedelta(minutes=5)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("attempt, delay", [
-    (1, timedelta(seconds=1)), (4, timedelta(seconds=8)),
-    # Far past the compute budget: still retryable, at the persist activity's ceiling.
-    (STATISTICS_COMPUTE_MAX_ATTEMPTS + 50, timedelta(minutes=5)),
-])
-async def test_a_storage_failure_is_retried_with_backoff_whatever_the_attempt(
-    attempt: int, delay: timedelta,
+@pytest.mark.parametrize("attempt", [1, STATISTICS_COMPUTE_MAX_ATTEMPTS + 50])
+async def test_a_storage_outage_retries_inside_the_attempt_without_recomputing(
+    attempt: int, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with pytest.raises(ApplicationError) as raised:
-        await _run_v2(attempt, hdf5=AsyncMock(return_value=_DATA),
-                      put_if_absent=AsyncMock(side_effect=ConnectionError("storage unreachable")))
-    assert raised.value.type == STATISTICS_STORAGE_UNAVAILABLE_TYPE
-    assert not raised.value.non_retryable
-    assert raised.value.next_retry_delay == delay
+    """Storage retries keep the computed bytes. Temporal's attempt number does not matter."""
+    delays: list[int] = []
+
+    def record_delay(storage_attempt: int) -> timedelta:
+        delays.append(storage_attempt)
+        return timedelta(0)
+
+    monkeypatch.setattr("biosim_server.biosim_verify.activities.statistics_storage_retry_delay", record_delay)
+    writes = 0
+
+    async def flaky_put(*_args: Any, **_kwargs: Any) -> bool:
+        nonlocal writes
+        writes += 1
+        if writes < 3:
+            raise ConnectionError("storage unreachable")
+        return True
+
+    hdf5 = AsyncMock(return_value=_DATA)
+    with caplog.at_level(logging.WARNING):
+        result = await _run_v2(attempt, hdf5=hdf5, put_if_absent=AsyncMock(side_effect=flaky_put))
+    assert hdf5.await_count == 1
+    assert writes == 3
+    assert delays == [1, 2]
+    assert result.reference is not None
+    assert caplog.text.count(STATISTICS_STORAGE_UNAVAILABLE_EVENT) == 2
 
 
 @pytest.mark.asyncio
@@ -192,3 +217,6 @@ async def test_statistics_over_the_archival_limit_are_still_permanent() -> None:
 def test_the_server_does_not_cap_statistics_attempts() -> None:
     assert STATISTICS_RETRY.maximum_attempts == 0
     assert STATISTICS_SCHEDULE_TO_CLOSE == timedelta(days=1)
+    # A compute attempt must finish inside the heartbeat window, or a slow
+    # comparison is failed for a missed heartbeat and recomputed.
+    assert STATISTICS_HEARTBEAT_TIMEOUT > STATISTICS_COMPUTE_ATTEMPT_TIMEOUT

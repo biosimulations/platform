@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 from importlib.metadata import version
 
@@ -47,23 +48,35 @@ PERMANENT_ERRORS: tuple[type[BaseException], ...] = (
 # The statistics activity has two kinds of failure, and they are retried
 # differently.  Computing (fetching the runs' data from biosimulations.org and
 # comparing it) keeps the budget it had before the activity wrote to object
-# storage.  Writing an oversized result to object storage is retried with the
-# persist activity's backoff and never uses that budget up, so a storage outage
-# does not turn a computed comparison into a FAILED verification (I-1).  The
-# server no longer caps attempts; the activity caps computing itself, and the
-# whole activity, crashes and timeouts included, is bounded by a day.
+# storage.  A failed write of an oversized result is retried in that same
+# attempt, with the persist activity's backoff: the bytes stay in memory, so
+# the retry does not download the datasets again and Temporal's attempt count
+# does not move.  A storage outage therefore does not spend the compute budget
+# and does not turn a computed comparison into a FAILED verification (I-1).
+# The server no longer caps attempts; the activity caps computing itself, and
+# the whole activity, crashes and timeouts included, is bounded by a day.
+# The attempt holds its worker slot while it waits on storage, and heartbeats
+# so a dead worker is retried.  That retry recomputes once.
 
 #: Attempts the statistics activity gets when computing fails.
 STATISTICS_COMPUTE_MAX_ATTEMPTS = 100
-#: The longest wait between attempts while object storage refuses the statistics.
+#: One compute attempt. A hung download ends here and counts as a compute failure.
+STATISTICS_COMPUTE_ATTEMPT_TIMEOUT = timedelta(minutes=10)
+#: The longest wait between writes while object storage refuses the statistics.
 STATISTICS_STORAGE_MAX_RETRY_DELAY = timedelta(minutes=5)
 STATISTICS_COMPUTE_FAILED_TYPE = "StatisticsComputationFailed"
-STATISTICS_STORAGE_UNAVAILABLE_TYPE = "StatisticsStorageUnavailable"
+#: Logged on each storage retry. The persistence alert matches this text.
+STATISTICS_STORAGE_UNAVAILABLE_EVENT = "verification_statistics_storage_unavailable"
 #: The workflow's policy for the statistics activity: fast retries for a
 #: compute failure, as before, and no server-side attempt cap.
 STATISTICS_RETRY = RetryPolicy(maximum_interval=timedelta(seconds=10), maximum_attempts=0)
 #: The bound on the statistics activity, all attempts and waits included.
 STATISTICS_SCHEDULE_TO_CLOSE = timedelta(days=1)
+#: Longer than one compute attempt. Computing heartbeats at its start and end;
+#: a storage wait heartbeats throughout. A slow comparison is not failed for a
+#: missed heartbeat, and a dead worker is still noticed.
+STATISTICS_HEARTBEAT_TIMEOUT = timedelta(minutes=15)
+STATISTICS_HEARTBEAT_INTERVAL = timedelta(seconds=30)
 
 
 def statistics_storage_retry_delay(attempt: int) -> timedelta:
@@ -132,24 +145,19 @@ async def generate_statistics_activity_v2(gen_stats_input: GenerateStatisticsAct
     # object storage is unavailable.  Only a payload that would approach
     # Temporal's limit is externalized.
     attempt = activity.info().attempt
+    # Starts the heartbeat timer. Computing then has until
+    # STATISTICS_HEARTBEAT_TIMEOUT, which is longer than its own timeout.
+    activity.heartbeat()
     try:
-        output = await generate_statistics_activity(gen_stats_input)
+        async with asyncio.timeout(STATISTICS_COMPUTE_ATTEMPT_TIMEOUT.total_seconds()):
+            output = await generate_statistics_activity(gen_stats_input)
     except Exception as exc:
         if attempt >= STATISTICS_COMPUTE_MAX_ATTEMPTS:
             raise ApplicationError(
                 "Statistics computation failed", type=STATISTICS_COMPUTE_FAILED_TYPE, non_retryable=True,
             ) from exc
         raise
-    try:
-        return await externalize_statistics(output, activity.info().workflow_id or "")
-    except ApplicationError:
-        raise  # the archival size limit: permanent
-    except Exception as exc:
-        activity.logger.warning("verification_statistics_storage_unavailable attempt=%s", attempt)
-        raise ApplicationError(
-            "Statistics artifact storage is unavailable", type=STATISTICS_STORAGE_UNAVAILABLE_TYPE,
-            next_retry_delay=statistics_storage_retry_delay(attempt),
-        ) from exc
+    return await _externalize_until_stored(output, activity.info().workflow_id or "")
 
 
 async def prepare_report(
@@ -308,3 +316,37 @@ async def externalize_statistics(output: GenerateStatisticsActivityOutput,
     return GenerateStatisticsActivityResult(reference=GenerateStatisticsArtifactReference(
         artifact_reference=reference, content_sha256=digest, encoding=encoding, uncompressed_bytes=size,
     ))
+
+
+async def _wait_for_storage(delay: timedelta) -> None:
+    """Sleep *delay*, heartbeating so a dead worker is noticed during the wait."""
+    remaining = delay.total_seconds()
+    interval = STATISTICS_HEARTBEAT_INTERVAL.total_seconds()
+    while remaining > 0:
+        pause = min(interval, remaining)
+        await asyncio.sleep(pause)
+        activity.heartbeat()
+        remaining -= pause
+
+
+async def _externalize_until_stored(
+    output: GenerateStatisticsActivityOutput, workflow_id: str,
+) -> GenerateStatisticsActivityResult:
+    """Write externalized statistics, retrying storage inside this attempt.
+
+    The computed bytes stay in memory. A storage failure does not return to
+    Temporal, so the next try does not download the datasets again and does
+    not spend a compute attempt. The archival size limit still propagates.
+    The activity's schedule-to-close timeout bounds the wait.
+    """
+    storage_attempt = 1
+    while True:
+        activity.heartbeat()
+        try:
+            return await externalize_statistics(output, workflow_id)
+        except ApplicationError:
+            raise
+        except Exception:
+            activity.logger.warning(STATISTICS_STORAGE_UNAVAILABLE_EVENT)
+            await _wait_for_storage(statistics_storage_retry_delay(storage_attempt))
+            storage_attempt += 1

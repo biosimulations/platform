@@ -12,7 +12,7 @@ from biosim_server.biosim_runs.activities import GetExistingBiosimSimulationRunA
 from biosim_server.biosim_verify.models import VerificationProvenance, GenerateStatisticsActivityResult
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.biosim_verify.activities import generate_statistics_activity, generate_statistics_activity_v2, GenerateStatisticsActivityInput, \
-    STATISTICS_RETRY, STATISTICS_SCHEDULE_TO_CLOSE
+    STATISTICS_HEARTBEAT_TIMEOUT, STATISTICS_RETRY, STATISTICS_SCHEDULE_TO_CLOSE
 from biosim_server.biosim_verify.models import GenerateStatisticsActivityOutput, SimulationRunInfo, \
     ReportPersistenceState, VerifyWorkflowOutput, VerifyWorkflowStatus
 from biosim_server.biosim_verify.workflow_persistence import persist_report
@@ -128,6 +128,17 @@ async def generate_statistics(sim_workflow_runs: list[BiosimulatorWorkflowRun], 
                     for a in sim_workflow_runs if a.biosim_run is not None and a.hdf5_file is not None]
         generate_statistics_input = GenerateStatisticsActivityInput(sim_run_info_list=run_data, compare_settings=compare_settings)
         # Generate comparison report
+        if workflow.patched("durable-verification-statistics-storage-v1"):
+            # The storage wait stays in the attempt that already computed the
+            # statistics, so this attempt may run until the one-day bound.
+            # Histories recorded before the patch keep the 10-minute attempt.
+            return await workflow.execute_activity(
+                generate_statistics_activity_v2, arg=generate_statistics_input,
+                start_to_close_timeout=STATISTICS_SCHEDULE_TO_CLOSE,
+                heartbeat_timeout=STATISTICS_HEARTBEAT_TIMEOUT,
+                schedule_to_close_timeout=STATISTICS_SCHEDULE_TO_CLOSE,
+                retry_policy=STATISTICS_RETRY,
+            )
         if workflow.patched("durable-verification-statistics-v1"):
             return await workflow.execute_activity(
                 generate_statistics_activity_v2, arg=generate_statistics_input,

@@ -118,10 +118,15 @@ call site and one retry policy:
 - The statistics activity (`generate_statistics_activity_v2`) retries its two kinds of failure
   apart. A compute failure (fetching or comparing the runs' data) keeps its old budget of
   `STATISTICS_COMPUTE_MAX_ATTEMPTS` (100), after which it is `StatisticsComputationFailed`,
-  non-retryable. A failure to write externalized statistics is `StatisticsStorageUnavailable`,
-  retried with `next_retry_delay` (1s doubling, 5 min maximum) and never counted against that
-  budget. `STATISTICS_RETRY` puts no attempt limit on the server; a one-day
-  `schedule_to_close_timeout` bounds the activity, crashes and timeouts included.
+  non-retryable. Each compute attempt is limited to 10 minutes. A failure to write externalized
+  statistics is retried inside that same attempt, after the comparison has succeeded: the activity
+  keeps the bytes in memory, waits with the persist backoff (1s doubling, 5 min maximum), and
+  heartbeats while it waits. Those waits do not re-download the datasets and do not count against
+  the 100 attempts. Each one logs `verification_statistics_storage_unavailable`. `STATISTICS_RETRY`
+  puts no attempt limit on the server. A one-day `schedule_to_close_timeout` bounds the activity,
+  including the storage wait, crashes and timeouts. The attempt holds its worker slot during the
+  wait. A worker restart during the wait recomputes once. Histories recorded before
+  `durable-verification-statistics-storage-v1` keep a 10-minute attempt.
 - After storing, the activity deletes the workflow's transient objects (statistics artifact and
   snapshot index pointer). A retry that finds the report already stored for the same run and
   owner only acknowledges it, because the objects it would read may be gone.
@@ -165,8 +170,12 @@ bytes, content hash, status, and `GET /verify/{id}` permalink stay unchanged.
 `ReconstructComparisonWorkflow` (`biosim_verify/reconstruct_workflow.py`) executes two activities:
 `compare_retained_snapshots_activity`, which loads numerical inputs from immutable snapshot
 objects, verifies each SHA-256 against the recorded checksum, and calls `compare_loaded_runs`
-(`biosim_verify/comparison.py`); then the shared persistence helper. Its source contains no
-reference to `submit_biosim_run_activity`, `get_hdf5_data`, or
+(`biosim_verify/comparison.py`); then the shared persistence helper. The comparison activity also
+writes the snapshot manifest and, when statistics are large, the statistics artifact. Transient
+failures, including those writes, retry with the persist backoff and no attempt cap. A checksum
+mismatch or a missing snapshot is a non-retryable `ApplicationError` and the derived report
+completes FAILED. A storage outage delays the derived report; it does not fail it after a few
+seconds. Its source contains no reference to `submit_biosim_run_activity`, `get_hdf5_data`, or
 `get_existing_biosim_simulation_run_activity`, so a reconstruction cannot reach upstream
 biosimulations.org even when that service is down.
 
@@ -587,9 +596,11 @@ also differs.
    biosim platform's typical workflow takes 5–20 minutes; a brief drain window
    suffices.
 2. Deploy the new `platform-worker` image once the namespace is quiet.
-3. The `platform-api` image is safe to deploy at any time — its only Temporal
-   contract is `start_workflow` / `query_workflow`, both of which remain shape-
-   compatible.
+3. Roll `platform-api` from the same release as the worker when that release
+   changes history decoding, catch-up report writes, or the Temporal data
+   converter. GET recovers a verification from workflow history, catch-up
+   writes store it, and the API and worker both connect with
+   `pydantic_data_converter`.
 
 **The longer-term safe-rollout pattern** (deferred — adds significant
 maintenance cost for a one-time transition) is to wrap each restructure in

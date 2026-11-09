@@ -809,11 +809,12 @@ still applied by hand.
 > `NonDeterministicWorkflowError` if a new worker replays an in-flight
 > workflow whose history was recorded against the old code. Drain in-flight
 > workflows (wait for them to complete, or `tctl workflow terminate`) BEFORE
-> rolling out the new `platform-worker` image. The `platform-api` image is
-> safe to deploy at any time — its only Temporal contract is `start_workflow`
-> / `query_workflow`. See `docs/workflows-architecture.md` → "Deploy
-> considerations" for the full rationale and the longer-term `workflow.patched`
-> pattern.
+> rolling out the new `platform-worker` image. Roll `platform-api` from the
+> same release when it changes history decoding, catch-up report writes, or
+> the data converter: GET reads workflow history, catch-up writes store the
+> report, and the API connects with `pydantic_data_converter`, the same
+> converter the worker uses. See `docs/workflows-architecture.md` → "Deploy
+> considerations".
 >
 > Under Flux this needs an extra step, since merging the overlay bump would
 > otherwise roll the worker immediately: `flux suspend kustomization
