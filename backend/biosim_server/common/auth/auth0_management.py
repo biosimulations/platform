@@ -5,10 +5,13 @@ Auth0 is the single source of truth for identity (no local password storage),
 so profile writes have to go through it rather than a local shadow table.
 
 Also used by POST /api/v1/me/password-reset to issue a short-lived hosted
-password-change ticket (api/v2/tickets/password-change).
+password-change ticket (api/v2/tickets/password-change), and by
+POST /api/v1/me/resend-verification to read live eligibility and, when needed,
+request a verification-email job (api/v2/jobs/verification-email).
 
 Requires a Machine-to-Machine Auth0 application authorized for the Management
-API with `update:users` / `delete:users` (profile writes) and
+API with `read:users` (profile/eligibility reads), `update:users` (profile
+writes and verification-email jobs), `delete:users` (account deletion), and
 `create:user_tickets` (password reset) scopes (AUTH0_MANAGEMENT_CLIENT_ID /
 AUTH0_MANAGEMENT_CLIENT_SECRET). Callers should check `management_api_configured()`
 first and surface a 503 when it's false, rather than let these raise.
@@ -20,8 +23,9 @@ import math
 import random
 import time
 from collections.abc import Awaitable, Callable
+from enum import StrEnum
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -59,6 +63,10 @@ _MGMT_HTTP_TIMEOUT_SECONDS = 10.0
 # naive sum of the phases (unbounded lock wait + 10 s token + 15 s retries), so a
 # cold Auth0 outage cannot hold an interactive request open indefinitely.
 _MGMT_OPERATION_DEADLINE_SECONDS = 25.0
+# A mail-producing POST gets one full HTTP phase inside that same budget. The
+# eligibility read is capped at deadline - reserve, so a slow read cannot leave
+# the non-replayable write with a nearly-expired timeout.
+_SIDE_EFFECT_RESERVE_SECONDS = _MGMT_HTTP_TIMEOUT_SECONDS
 
 
 def management_api_configured() -> bool:
@@ -102,7 +110,10 @@ def _reset_management_state() -> None:
     from one test to the next. The lock is replaced rather than cleared so it
     cannot stay bound to a closed event loop between tests.
     """
-    global _http_client, _token_refresh_failed_until, _token_refresh_failure_rate_limited
+    global \
+        _http_client, \
+        _token_refresh_failed_until, \
+        _token_refresh_failure_rate_limited
     global _token_refresh_lock
     _http_client = None
     _token_refresh_failed_until = 0.0
@@ -112,9 +123,18 @@ def _reset_management_state() -> None:
     _token_cache["expires_at"] = 0.0
 
 
+def _monotonic() -> float:
+    """Monotonic instant used for operation budgets.
+
+    Tests replace this function. Patching ``time.monotonic`` would also move
+    the event-loop clock.
+    """
+    return time.monotonic()
+
+
 def _operation_deadline() -> float:
     """Start a monotonic whole-operation budget for one Management call."""
-    return time.monotonic() + _MGMT_OPERATION_DEADLINE_SECONDS
+    return _monotonic() + _MGMT_OPERATION_DEADLINE_SECONDS
 
 
 def _cooldown_error(now: float) -> "Auth0ManagementError":
@@ -127,7 +147,9 @@ def _cooldown_error(now: float) -> "Auth0ManagementError":
     up and never less than one second: every caller is sent back at the same time.
     """
     if _token_refresh_failure_rate_limited:
-        return Auth0ManagementRateLimited(max(1, math.ceil(_token_refresh_failed_until - now)))
+        return Auth0ManagementRateLimited(
+            max(1, math.ceil(_token_refresh_failed_until - now))
+        )
     return Auth0ManagementUnavailable("Auth0 token refresh is in a failure cooldown")
 
 
@@ -147,7 +169,11 @@ def _validated_token_payload(payload: object) -> tuple[str, float]:
     expires_in = payload.get("expires_in")
     if not isinstance(access_token, str) or not access_token:
         raise ValueError("token response carries no access_token")
-    if isinstance(expires_in, bool) or not isinstance(expires_in, (int, float)) or expires_in <= 0:
+    if (
+        isinstance(expires_in, bool)
+        or not isinstance(expires_in, (int, float))
+        or expires_in <= 0
+    ):
         raise ValueError("token response carries no usable expires_in")
     return access_token, float(expires_in)
 
@@ -171,7 +197,7 @@ async def _get_management_token(*, deadline: float) -> str:
         # another serialized token POST behind the lock.
         raise _cooldown_error(now)
 
-    remaining = deadline - time.monotonic()
+    remaining = deadline - _monotonic()
     if remaining <= 0:
         raise Auth0ManagementUnavailable("Auth0 token refresh budget exhausted")
     try:
@@ -180,7 +206,9 @@ async def _get_management_token(*, deadline: float) -> str:
         # only releases what this coroutine actually acquired.
         await asyncio.wait_for(_token_refresh_lock.acquire(), timeout=remaining)
     except TimeoutError as exc:
-        raise Auth0ManagementUnavailable("Timed out waiting for an Auth0 token refresh") from exc
+        raise Auth0ManagementUnavailable(
+            "Timed out waiting for an Auth0 token refresh"
+        ) from exc
     try:
         # Re-check after acquiring the lock -- another concurrent caller may have
         # already refreshed the token (or armed the cooldown) while we waited.
@@ -190,7 +218,7 @@ async def _get_management_token(*, deadline: float) -> str:
             return str(cached)
         if now < _token_refresh_failed_until:
             raise _cooldown_error(now)
-        remaining = deadline - time.monotonic()
+        remaining = deadline - _monotonic()
         if remaining <= 0:
             raise Auth0ManagementUnavailable("Auth0 token refresh budget exhausted")
         try:
@@ -230,23 +258,31 @@ async def _get_management_token(*, deadline: float) -> str:
                     retry_after,
                 )
                 raise Auth0ManagementRateLimited(retry_after) from exc
-            _token_refresh_failed_until = time.time() + _MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS
+            _token_refresh_failed_until = (
+                time.time() + _MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS
+            )
             logger.warning(
                 "Auth0 Management token acquisition failed (%s); sharing the failure for %ds",
-                type(exc).__name__, int(_MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS),
+                type(exc).__name__,
+                int(_MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS),
             )
             raise Auth0ManagementUnavailable("Auth0 token acquisition failed") from exc
         except Exception as exc:
-            _token_refresh_failed_until = time.time() + _MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS
+            _token_refresh_failed_until = (
+                time.time() + _MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS
+            )
             _token_refresh_failure_rate_limited = False
             logger.warning(
                 "Auth0 Management token acquisition failed (%s); sharing the failure for %ds",
-                type(exc).__name__, int(_MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS),
+                type(exc).__name__,
+                int(_MGMT_REFRESH_FAILURE_COOLDOWN_SECONDS),
             )
             raise Auth0ManagementUnavailable("Auth0 token acquisition failed") from exc
         # Only a fully validated response replaces the cache.
         _token_cache["access_token"] = access_token
-        _token_cache["expires_at"] = time.time() + expires_in - _EXPIRY_SAFETY_MARGIN_SECONDS
+        _token_cache["expires_at"] = (
+            time.time() + expires_in - _EXPIRY_SAFETY_MARGIN_SECONDS
+        )
         _token_refresh_failed_until = 0.0
         _token_refresh_failure_rate_limited = False
         return access_token
@@ -261,6 +297,18 @@ async def _auth_headers(*, deadline: float) -> dict[str, str]:
 
 class Auth0ManagementError(Exception):
     """A Management API call failed after the retry budget was exhausted."""
+
+
+class Auth0ManagementConflict(Auth0ManagementError):
+    """Auth0 definitively refused an email update because it conflicts."""
+
+
+class Auth0ManagementValidationError(Auth0ManagementError):
+    """Auth0 definitively rejected the allowed profile fields."""
+
+
+class Auth0ManagementIneligible(Auth0ManagementError):
+    """A well-formed live account cannot use database verification email."""
 
 
 class Auth0ManagementRateLimited(Auth0ManagementError):
@@ -298,7 +346,9 @@ def _retry_after_seconds(resp: httpx.Response) -> float | None:
         seconds = float(raw)
     except ValueError:
         return None
-    if seconds < 0:
+    # float() accepts NaN and infinities. Neither is a usable delay: NaN would
+    # otherwise reach math.ceil(), and an infinity must not become the ceiling.
+    if not math.isfinite(seconds) or seconds < 0:
         return None
     return min(seconds, float(_MGMT_RETRY_AFTER_CEILING_SECONDS))
 
@@ -333,12 +383,12 @@ async def _send_with_retry(
     remains -- a check before sleeping alone left an in-flight request (a slow or
     stalled body stream) able to run past the nominal deadline.
     """
-    limit = min(deadline, time.monotonic() + _MGMT_TOTAL_DEADLINE_SECONDS)
+    limit = min(deadline, _monotonic() + _MGMT_TOTAL_DEADLINE_SECONDS)
     last_status: int | None = None
     exhausted_retry_after = _MGMT_EXHAUSTED_RETRY_AFTER_SECONDS
     for attempt in range(1, _MGMT_MAX_ATTEMPTS + 1):
         retry_after: float | None = None
-        remaining = limit - time.monotonic()
+        remaining = limit - _monotonic()
         if remaining <= 0:
             # Budget exhausted before this attempt: sending now could only push
             # the response past the bound the caller was promised.
@@ -349,7 +399,10 @@ async def _send_with_retry(
             last_status = None
             logger.warning(
                 "Auth0 Management %s transport error (attempt %d/%d): %s",
-                op, attempt, _MGMT_MAX_ATTEMPTS, type(exc).__name__,
+                op,
+                attempt,
+                _MGMT_MAX_ATTEMPTS,
+                type(exc).__name__,
             )
             if attempt == _MGMT_MAX_ATTEMPTS:
                 raise Auth0ManagementUnavailable(
@@ -364,10 +417,13 @@ async def _send_with_retry(
             if resp.status_code == 429:
                 retry_after = _retry_after_seconds(resp)
                 if retry_after is not None:
-                    exhausted_retry_after = max(1, int(retry_after))
+                    exhausted_retry_after = max(1, math.ceil(retry_after))
             logger.warning(
                 "Auth0 Management %s upstream %d (attempt %d/%d)",
-                op, resp.status_code, attempt, _MGMT_MAX_ATTEMPTS,
+                op,
+                resp.status_code,
+                attempt,
+                _MGMT_MAX_ATTEMPTS,
             )
             if attempt == _MGMT_MAX_ATTEMPTS:
                 break
@@ -376,9 +432,11 @@ async def _send_with_retry(
         if retry_after is not None:
             sleep_for = retry_after
         else:
-            ceiling = _MGMT_BASE_DELAY_SECONDS * (_MGMT_BACKOFF_MULTIPLIER ** (attempt - 1))
+            ceiling = _MGMT_BASE_DELAY_SECONDS * (
+                _MGMT_BACKOFF_MULTIPLIER ** (attempt - 1)
+            )
             sleep_for = random.uniform(0, ceiling)
-        if time.monotonic() + sleep_for >= limit:
+        if _monotonic() + sleep_for >= limit:
             break
         await asyncio.sleep(sleep_for)
 
@@ -389,42 +447,113 @@ async def _send_with_retry(
     )
 
 
-async def get_auth0_user(user_id: str) -> dict[str, Any]:
+def _user_url(domain: str, user_id: str) -> str:
+    """Address one Management user without letting the id change the path.
+
+    Auth0 subjects contain `|`, and adversarial or malformed ids can contain
+    slashes, query markers, fragments, or percent escapes. Quote the entire id
+    as one segment rather than interpolating it into the URL.
+    """
+    return f"https://{domain}/api/v2/users/{quote(user_id, safe='')}"
+
+
+def _json_object(resp: httpx.Response, *, op: str) -> dict[str, Any]:
+    """Require a JSON object from a successful Management response."""
+    try:
+        payload = resp.json()
+    except ValueError:
+        raise Auth0ManagementError(
+            f"Auth0 Management {op} returned a non-JSON body"
+        ) from None
+    if not isinstance(payload, dict):
+        raise Auth0ManagementError(f"Auth0 Management {op} returned an unexpected body")
+    return payload
+
+
+async def _get_user(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    user_id: str,
+    *,
+    deadline: float,
+) -> dict[str, Any]:
+    """Read a user using a caller-supplied share of an existing operation budget.
+
+    Public reads pass their whole budget. The resend helper passes a reduced
+    deadline so the lookup cannot consume the reserve for its one job POST.
+    """
     settings = get_settings().auth0
-    deadline = _operation_deadline()
-    headers = await _auth_headers(deadline=deadline)
-    client = get_auth0_http_client()
     resp = await _send_with_retry(
         lambda: client.get(
-            f"https://{settings.domain}/api/v2/users/{user_id}",
+            _user_url(settings.domain, user_id),
             headers=headers,
             timeout=_MGMT_HTTP_TIMEOUT_SECONDS,
+            follow_redirects=False,
         ),
         op="GET user",
         deadline=deadline,
     )
     resp.raise_for_status()
-    return dict(resp.json())
+    return _json_object(resp, op="GET user")
 
 
-async def update_auth0_user(user_id: str, *, name: str | None = None) -> dict[str, Any]:
+async def get_auth0_user(user_id: str) -> dict[str, Any]:
+    deadline = _operation_deadline()
+    headers = await _auth_headers(deadline=deadline)
+    return await _get_user(get_auth0_http_client(), headers, user_id, deadline=deadline)
+
+
+async def update_auth0_user(
+    user_id: str,
+    *,
+    name: str | None = None,
+    email: str | None = None,
+    verify_email: bool | None = None,
+) -> dict[str, Any]:
     settings = get_settings().auth0
-    fields = {"name": name} if name is not None else {}
+    fields: dict[str, Any] = {"name": name} if name is not None else {}
+    if email is not None:
+        # Verification state is server-owned. Never carry an old verified flag
+        # onto a new address, even if the caller omits verification controls.
+        fields.update(email=email, email_verified=False, verify_email=True)
+    elif verify_email is not None:
+        fields["verify_email"] = verify_email
     deadline = _operation_deadline()
     headers = await _auth_headers(deadline=deadline)
     client = get_auth0_http_client()
-    resp = await _send_with_retry(
-        lambda: client.patch(
-            f"https://{settings.domain}/api/v2/users/{user_id}",
+
+    async def send() -> httpx.Response:
+        return await client.patch(
+            _user_url(settings.domain, user_id),
             headers=headers,
             json=fields,
             timeout=_MGMT_HTTP_TIMEOUT_SECONDS,
-        ),
-        op="PATCH user",
-        deadline=deadline,
-    )
-    resp.raise_for_status()
-    return dict(resp.json())
+            follow_redirects=False,
+        )
+
+    if email is not None or verify_email is True:
+        # Either operation may send mail. A lost response or 5xx can follow a
+        # successful write; never replay it automatically.
+        remaining = deadline - _monotonic()
+        if remaining <= 0:
+            raise Auth0ManagementUnavailable("Profile update budget exhausted")
+        try:
+            resp = await asyncio.wait_for(send(), timeout=remaining)
+        except (TimeoutError, httpx.TransportError):
+            raise Auth0ManagementUnavailable(
+                "Profile update outcome is uncertain"
+            ) from None
+        if resp.status_code == 429:
+            raise Auth0ManagementRateLimited(_rate_limit_hint(resp))
+    else:
+        resp = await _send_with_retry(send, op="PATCH user", deadline=deadline)
+    if email is not None and resp.status_code == 409:
+        raise Auth0ManagementConflict("Email update conflicts with an existing account")
+    if resp.status_code in {400, 422}:
+        raise Auth0ManagementValidationError("Auth0 rejected the profile fields")
+    if resp.status_code != 200:
+        raise Auth0ManagementError("Auth0 profile update failed")
+    return _json_object(resp, op="PATCH user")
 
 
 async def delete_auth0_user(user_id: str) -> None:
@@ -434,9 +563,10 @@ async def delete_auth0_user(user_id: str) -> None:
     client = get_auth0_http_client()
     resp = await _send_with_retry(
         lambda: client.delete(
-            f"https://{settings.domain}/api/v2/users/{user_id}",
+            _user_url(settings.domain, user_id),
             headers=headers,
             timeout=_MGMT_HTTP_TIMEOUT_SECONDS,
+            follow_redirects=False,
         ),
         op="DELETE user",
         deadline=deadline,
@@ -449,7 +579,7 @@ async def create_password_change_ticket(user_id: str) -> str:
     settings = get_settings().auth0
     deadline = _operation_deadline()
     headers = await _auth_headers(deadline=deadline)
-    remaining = deadline - time.monotonic()
+    remaining = deadline - _monotonic()
     if remaining <= 0:
         raise Auth0ManagementUnavailable(
             "Auth0 password reset budget exhausted before the ticket request"
@@ -474,14 +604,18 @@ async def create_password_change_ticket(user_id: str) -> str:
     except TimeoutError as exc:
         # Cancelled, never re-sent: an unanswered POST may already have minted a
         # ticket, so a second attempt would be a second capability.
-        raise Auth0ManagementUnavailable("Auth0 password reset request timed out") from exc
+        raise Auth0ManagementUnavailable(
+            "Auth0 password reset request timed out"
+        ) from exc
     if resp.status_code == 429:
         raise Auth0ManagementRateLimited(_rate_limit_hint(resp))
     resp.raise_for_status()
     payload = resp.json()
     ticket = payload.get("ticket") if isinstance(payload, dict) else None
-    if not isinstance(ticket, str) or not ticket or any(
-        c.isspace() or ord(c) < 32 or c == "\\" for c in ticket
+    if (
+        not isinstance(ticket, str)
+        or not ticket
+        or any(c.isspace() or ord(c) < 32 or c == "\\" for c in ticket)
     ):
         raise Auth0ManagementError("Invalid password reset response")
     parsed = urlsplit(ticket)
@@ -493,3 +627,119 @@ async def create_password_change_ticket(user_id: str) -> str:
     ):
         raise Auth0ManagementError("Invalid password reset response")
     return ticket
+
+
+class ResendOutcome(StrEnum):
+    """The provider result of a verification-email request, not delivery proof."""
+
+    ACCEPTED = "accepted"
+    ALREADY_VERIFIED = "already_verified"
+
+
+async def resend_auth0_verification_email(user_id: str) -> ResendOutcome:
+    """Read live eligibility, then make at most one verification-email job POST.
+
+    One deadline covers token acquisition, the eligibility read, and the job.
+    The read cannot spend the POST's full-phase reserve. An already-verified
+    account returns without sending. The POST is never retried because a timeout,
+    transport loss, or 5xx can happen after Auth0 accepted the job.
+
+    No `identity` is sent: Auth0 then acts on the primary *database* identity.
+    The live record must still describe that same database user. Social,
+    enterprise, passwordless, and secondary identities are deliberately out of
+    scope for this helper.
+    """
+    settings = get_settings().auth0
+    deadline = _operation_deadline()
+    headers = await _auth_headers(deadline=deadline)
+    client = get_auth0_http_client()
+
+    user = await _get_user(
+        client, headers, user_id, deadline=deadline - _SIDE_EFFECT_RESERVE_SECONDS
+    )
+    _validate_resend_eligibility(user, user_id)
+    if user["email_verified"] is True:
+        return ResendOutcome.ALREADY_VERIFIED
+
+    remaining = deadline - _monotonic()
+    if remaining < _SIDE_EFFECT_RESERVE_SECONDS:
+        # No mail-producing request was made, so refusing is safe to retry.
+        raise Auth0ManagementUnavailable(
+            "Auth0 verification-email budget cannot reserve a full job request"
+        )
+    try:
+        resp = await asyncio.wait_for(
+            client.post(
+                f"https://{settings.domain}/api/v2/jobs/verification-email",
+                headers=headers,
+                json={"user_id": user_id},
+                timeout=_MGMT_HTTP_TIMEOUT_SECONDS,
+                follow_redirects=False,
+            ),
+            timeout=remaining,
+        )
+    except (TimeoutError, httpx.TransportError) as exc:
+        # Cancelled, never re-sent: an unanswered POST may already have queued a
+        # message. Caller cancellation itself propagates and is not caught here.
+        raise Auth0ManagementUnavailable(
+            "Auth0 verification-email request did not complete"
+        ) from exc
+    if resp.status_code == 429:
+        raise Auth0ManagementRateLimited(_rate_limit_hint(resp))
+    if resp.status_code >= 500:
+        # Auth0 may have queued the job before failing; the outcome is uncertain.
+        raise Auth0ManagementUnavailable(
+            "Auth0 verification-email request did not complete"
+        )
+    if resp.status_code != 201:
+        # Every other status, including a redirect (never followed), is typed here
+        # rather than escaping as httpx.HTTPStatusError.
+        raise Auth0ManagementError("Unexpected verification-email job status")
+
+    payload = _json_object(resp, op="verification-email job")
+    job_id = payload.get("id")
+    job_status = payload.get("status")
+    if (
+        not isinstance(job_id, str)
+        or not job_id.strip()
+        or payload.get("type") != "verification_email"
+        or not isinstance(job_status, str)
+        or job_status not in {"pending", "completed"}
+    ):
+        raise Auth0ManagementError("Invalid verification-email job response")
+    return ResendOutcome.ACCEPTED
+
+
+def _validate_resend_eligibility(user: dict[str, Any], user_id: str) -> None:
+    """Reject a malformed, different, or non-database live account before sending."""
+    if user.get("user_id") != user_id:
+        raise Auth0ManagementError(
+            "Verification-email account does not match the authenticated user"
+        )
+    if not isinstance(user.get("email_verified"), bool):
+        raise Auth0ManagementError(
+            "Verification-email account has an invalid verification state"
+        )
+    email = user.get("email")
+    if email is not None and not isinstance(email, str):
+        raise Auth0ManagementError("Invalid verification-email address")
+    if email is None or not email.strip():
+        raise Auth0ManagementIneligible(
+            "Verification-email account has no usable email address"
+        )
+    identities = user.get("identities")
+    if (
+        not identities
+        or not isinstance(identities, list)
+        or not isinstance(identities[0], dict)
+    ):
+        raise Auth0ManagementError("Verification-email account has no primary identity")
+    primary = identities[0]
+    if not isinstance(primary.get("provider"), str) or not primary["provider"]:
+        raise Auth0ManagementError("Invalid verification-email identity provider")
+    if not isinstance(primary.get("connection"), str) or not primary["connection"]:
+        raise Auth0ManagementError("Invalid verification-email identity connection")
+    if primary["provider"] != "auth0":
+        raise Auth0ManagementIneligible(
+            "Verification-email account is not a database account"
+        )

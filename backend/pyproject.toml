@@ -33,6 +33,7 @@ dependencies = [
     "types-aiobotocore-s3>=3.7.0,<4",
     "python-jose[cryptography]>=3.5.0,<4",
     "httpx>=0.28.1,<0.29",
+    "email-validator>=2.2,<3",
 ]
 
 # Dependency groups (PEP 735). `dev` is synced by default; `worker` is opt-in
