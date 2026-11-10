@@ -102,6 +102,8 @@ backend/
 │   ├── biosim_verify/         # Verification workflows
 │   │   ├── activities.py      # generate_statistics_activity (tolerates missing datasets)
 │   │   ├── compatibility.py   # find_common_datasets — preflight overlap check
+│   │   ├── precheck.py        # Shared run-precheck loader/decision for GET /verify/runs/precheck and POST /verify/runs
+│   │   ├── precheck_router.py # GET /verify/runs/precheck
 │   │   ├── database.py        # VerificationDatabaseService + Mongo impl (BiosimCompare ledger)
 │   │   ├── models.py          # Verification models (incl. VerificationRecord, VerificationType)
 │   │   ├── linked_recovery.py # Reconstruction/re-verification offers, admission, reservations, idempotency, derived links
@@ -134,6 +136,11 @@ backend/
 │   │   ├── models.py          # RunSimulationRequest, ConglomerateStatus, etc.
 │   │   ├── router.py          # POST /simulations/run, GET /simulations/{id}
 │   │   └── workflow.py        # SimulationRunWorkflow (Temporal)
+│   ├── simulators/            # Owned BioSimulators registry contract
+│   │   ├── models.py          # SimulatorSpec and friends; camelCase wire names, camelCase dropped upstream fields
+│   │   ├── cache.py           # Five-key single-flight stale-if-error in-process cache
+│   │   ├── service.py         # Fetch → validate → trim → cache (plan §4.3)
+│   │   └── router.py          # GET /simulators/*, GET /ontologies/{namespace}
 │   ├── common/
 │   │   ├── storage/           # FileService (gcs/local/minio), gcs_aio, content_addressed publication
 │   │   ├── temporal/          # Temporal client utilities
@@ -159,6 +166,11 @@ backend/
 
 | Endpoint | Method | Purpose |
 | --- | --- | --- |
+| `/simulators/latest` | GET | The owned, validated BioSimulators registry list wrapped in `SimulatorList` (public; rate-limited per client IP; cached in-process, `Cache-Control: public, max-age=300`) |
+| `/simulators/{simulator_id}` | GET | Every version of one simulator wrapped in `SimulatorVersionList` (public; uncached) |
+| `/simulators/{simulator_id}/{version}` | GET | One version's owned spec; `include_tests` adds the validation-test results (public; uncached) |
+| `/ontologies/{namespace}` | GET | Trimmed `{id, name}` terms for EDAM, SBO, KISAO or SPDX wrapped in `OntologyTermList` (public; cached, `public, max-age=300`; unknown namespace is 422) |
+| `/verify/runs/precheck` | GET | The run-precheck decision `POST /verify/runs` makes, without starting a workflow: per-run exclusions (`not_found`, `not_succeeded`, `upstream_unavailable`), the shared overlap verdict, and shape/metadata warnings (public; no identity resolved; `private, no-store`) |
 | `/projects/{id}/page` | GET | Platform-owned project page aggregation (public; rate-limited per client IP; 3 upstream calls) |
 | `/runs/{id}/page` | GET | Platform-owned run page aggregation (public; rate-limited per client IP; 4 upstream calls) |
 | `/compatibility/check` | POST | Check OMEX archive compatibility with simulators (public; rate-limited; `archive_url` SSRF-restricted) |
@@ -226,7 +238,11 @@ procedures, events and alert response are in `docs/verification-report-retention
 
 - OMEX files cached by MD5 hash in MongoDB + GCS
 - Sim results cached by (file_hash_md5, image_digest, cache_buster)
-- Simulator versions cached in memory (aiocache, 1hr TTL)
+- Simulator versions cached in memory (aiocache, 1hr TTL) — `BiosimServiceRest`, for submission compatibility
+- The simulator registry list and the four ontology dumps cached in-process by `simulators/cache.py`
+  (five fixed keys; 10 min fresh; up to 24 h stale-if-error measured from freshness expiry; single-flight
+  per key; errors never cached) — backs `GET /simulators/latest` and `GET /ontologies/{namespace}`
+- Per-simulator detail and version lists, and `GET /verify/runs/precheck`, are never cached
 
 ### Dependency Injection
 
@@ -279,9 +295,9 @@ These point at the public biosimulations.org services. Defaults are production; 
 
 | Variable | Default | Used by |
 | --- | --- | --- |
-| `BIOSIMULATIONS_API_BASE_URL` | `https://api.biosimulations.org` | `BiosimServiceRest` submission/polling, typed summaries/pages, and legacy `/runs` proxies |
-| `SIMDATA_API_BASE_URL` | `https://simdata.api.biosimulations.org` | `BiosimServiceRest` — fetch HDF5 outputs |
-| `BIOSIMULATORS_API_BASE_URL` | `https://api.biosimulators.org` | Simulator version metadata |
+| `BIOSIMULATIONS_API_BASE_URL` | `https://api.biosimulations.org` | `BiosimServiceRest` submission/polling, typed summaries/pages, the run-precheck loader (`GET /verify/runs/precheck` and `POST /verify/runs`), and legacy `/runs` proxies |
+| `SIMDATA_API_BASE_URL` | `https://simdata.api.biosimulations.org` | `BiosimServiceRest` — fetch HDF5 outputs; the run-precheck loader's metadata fetch |
+| `BIOSIMULATORS_API_BASE_URL` | `https://api.biosimulators.org` | Simulator version metadata (`BiosimServiceRest`) and the owned `simulators` router (`/simulators/*`, `/ontologies/*`) |
 | `COMBINE_API_BASE_URL` | `https://combine.api.biosimulations.org` | COMBINE validation service, relayed by `/validation/*` |
 | `COMBINE_MAX_REQUEST_BYTES` | `20971520` (20 MiB) | Upload cap for `/validation/*`, matching the ingress `proxy-body-size` |
 | `COMBINE_MAX_RESPONSE_BYTES` | `16777216` (16 MiB) | Cap on a relayed validation report |
@@ -707,6 +723,10 @@ distributes evenly; to target a global ceiling `G`, configure `G / N`.
 | `RATE_LIMIT_PAGE_WINDOW_SECONDS` | `60` | Fixed-window size for the page-aggregation budget. |
 | `RATE_LIMIT_LEGACY_PER_WINDOW` | `60` | Provisional shared legacy proxy budget per client IP per process; strictly positive. |
 | `RATE_LIMIT_LEGACY_WINDOW_SECONDS` | `60` | Independent legacy fixed-window size in seconds; strictly positive. |
+| `RATE_LIMIT_SIMULATORS_PER_WINDOW` | `120` | Per-pod requests per window for the owned simulator registry reads (`/simulators/*`, `/ontologies/*`), keyed by client IP with no user dependency. Generous because a list view costs up to 3 requests and a detail view up to 4; the ceiling still bounds the uncached detail fan-out. |
+| `RATE_LIMIT_SIMULATORS_WINDOW_SECONDS` | `60` | Fixed-window size for the simulators-read budget; strictly positive. |
+| `RATE_LIMIT_PRECHECK_PER_WINDOW` | `20` | Per-pod requests per window for `GET /verify/runs/precheck`, keyed by client IP with no user dependency. One precheck can make up to 20 upstream requests (10 run records + 10 metadata), so the ceiling bounds that amplifier separately from the registry reads. |
+| `RATE_LIMIT_PRECHECK_WINDOW_SECONDS` | `60` | Fixed-window size for the precheck budget; strictly positive. |
 
 Protects `POST /verify/omex`, `POST /verify/runs`, and `POST /simulations/run` -- the three
 endpoints that start a Temporal workflow. All three share ONE budget per caller identity, not
@@ -728,6 +748,15 @@ client IP alone (`page_rate_limit`), with their own ceiling/window (`RATE_LIMIT_
 Keying on IP even when a bearer token is presented is deliberate: those routes are public
 by design, so a caller must not be able to raise the ceiling or reset an exhausted bucket
 by rotating tokens. A denied request never reaches upstream.
+
+The owned simulator reads (`/simulators/*`, `/ontologies/*`) share ONE `simulators:` budget
+and `GET /verify/runs/precheck` has its own `precheck:` budget, both keyed only by client IP
+using `simulators_rate_limit` / `precheck_rate_limit`. Neither route resolves an identity, so
+a stale or invalid bearer token never 401s a public read and token rotation never resets an
+exhausted bucket. The budgets are independent of pages, legacy, workflow starts, compatibility
+checks and password resets, and are process-local exactly like every other bucket here:
+replicas multiply the allowance, restarts reset it, and fixed windows allow bursts at
+boundaries.
 
 The six transparent legacy runs proxy operations (`/runs/summary`, `/runs/{id}` GET/PATCH/
 DELETE, `/runs/{id}/download`, `/runs/{id}/validate`) share ONE `legacy:` budget keyed

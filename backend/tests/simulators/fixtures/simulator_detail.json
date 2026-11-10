@@ -1,0 +1,161 @@
+{
+  "id": "copasi",
+  "name": "COPASI",
+  "version": "4.42.284",
+  "description": "A simulator of biochemical networks.",
+  "urls": [{"type": "homepage", "title": "COPASI homepage", "url": "https://copasi.org"}],
+  "authors": [
+    {
+      "firstName": "John",
+      "middleName": null,
+      "lastName": "Doe",
+      "identifiers": [
+        {"namespace": "orcid", "id": "0000-0002-1825-0097", "url": "https://orcid.org/0000-0002-1825-0097"}
+      ]
+    }
+  ],
+  "references": {
+    "citations": [
+      {
+        "title": "COPASI: a complex pathway simulator",
+        "authors": "John Doe, Jane Roe",
+        "journal": "Bioinformatics",
+        "volume": "22",
+        "issue": "3",
+        "pages": "W1-W2",
+        "year": 2006,
+        "identifiers": [
+          {"namespace": "doi", "id": "10.1093/bioinformatics/btl285", "url": "https://doi.org/10.1093/bioinformatics/btl285"}
+        ]
+      }
+    ],
+    "identifiers": [{"namespace": "ea", "id": "0404", "url": "https://identifiers.org/ea:0404"}]
+  },
+  "license": {"id": "GPL-3.0", "namespace": "spdx"},
+  "algorithms": [
+    {
+      "id": "SedML_L2V1_KISAO_0000019",
+      "name": "CVODE",
+      "kisaoId": {"id": "KISAO_0000019", "namespace": "KISAO"},
+      "description": "Deterministic continuous simulator.",
+      "modelingFrameworks": [{"id": "SBO_0000293", "namespace": "SBO"}],
+      "modelFormats": [{"id": "format_2585", "namespace": "EDAM", "version": null, "supportedFeatures": ["simulation"]}],
+      "simulationFormats": [{"id": "format_3685", "namespace": "EDAM", "version": null, "supportedFeatures": []}],
+      "archiveFormats": [{"id": "format_3686", "namespace": "EDAM", "version": null, "supportedFeatures": []}],
+      "simulationTypes": ["SedUniformTimeCourseSimulation"],
+      "modelChangePatterns": [
+        {
+          "name": "Change a component attribute",
+          "types": ["SedSetValueAttributeModelChange"],
+          "target": {"grammar": "XPath", "value": "//*/@*"},
+          "symbol": {"namespace": "SBO", "value": "SBO_0000293"}
+        }
+      ],
+      "parameters": [
+        {
+          "id": "fraction_of_optimum",
+          "name": "Fraction of optimum",
+          "kisaoId": {"id": "KISAO_0000703", "namespace": "KISAO"},
+          "type": "float",
+          "value": "1.0",
+          "recommendedRange": null,
+          "availableSoftwareInterfaceTypes": ["desktop application"]
+        }
+      ],
+      "outputDimensions": [{"id": "SIO_000418", "namespace": "SIO"}],
+      "outputVariablePatterns": [
+        {"name": "reaction fluxes", "target": {"grammar": "XPath", "value": "/sbml:sbml/sbml:model/@flux"}, "symbol": null}
+      ],
+      "dependencies": [
+        {
+          "name": "MATLAB",
+          "version": null,
+          "required": true,
+          "url": "https://www.mathworks.com/products/matlab.html",
+          "freeNonCommercialLicense": false
+        }
+      ],
+      "availableSoftwareInterfaceTypes": ["desktop application"],
+      "citations": [
+        {
+          "title": "CVODE: a stiff ODE solver",
+          "authors": "Jane Roe",
+          "journal": "SIAM Journal on Scientific Computing",
+          "volume": "15",
+          "issue": null,
+          "pages": null,
+          "year": 1994,
+          "identifiers": []
+        }
+      ]
+    }
+  ],
+  "interfaceTypes": ["desktop application"],
+  "supportedOperatingSystemTypes": ["platform-independent"],
+  "supportedProgrammingLanguages": [{"id": "C++", "namespace": "Linguist"}],
+  "funding": [
+    {
+      "funder": {"id": "100000057", "namespace": "FunderRegistry"},
+      "grant": "P50-GM094503",
+      "url": "https://grantome.com/grant/NIH/P50-GM094503"
+    }
+  ],
+  "biosimulators": {
+    "validated": true,
+    "imageVersion": "4.42.284",
+    "specificationVersion": "1.0.0",
+    "created": "2021-01-07T05:25:30.823Z",
+    "updated": "2021-12-22T19:13:13.825Z",
+    "validationTests": {
+      "testSuiteVersion": "1.3.0",
+      "ghIssue": 123,
+      "ghActionRun": 456,
+      "results": [
+        {
+          "case": {"id": "TelluriumSimulateTest:case_0001", "description": "A passing case."},
+          "resultType": "passed",
+          "duration": 1.5,
+          "exception": null,
+          "warnings": [{"category": "semantics", "message": "A warning."}],
+          "skipReason": null,
+          "log": "all good"
+        },
+        {
+          "case": {"id": "TelluriumSimulateTest:case_0002", "description": "A failing case."},
+          "resultType": "failed",
+          "duration": 0.25,
+          "exception": {"category": "simulation", "message": "The simulation failed."},
+          "warnings": [],
+          "skipReason": null,
+          "log": "boom"
+        },
+        {
+          "case": {"id": "TelluriumSimulateTest:case_0003", "description": "A skipped case."},
+          "resultType": "skipped",
+          "duration": 0.0,
+          "exception": null,
+          "warnings": [],
+          "skipReason": {"category": "unsupported", "message": "Not supported."},
+          "log": ""
+        }
+      ]
+    }
+  },
+  "image": {
+    "url": "ghcr.io/biosimulators/copasi:4.42.284",
+    "digest": "sha256:0123456789abcdef",
+    "format": {"id": "Docker", "supportedFeatures": []},
+    "operatingSystemType": "linux"
+  },
+  "cli": {
+    "package": "biosimulators-copasi",
+    "command": "biosimulators-copasi",
+    "installationInstructions": "pip install biosimulators-copasi",
+    "packageRepository": "PyPI"
+  },
+  "pythonApi": {
+    "package": "biosimulators-copasi",
+    "module": "biosimulators_copasi",
+    "installationInstructions": "pip install biosimulators-copasi"
+  }
+}

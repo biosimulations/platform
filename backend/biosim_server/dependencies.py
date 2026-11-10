@@ -215,6 +215,47 @@ def get_combine_http_client() -> httpx.AsyncClient:
         )
     return global_combine_http_client
 
+#------ pooled HTTP clients for the simulator registry and simdata metadata ------
+# Their own pools, per the pattern the legacy proxy and COMBINE clients set: the
+# simulator registry is cached and read-heavy while simdata metadata is fetched
+# per precheck run, so neither should contend with pages and summaries on the
+# platform pool.
+
+global_biosimulators_http_client: httpx.AsyncClient | None = None
+
+
+def set_biosimulators_http_client(http_client: httpx.AsyncClient | None) -> None:
+    global global_biosimulators_http_client
+    global_biosimulators_http_client = http_client
+
+
+def get_biosimulators_http_client() -> httpx.AsyncClient:
+    global global_biosimulators_http_client
+    if global_biosimulators_http_client is None:
+        global_biosimulators_http_client = httpx.AsyncClient(
+            base_url=get_settings().biosimulators_api_base_url.rstrip("/"),
+            timeout=_HTTP_TIMEOUT,
+        )
+    return global_biosimulators_http_client
+
+
+global_simdata_http_client: httpx.AsyncClient | None = None
+
+
+def set_simdata_http_client(http_client: httpx.AsyncClient | None) -> None:
+    global global_simdata_http_client
+    global_simdata_http_client = http_client
+
+
+def get_simdata_http_client() -> httpx.AsyncClient:
+    global global_simdata_http_client
+    if global_simdata_http_client is None:
+        global_simdata_http_client = httpx.AsyncClient(
+            base_url=get_settings().simdata_api_base_url.rstrip("/"),
+            timeout=_HTTP_TIMEOUT,
+        )
+    return global_simdata_http_client
+
 #------ Temporal workflow client ------
 
 global_temporal_client: TemporalClient | None = None
@@ -366,6 +407,12 @@ async def shutdown_standalone() -> None:
     if global_combine_http_client is not None:
         await global_combine_http_client.aclose()
         set_combine_http_client(None)
+    if global_biosimulators_http_client is not None:
+        await global_biosimulators_http_client.aclose()
+        set_biosimulators_http_client(None)
+    if global_simdata_http_client is not None:
+        await global_simdata_http_client.aclose()
+        set_simdata_http_client(None)
     # biosim_service = get_biosim_service()
     # if biosim_service:
     #     await biosim_service.close()

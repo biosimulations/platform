@@ -25,14 +25,17 @@ from biosim_server.biosim_verify.models import (
     VerifyWorkflowOutput,
     VerifyWorkflowStatus,
 )
+from biosim_server.biosim_verify.precheck import RunPrecheckResult
 from biosim_server.common.auth import get_current_user, get_optional_user
 from biosim_server.dependencies import get_combine_http_client
 from biosim_server.rbac_demo.models import PublicMessage
+from biosim_server.simulators.router import get_simulators_service
+from biosim_server.simulators.service import BiosimulatorsService
 from biosim_server.version import __version__
 from biosim_server.dependencies import get_legacy_http_client
 from tests.fixtures.auth_fixtures import make_authenticated_user
 
-_PATH_PARAMS = ("processing_id", "workflow_id", "run_id", "project_id")
+_PATH_PARAMS = ("processing_id", "workflow_id", "run_id", "project_id", "simulator_id", "version", "namespace")
 _HIDDEN_PATHS = frozenset({"/health", "/ready", "/docs", "/openapi.json"})
 _CORE_PATHS = frozenset({
     "/compatibility/check",
@@ -67,6 +70,11 @@ _CORE_PATHS = frozenset({
     "/verify/{workflow_id}",
     "/verify/{workflow_id}/recovery",
     "/verify/runs",
+    "/verify/runs/precheck",
+    "/simulators/latest",
+    "/simulators/{simulator_id}",
+    "/simulators/{simulator_id}/{version}",
+    "/ontologies/{namespace}",
     "/verification_ids",
 })
 _OPTIONAL_AUTH_OPERATION_IDS = frozenset({
@@ -183,6 +191,14 @@ AUTH_MODE: dict[str, AuthMode] = {
     # because these never 401, whatever the Authorization header holds.
     "validate-model": AuthMode.NONE,
     "validate-sedml": AuthMode.NONE,
+    # The owned simulator reads and the run precheck resolve no identity at all
+    # (plan §4.4/§4.6): the frontend attaches the Platform token to every Platform
+    # request, so resolving one would 401 a lapsed session on a public read.
+    "get-latest-simulators": AuthMode.NONE,
+    "list-simulator-versions": AuthMode.NONE,
+    "get-simulator-version": AuthMode.NONE,
+    "get-ontology-terms": AuthMode.NONE,
+    "precheck-verify-runs": AuthMode.NONE,
 }
 
 VALIDATION_SKIP: dict[str, str] = {
@@ -221,6 +237,10 @@ VALIDATION_SKIP: dict[str, str] = {
     "list-verification-ids": "no parameters",
     "validate-model": "raw multipart relay; no Pydantic body model to reject",
     "validate-sedml": "raw multipart relay; no Pydantic body model to reject",
+    "get-latest-simulators": "no parameters",
+    "list-simulator-versions": "path-only",
+    "get-simulator-version": "path plus an optional query; upstream behavior tested in tests/simulators/test_router.py",
+    "get-ontology-terms": "path-only; the namespace enum is the validation",
 }
 
 
@@ -438,6 +458,72 @@ def _probe_validate_sedml(client: TestClient) -> None:
     _probe_validation(client, "/validation/sed-ml")
 
 
+def _mounted_simulators_service() -> BiosimulatorsService:
+    """A MockTransport-backed service answering each registry route with a minimal owned payload."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/ontologies/"):
+            return httpx.Response(200, json=[{"id": "format_2585", "name": "SBML"}])
+        if path.count("/") == 2:  # /simulators/{id}: the versions array
+            return httpx.Response(200, json=[{"id": "copasi", "name": "COPASI", "version": "probe-id"}])
+        return httpx.Response(200, json={"id": "copasi", "name": "COPASI", "version": "probe-id"})
+
+    return BiosimulatorsService(
+        httpx.AsyncClient(base_url="https://biosimulators.test", transport=httpx.MockTransport(handler))
+    )
+
+
+def _with_simulators_service(run: Callable[[TestClient, BiosimulatorsService], None], client: TestClient) -> None:
+    service = _mounted_simulators_service()
+    app.dependency_overrides[get_simulators_service] = lambda: service
+    try:
+        run(client, service)
+    finally:
+        app.dependency_overrides.pop(get_simulators_service, None)
+        import asyncio
+        asyncio.run(service._client.aclose())  # noqa: SLF001 - the probe owns this client's lifecycle
+
+
+def _probe_get_latest_simulators(client: TestClient) -> None:
+    def run(test_client: TestClient, _service: BiosimulatorsService) -> None:
+        _assert_status(test_client.get("/simulators/latest"), 200)
+
+    _with_simulators_service(run, client)
+
+
+def _probe_list_simulator_versions(client: TestClient) -> None:
+    def run(test_client: TestClient, _service: BiosimulatorsService) -> None:
+        _assert_status(test_client.get("/simulators/probe-id"), 200)
+
+    _with_simulators_service(run, client)
+
+
+def _probe_get_simulator_version(client: TestClient) -> None:
+    def run(test_client: TestClient, _service: BiosimulatorsService) -> None:
+        _assert_status(test_client.get("/simulators/probe-id/probe-id"), 200)
+
+    _with_simulators_service(run, client)
+
+
+def _probe_get_ontology_terms(client: TestClient) -> None:
+    def run(test_client: TestClient, _service: BiosimulatorsService) -> None:
+        _assert_status(test_client.get("/ontologies/EDAM"), 200)
+
+    _with_simulators_service(run, client)
+
+
+def _probe_precheck_verify_runs(client: TestClient) -> None:
+    result = RunPrecheckResult(runs=[], eligible=False, ineligible_reason=None, common_datasets={}, warnings=[])
+    with patch(
+        "biosim_server.biosim_verify.precheck_router.load_run_inputs", new=AsyncMock(return_value={})
+    ), patch(
+        "biosim_server.biosim_verify.precheck_router.assess_runs", new=MagicMock(return_value=result)
+    ):
+        _assert_status(
+            client.get("/verify/runs/precheck", params={"biosimulations_run_ids": "probe-id"}), 200
+        )
+
+
 UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "validate-model": _probe_validate_model,
     "validate-sedml": _probe_validate_sedml,
@@ -471,6 +557,11 @@ UNAUTHENTICATED_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "demo-public": _probe_demo_public,
     "root__get": _probe_root,
     "get_version_version_get": _probe_version,
+    "get-latest-simulators": _probe_get_latest_simulators,
+    "list-simulator-versions": _probe_list_simulator_versions,
+    "get-simulator-version": _probe_get_simulator_version,
+    "get-ontology-terms": _probe_get_ontology_terms,
+    "precheck-verify-runs": _probe_precheck_verify_runs,
 }
 
 
@@ -508,6 +599,10 @@ def _validate_verify_omex(client: TestClient) -> None:
     _assert_status(client.post("/verify/omex"), 422)
 
 
+def _validate_precheck_verify_runs(client: TestClient) -> None:
+    _assert_status(client.get("/verify/runs/precheck"), 422)
+
+
 VALIDATION_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "check-compatibility": _validate_check_compatibility,
     "run-simulations": _validate_run_simulations,
@@ -516,6 +611,7 @@ VALIDATION_RUNNERS: dict[str, Callable[[TestClient], None]] = {
     "list-project-stats": _validate_list_project_stats,
     "update-current-user": _validate_update_current_user,
     "verify-omex": _validate_verify_omex,
+    "precheck-verify-runs": _validate_precheck_verify_runs,
 }
 
 
@@ -537,7 +633,7 @@ def test_verify_runs_authenticated_caller_starts_pending_workflow(client: TestCl
     try:
         with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
              patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
-             patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=AsyncMock(return_value={})):
+             patch("biosim_server.api.main.load_run_inputs", new=AsyncMock(return_value={})):
             response = client.post("/verify/runs")
     finally:
         app.dependency_overrides.pop(get_optional_user, None)
@@ -664,6 +760,33 @@ def test_committed_openapi_artifact_matches_the_in_process_spec() -> None:
     """
     spec_path = Path(__file__).resolve().parents[2] / "biosim_server/api/spec/openapi_3_1_0_generated.yaml"
     assert yaml.safe_load(spec_path.read_text()) == app.openapi()
+
+
+def test_simulators_and_precheck_operations_advertise_no_security() -> None:
+    """The owned simulator reads and the run precheck resolve no identity (plan §4.4/§4.6)."""
+    spec = app.openapi()
+    no_auth_operations = {
+        "get-latest-simulators",
+        "list-simulator-versions",
+        "get-simulator-version",
+        "get-ontology-terms",
+        "precheck-verify-runs",
+    }
+    for operation in OPERATIONS:
+        if operation.operation_id not in no_auth_operations:
+            continue
+        assert not operation.advertises_bearer
+        assert spec["paths"][operation.path][operation.method.lower()].get("security") is None
+        assert AUTH_MODE[operation.operation_id] == AuthMode.NONE
+
+
+def test_precheck_documents_its_run_id_bounds_and_caching() -> None:
+    """Generated clients see the 1-10 ID bounds and the private no-store caching contract."""
+    operation = app.openapi()["paths"]["/verify/runs/precheck"]["get"]
+    (param,) = [p for p in operation["parameters"] if p["name"] == "biosimulations_run_ids"]
+    assert param["schema"]["minItems"] == 1
+    assert param["schema"]["maxItems"] == MAX_VERIFY_RUN_IDS
+    assert "private, no-store" in operation["responses"]["200"]["headers"]["Cache-Control"]["description"]
 
 
 def test_page_response_schemas_and_auth() -> None:

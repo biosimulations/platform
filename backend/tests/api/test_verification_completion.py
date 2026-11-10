@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
-from aiohttp import ClientResponseError
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from temporalio.client import (
@@ -15,7 +15,7 @@ from temporalio.client import (
 from temporalio.service import RPCError, RPCStatusCode
 
 from biosim_server.biosim_runs.models import BiosimulatorVersion
-from biosim_server.api.main import app, _load_hdf5_metadata_for_preflight
+from biosim_server.api.main import app
 from biosim_server.biosim_verify.database import (
     VerificationCursor,
     VerificationDatabaseServiceMongo,
@@ -24,12 +24,13 @@ from biosim_server.biosim_verify.database import (
 from biosim_server.biosim_verify.models import (
     MAX_WORKFLOW_ID_BYTES,
     WORKFLOW_ID_PREFIX_MAX_LENGTH,
+    ReportPersistenceState,
     VerificationRecord,
     VerificationType,
     VerifyWorkflowOutput,
     VerifyWorkflowStatus,
-    ReportPersistenceState,
 )
+from biosim_server.biosim_verify.precheck import RunInputs, load_run_inputs
 from biosim_server.common.auth import AuthenticatedUser, get_current_user, get_optional_user
 from tests.api.test_main import _make_temporal_for_runs, _make_verify_output, _temporal_with_describe, _verify_omex_mocks
 from tests.biosim_verify.test_compatibility import _file
@@ -307,10 +308,10 @@ async def test_post_then_list_uses_real_ledger(client: AsyncClient, kind: str, a
 @pytest.mark.asyncio
 @pytest.mark.parametrize("observables, expected", [(["absent"], 400), (["x"], 200), (["x", "absent"], 200)])
 async def test_preflight_requested_observables(client: AsyncClient, observables: list[str], expected: int) -> None:
-    metadata = {rid: _file(rid, {"shared": ["t", "x"]}) for rid in ["r1", "r2"]}
+    metadata = {rid: RunInputs(hdf5_file=_file(rid, {"shared": ["t", "x"]})) for rid in ["r1", "r2"]}
     ledger = AsyncMock()
     temporal = _make_temporal_for_runs()
-    with patch("biosim_server.api.main._load_hdf5_metadata_for_preflight", new=AsyncMock(return_value=metadata)), \
+    with patch("biosim_server.api.main.load_run_inputs", new=AsyncMock(return_value=metadata)), \
          patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
         response = await client.post("/verify/runs", params={"biosimulations_run_ids": ["r1", "r2"], "observables": observables})
@@ -323,31 +324,52 @@ async def test_preflight_requested_observables(client: AsyncClient, observables:
 @pytest.mark.asyncio
 async def test_preflight_prefers_cache() -> None:
     metadata = _file("r1", {"shared": ["t", "x"]})
-    db, upstream = AsyncMock(), AsyncMock()
+    db = AsyncMock()
+    upstream = httpx.AsyncClient(
+        base_url="https://simdata.test", transport=httpx.MockTransport(
+            lambda request: (_ for _ in ()).throw(AssertionError("the cache must answer"))
+        ),
+    )
     db.get_biosimulator_workflow_runs_by_biosim_runid.return_value = [MagicMock(hdf5_file=metadata)]
-    with patch("biosim_server.api.main.get_database_service", return_value=db), \
-         patch("biosim_server.api.main.get_biosim_service", return_value=upstream):
-        result = await _load_hdf5_metadata_for_preflight(["r1", "r1"])
-    assert result == {"r1": metadata}
+    try:
+        with patch("biosim_server.biosim_verify.precheck.get_database_service", return_value=db), \
+             patch("biosim_server.biosim_verify.precheck.get_simdata_http_client", return_value=upstream):
+            result = await load_run_inputs(["r1", "r1"], include_run_records=False)
+    finally:
+        await upstream.aclose()
+    assert list(result) == ["r1"]
+    assert result["r1"].hdf5_file == metadata
+    assert result["r1"].record_outcome is None  # the submission path requests no run records
     db.get_biosimulator_workflow_runs_by_biosim_runid.assert_awaited_once_with("r1")
-    upstream.get_hdf5_metadata.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("run_count", [2, 3])
 async def test_preflight_skips_unavailable_metadata(client: AsyncClient, run_count: int) -> None:
-    db, upstream, ledger = AsyncMock(), AsyncMock(), AsyncMock()
+    """A metadata failure is a skip, exactly as before the shared loader (plan §4.4)."""
+    db, ledger = AsyncMock(), AsyncMock()
     db.get_biosimulator_workflow_runs_by_biosim_runid.return_value = []
-    upstream.get_hdf5_metadata.side_effect = [ClientResponseError(MagicMock(), (), status=404, message="upstream not found")] + [
-        _file(f"r{i}", {"shared": ["t", "x"]}) for i in range(1, run_count)]
+    simdata_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        simdata_calls.append(request.url.path)
+        if len(simdata_calls) == 1:
+            return httpx.Response(404, json={"detail": "upstream not found"})
+        run_id = request.url.path.split("/")[2]
+        return httpx.Response(200, json=_file(run_id, {"shared": ["t", "x"]}).model_dump(mode="json"))
+
+    upstream = httpx.AsyncClient(base_url="https://simdata.test", transport=httpx.MockTransport(handler))
     temporal = _make_temporal_for_runs()
-    with patch("biosim_server.api.main.get_database_service", return_value=db), \
-         patch("biosim_server.api.main.get_biosim_service", return_value=upstream), \
-         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
-         patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
-        response = await client.post("/verify/runs", params={"biosimulations_run_ids": [f"r{i}" for i in range(run_count)]})
+    try:
+        with patch("biosim_server.biosim_verify.precheck.get_database_service", return_value=db), \
+             patch("biosim_server.biosim_verify.precheck.get_simdata_http_client", return_value=upstream), \
+             patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
+             patch("biosim_server.api.main.get_temporal_client", return_value=temporal):
+            response = await client.post("/verify/runs", params={"biosimulations_run_ids": [f"r{i}" for i in range(run_count)]})
+    finally:
+        await upstream.aclose()
     assert response.status_code == 200
-    assert upstream.get_hdf5_metadata.await_count == run_count
+    assert len(simdata_calls) == run_count
     ledger.insert_verification.assert_awaited_once()
 
 

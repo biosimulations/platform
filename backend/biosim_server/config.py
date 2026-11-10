@@ -365,6 +365,18 @@ class RateLimitSettings(BaseSettings):
     legacy_per_window: int = Field(default=60, gt=0, alias="RATE_LIMIT_LEGACY_PER_WINDOW")
     legacy_window_seconds: int = Field(default=60, gt=0, alias="RATE_LIMIT_LEGACY_WINDOW_SECONDS")
 
+    # Separate per-process, per-IP budgets for the owned simulator registry reads
+    # and the run-precheck decision. The simulators ceiling is generous because a
+    # list view costs up to 3 requests and a detail view up to 4; the precheck
+    # ceiling bounds the ~20-call upstream fan-out one GET can trigger. Both are
+    # keyed by client IP with no user dependency, so a stale or invalid bearer
+    # token never 401s (or throttles differently for) a public read. Process-local
+    # like every other bucket here; see the class docstring for the replica math.
+    simulators_per_window: int = Field(default=120, gt=0, alias="RATE_LIMIT_SIMULATORS_PER_WINDOW")
+    simulators_window_seconds: int = Field(default=60, gt=0, alias="RATE_LIMIT_SIMULATORS_WINDOW_SECONDS")
+    precheck_per_window: int = Field(default=20, gt=0, alias="RATE_LIMIT_PRECHECK_PER_WINDOW")
+    precheck_window_seconds: int = Field(default=60, gt=0, alias="RATE_LIMIT_PRECHECK_WINDOW_SECONDS")
+
     model_config = SettingsConfigDict(env_prefix="", extra="ignore", populate_by_name=True)
 
 class Settings(BaseSettings):

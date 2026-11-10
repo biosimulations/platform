@@ -1006,6 +1006,227 @@ paths:
                 type: string
       security:
       - HTTPBearer: []
+  /simulators/latest:
+    get:
+      tags:
+      - Simulators
+      summary: The latest version of every simulator in the BioSimulators registry
+      description: 'The owned, validated registry list that backs the simulators table
+        and the suggest page. Cached in-process for 10 minutes (stale-served up to
+        24 hours longer during an upstream outage) and identical for every caller,
+        so the response is `Cache-Control: public, max-age=300`. No authentication:
+        an invalid bearer token is ignored, never a 401.'
+      operationId: get-latest-simulators
+      responses:
+        '200':
+          description: The registry list.
+          headers:
+            Cache-Control:
+              description: public, max-age=300
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorList'
+        '404':
+          description: Unknown simulator or version.
+        '429':
+          description: The per-client-IP simulators budget is exhausted; Retry-After
+            names the wait.
+        '502':
+          description: The upstream registry failed or returned an invalid or oversized
+            body.
+        '504':
+          description: The upstream registry timed out.
+  /simulators/{simulator_id}:
+    get:
+      tags:
+      - Simulators
+      summary: Every version of one simulator
+      description: 'An array of the simulator''s full version specs wrapped in the
+        owned envelope; the detail page''s version selector reads it. Never cached:
+        the key space grows with the catalogue.'
+      operationId: list-simulator-versions
+      parameters:
+      - name: simulator_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Simulator Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorVersionList'
+        '404':
+          description: Unknown simulator or version.
+        '429':
+          description: The per-client-IP simulators budget is exhausted; Retry-After
+            names the wait.
+        '502':
+          description: The upstream registry failed or returned an invalid or oversized
+            body.
+        '504':
+          description: The upstream registry timed out.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /simulators/{simulator_id}/{version}:
+    get:
+      tags:
+      - Simulators
+      summary: One simulator version, optionally with its test-suite results
+      description: A bare owned spec for one version; `version` accepts upstream's
+        `latest` alias. `include_tests` is sent upstream as `includeTests` and adds
+        the validation-test results. Never cached.
+      operationId: get-simulator-version
+      parameters:
+      - name: simulator_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Simulator Id
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Version
+      - name: include_tests
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include the BioSimulators test-suite results (upstream `includeTests`).
+          default: false
+          title: Include Tests
+        description: Include the BioSimulators test-suite results (upstream `includeTests`).
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatorSpec'
+        '404':
+          description: Unknown simulator or version.
+        '429':
+          description: The per-client-IP simulators budget is exhausted; Retry-After
+            names the wait.
+        '502':
+          description: The upstream registry failed or returned an invalid or oversized
+            body.
+        '504':
+          description: The upstream registry timed out.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /ontologies/{namespace}:
+    get:
+      tags:
+      - Simulators
+      summary: The trimmed term list for one ontology (EDAM, SBO, KISAO or SPDX)
+      description: 'Only `id` and `name` per term: the UI reads nothing else, and
+        EDAM shrinks from 342 KB to 33 KB. Cached in-process for 10 minutes like the
+        registry list, so the response is `Cache-Control: public, max-age=300`. An
+        unknown namespace is a 422.'
+      operationId: get-ontology-terms
+      parameters:
+      - name: namespace
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/OntologyNamespace'
+      responses:
+        '200':
+          description: The trimmed term list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OntologyTermList'
+          headers:
+            Cache-Control:
+              description: public, max-age=300
+              schema:
+                type: string
+        '422':
+          description: Unknown ontology namespace.
+        '429':
+          description: The per-client-IP simulators budget is exhausted; Retry-After
+            names the wait.
+        '502':
+          description: The upstream registry failed or returned an invalid or oversized
+            body.
+        '504':
+          description: The upstream registry timed out.
+  /verify/runs/precheck:
+    get:
+      tags:
+      - Verification
+      summary: Precheck biosimulation run IDs for comparability, without starting
+        a verification
+      description: 'The same eligibility decision `POST /verify/runs` makes before
+        it starts a workflow, served on its own: each run''s record is classified
+        (not found, not succeeded, upstream unavailable), dataset overlap uses the
+        shared name-and-SED-ML-label matching, and shared datasets with different
+        shapes warn instead of blocking. No workflow is started, nothing is stored,
+        and the caller is never identified: no bearer token is required, an invalid
+        one is ignored, and responses are `Cache-Control: private, no-store`. At most
+        10 distinct run IDs per call.'
+      operationId: precheck-verify-runs
+      parameters:
+      - name: biosimulations_run_ids
+        in: query
+        required: true
+        schema:
+          type: array
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,64}$
+          minItems: 1
+          maxItems: 10
+          description: The biosimulations run IDs to precheck (1 to 10, no duplicates).
+          title: Biosimulations Run Ids
+        description: The biosimulations run IDs to precheck (1 to 10, no duplicates).
+      responses:
+        '200':
+          description: The per-run classification and the batch decision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunPrecheckResult'
+          headers:
+            Cache-Control:
+              description: private, no-store
+              schema:
+                type: string
+        '400':
+          description: Duplicate run IDs.
+        '429':
+          description: The per-client-IP precheck budget is exhausted; Retry-After
+            names the wait.
+        '502':
+          description: An upstream service failed or returned an invalid body; runs
+            are classified, not failed.
+        '504':
+          description: An upstream service timed out; runs are classified, not failed.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/demo/public:
     get:
       tags:
@@ -1792,6 +2013,52 @@ components:
       required:
       - uploaded_file
       title: Body_verify-omex
+    Citation:
+      properties:
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        authors:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authors
+        journal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Journal
+        volume:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Volume
+        issue:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Issue
+        pages:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pages
+        year:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Year
+        identifiers:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/IdentifierRef'
+            type: array
+          - type: 'null'
+          title: Identifiers
+      type: object
+      title: Citation
     CompareSettings:
       properties:
         user_description:
@@ -1900,6 +2167,70 @@ components:
       - processing_id
       - jobs
       title: ConglomerateStatus
+    CurationBlock:
+      properties:
+        validated:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Validated
+        imageVersion:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Imageversion
+        specificationVersion:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Specificationversion
+        created:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created
+        updated:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated
+        validationTests:
+          anyOf:
+          - $ref: '#/components/schemas/ValidationTests'
+          - type: 'null'
+      type: object
+      title: CurationBlock
+      description: The ``biosimulators`` curation block the curation stars and detail
+        header read.
+    Dependency:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Version
+        required:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Required
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        freeNonCommercialLicense:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Freenoncommerciallicense
+      type: object
+      title: Dependency
     DerivationKind:
       type: string
       enum:
@@ -1971,6 +2302,34 @@ components:
       - exact
       title: EligibleSimulator
       description: A simulator eligible to run the OMEX archive.
+    FormatRef:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        namespace:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Namespace
+        version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Version
+        supportedFeatures:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Supportedfeatures
+      type: object
+      title: FormatRef
+      description: 'An EDAM-format reference: an ``OntologyRef`` plus version and
+        supported features.'
     GenerateStatisticsActivityOutput:
       properties:
         sims_run_info:
@@ -2144,6 +2503,50 @@ components:
       - shape
       - values
       title: Hdf5DataValues
+    IdentifierRef:
+      properties:
+        namespace:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Namespace
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+      type: object
+      title: IdentifierRef
+      description: 'An external identifier (``{namespace, id, url}``): author identities,
+        citations, cross references.'
+    ImageBlock:
+      properties:
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        digest:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Digest
+        format:
+          anyOf:
+          - $ref: '#/components/schemas/FormatRef'
+          - type: 'null'
+        operatingSystemType:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operatingsystemtype
+      type: object
+      title: ImageBlock
     InitiatorRelation:
       type: string
       enum:
@@ -2335,6 +2738,30 @@ components:
       - runs
       - pagination
       title: ListSimulationRunsResponse
+    ModelChangePattern:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        types:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Types
+        target:
+          anyOf:
+          - $ref: '#/components/schemas/PatternTarget'
+          - type: 'null'
+        symbol:
+          anyOf:
+          - $ref: '#/components/schemas/PatternSymbol'
+          - type: 'null'
+      type: object
+      title: ModelChangePattern
     ModelFormat:
       properties:
         format_uri:
@@ -2384,6 +2811,87 @@ components:
       - sedml_files
       title: OmexContent
       description: Parsed content from an OMEX archive.
+    OntologyNamespace:
+      type: string
+      enum:
+      - EDAM
+      - SBO
+      - KISAO
+      - SPDX
+      title: OntologyNamespace
+      description: "The ontology namespaces the simulators pages read (plan \xA74.5\
+        \ path allowlist)."
+    OntologyRef:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        namespace:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Namespace
+      type: object
+      title: OntologyRef
+      description: 'A term in a named ontology: ``{id, namespace}``.'
+    OntologyTerm:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      type: object
+      required:
+      - id
+      title: OntologyTerm
+      description: 'Only ``id`` and ``name``: the UI reads nothing else, and EDAM
+        shrinks from 342 KB to 33 KB.
+
+
+        ``name`` is nullable: EDAM carries two relationship terms without one
+
+        (``isImplementedIn``, ``isOrganizational``), and the frontend''s cache ignores
+
+        terms it cannot name anyway.'
+    OntologyTermList:
+      properties:
+        namespace:
+          type: string
+          title: Namespace
+        terms:
+          items:
+            $ref: '#/components/schemas/OntologyTerm'
+          type: array
+          title: Terms
+      type: object
+      required:
+      - namespace
+      - terms
+      title: OntologyTermList
+      description: Envelope for ``GET /ontologies/{namespace}``.
+    OutputVariablePattern:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        target:
+          anyOf:
+          - $ref: '#/components/schemas/PatternTarget'
+          - type: 'null'
+        symbol:
+          anyOf:
+          - $ref: '#/components/schemas/PatternSymbol'
+          - type: 'null'
+      type: object
+      title: OutputVariablePattern
     PageAlgorithm:
       properties:
         id:
@@ -3035,6 +3543,37 @@ components:
       required:
       - url
       title: PasswordResetResponse
+    PatternSymbol:
+      properties:
+        value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Value
+        namespace:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Namespace
+      type: object
+      title: PatternSymbol
+      description: 'The symbol of a pattern: ``{namespace, value}``.'
+    PatternTarget:
+      properties:
+        value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Value
+        grammar:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Grammar
+      type: object
+      title: PatternTarget
+      description: 'The target of a model-change or output-variable pattern: ``{value,
+        grammar}``.'
     PermissionCheckResponse:
       properties:
         permission:
@@ -3048,6 +3587,108 @@ components:
       - permission
       - granted
       title: PermissionCheckResponse
+    PrecheckDataset:
+      properties:
+        name:
+          type: string
+          title: Name
+        shape:
+          items:
+            type: integer
+          type: array
+          title: Shape
+        sedml_data_set_ids:
+          items:
+            type: string
+          type: array
+          title: Sedml Data Set Ids
+          default: []
+        sedml_data_set_labels:
+          items:
+            type: string
+          type: array
+          title: Sedml Data Set Labels
+          default: []
+      type: object
+      required:
+      - name
+      - shape
+      title: PrecheckDataset
+    PrecheckExclusion:
+      type: string
+      enum:
+      - not_found
+      - not_succeeded
+      - upstream_unavailable
+      title: PrecheckExclusion
+    PrecheckIneligible:
+      type: string
+      enum:
+      - fewer_than_two_eligible_runs
+      - no_common_datasets
+      title: PrecheckIneligible
+    PrecheckRun:
+      properties:
+        run_id:
+          type: string
+          title: Run Id
+        eligible:
+          type: boolean
+          title: Eligible
+        simulator:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Simulator
+        run_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Status
+        exclusion:
+          anyOf:
+          - $ref: '#/components/schemas/PrecheckExclusion'
+          - type: 'null'
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        datasets:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/PrecheckDataset'
+            type: array
+          - type: 'null'
+          title: Datasets
+      type: object
+      required:
+      - run_id
+      - eligible
+      title: PrecheckRun
+    PrecheckWarning:
+      properties:
+        code:
+          type: string
+          enum:
+          - metadata_unavailable
+          - shape_mismatch
+          title: Code
+        run_ids:
+          items:
+            type: string
+          type: array
+          title: Run Ids
+        dataset:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dataset
+      type: object
+      required:
+      - code
+      - run_ids
+      title: PrecheckWarning
     ProjectQueryStat:
       properties:
         target:
@@ -3444,6 +4085,39 @@ components:
           title: Encodes
       type: object
       title: RunMetadataSummary
+    RunPrecheckResult:
+      properties:
+        runs:
+          items:
+            $ref: '#/components/schemas/PrecheckRun'
+          type: array
+          title: Runs
+        eligible:
+          type: boolean
+          title: Eligible
+        ineligible_reason:
+          anyOf:
+          - $ref: '#/components/schemas/PrecheckIneligible'
+          - type: 'null'
+        common_datasets:
+          additionalProperties:
+            items:
+              type: string
+            type: array
+          type: object
+          title: Common Datasets
+        warnings:
+          items:
+            $ref: '#/components/schemas/PrecheckWarning'
+          type: array
+          title: Warnings
+          default: []
+      type: object
+      required:
+      - runs
+      - eligible
+      - common_datasets
+      title: RunPrecheckResult
     RunSimulationRequest:
       properties:
         omex_id:
@@ -3719,6 +4393,163 @@ components:
       - processingId
       - jobs
       title: SimulationRunResults
+    SimulatorAlgorithm:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        kisaoId:
+          anyOf:
+          - $ref: '#/components/schemas/OntologyRef'
+          - type: 'null'
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        modelingFrameworks:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/OntologyRef'
+            type: array
+          - type: 'null'
+          title: Modelingframeworks
+        modelFormats:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/FormatRef'
+            type: array
+          - type: 'null'
+          title: Modelformats
+        simulationFormats:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/FormatRef'
+            type: array
+          - type: 'null'
+          title: Simulationformats
+        archiveFormats:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/FormatRef'
+            type: array
+          - type: 'null'
+          title: Archiveformats
+        simulationTypes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Simulationtypes
+        modelChangePatterns:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ModelChangePattern'
+            type: array
+          - type: 'null'
+          title: Modelchangepatterns
+        parameters:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/SimulatorParameter'
+            type: array
+          - type: 'null'
+          title: Parameters
+        outputDimensions:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/OntologyRef'
+            type: array
+          - type: 'null'
+          title: Outputdimensions
+        outputVariablePatterns:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/OutputVariablePattern'
+            type: array
+          - type: 'null'
+          title: Outputvariablepatterns
+        dependencies:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/Dependency'
+            type: array
+          - type: 'null'
+          title: Dependencies
+        availableSoftwareInterfaceTypes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Availablesoftwareinterfacetypes
+        citations:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/Citation'
+            type: array
+          - type: 'null'
+          title: Citations
+      type: object
+      title: SimulatorAlgorithm
+    SimulatorAuthor:
+      properties:
+        firstName:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Firstname
+        middleName:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Middlename
+        lastName:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lastname
+        identifiers:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/IdentifierRef'
+            type: array
+          - type: 'null'
+          title: Identifiers
+      type: object
+      title: SimulatorAuthor
+    SimulatorCli:
+      properties:
+        package:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Package
+        command:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Command
+        installationInstructions:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Installationinstructions
+        packageRepository:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Packagerepository
+      type: object
+      title: SimulatorCli
     SimulatorFailure:
       properties:
         simulator_version:
@@ -3743,6 +4574,118 @@ components:
 
         submitted. Reported instead of being dropped silently, so a verification with
         no usable runs says why.'
+    SimulatorFunding:
+      properties:
+        funder:
+          anyOf:
+          - $ref: '#/components/schemas/OntologyRef'
+          - type: 'null'
+        grant:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Grant
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+      type: object
+      title: SimulatorFunding
+      description: 'One funding record: ``{funder: OntologyRef, grant, url}`` (the
+        frontend reads ``funder.id``).'
+    SimulatorList:
+      properties:
+        simulators:
+          items:
+            $ref: '#/components/schemas/SimulatorSpec'
+          type: array
+          title: Simulators
+      type: object
+      required:
+      - simulators
+      title: SimulatorList
+      description: 'Envelope for ``GET /simulators/latest``: a bare array cannot gain
+        a field without breaking clients.'
+    SimulatorParameter:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        kisaoId:
+          anyOf:
+          - $ref: '#/components/schemas/OntologyRef'
+          - type: 'null'
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+        value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Value
+        recommendedRange:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Recommendedrange
+        availableSoftwareInterfaceTypes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Availablesoftwareinterfacetypes
+      type: object
+      title: SimulatorParameter
+    SimulatorPythonApi:
+      properties:
+        package:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Package
+        module:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Module
+        installationInstructions:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Installationinstructions
+      type: object
+      title: SimulatorPythonApi
+    SimulatorReferences:
+      properties:
+        citations:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/Citation'
+            type: array
+          - type: 'null'
+          title: Citations
+        identifiers:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/IdentifierRef'
+            type: array
+          - type: 'null'
+          title: Identifiers
+      type: object
+      title: SimulatorReferences
     SimulatorSelection:
       properties:
         id:
@@ -3756,6 +4699,103 @@ components:
       - id
       - version
       title: SimulatorSelection
+    SimulatorSpec:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        version:
+          type: string
+          title: Version
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        urls:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/SimulatorUrl'
+            type: array
+          - type: 'null'
+          title: Urls
+        authors:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/SimulatorAuthor'
+            type: array
+          - type: 'null'
+          title: Authors
+        references:
+          anyOf:
+          - $ref: '#/components/schemas/SimulatorReferences'
+          - type: 'null'
+        license:
+          anyOf:
+          - $ref: '#/components/schemas/OntologyRef'
+          - type: 'null'
+        algorithms:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/SimulatorAlgorithm'
+            type: array
+          - type: 'null'
+          title: Algorithms
+        interfaceTypes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Interfacetypes
+        supportedOperatingSystemTypes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Supportedoperatingsystemtypes
+        supportedProgrammingLanguages:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/OntologyRef'
+            type: array
+          - type: 'null'
+          title: Supportedprogramminglanguages
+        funding:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/SimulatorFunding'
+            type: array
+          - type: 'null'
+          title: Funding
+        biosimulators:
+          anyOf:
+          - $ref: '#/components/schemas/CurationBlock'
+          - type: 'null'
+        image:
+          anyOf:
+          - $ref: '#/components/schemas/ImageBlock'
+          - type: 'null'
+        cli:
+          anyOf:
+          - $ref: '#/components/schemas/SimulatorCli'
+          - type: 'null'
+        pythonApi:
+          anyOf:
+          - $ref: '#/components/schemas/SimulatorPythonApi'
+          - type: 'null'
+      type: object
+      required:
+      - id
+      - name
+      - version
+      title: SimulatorSpec
+      description: "One simulator version: the union of the table, suggest and detail\
+        \ consumers (plan \xA74.2)."
     SimulatorSummary:
       properties:
         name:
@@ -3769,6 +4809,25 @@ components:
       - name
       - version
       title: SimulatorSummary
+    SimulatorUrl:
+      properties:
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+      type: object
+      title: SimulatorUrl
     SimulatorVersionDetail:
       properties:
         version:
@@ -3802,6 +4861,23 @@ components:
       - exact
       title: SimulatorVersionDetail
       description: Per-version compatibility details (populated in verbose mode).
+    SimulatorVersionList:
+      properties:
+        simulatorId:
+          type: string
+          title: Simulatorid
+        versions:
+          items:
+            $ref: '#/components/schemas/SimulatorSpec'
+          type: array
+          title: Versions
+      type: object
+      required:
+      - simulatorId
+      - versions
+      title: SimulatorVersionList
+      description: Envelope for ``GET /simulators/{simulator_id}`` (upstream returns
+        an array of every version).
     TableFilter:
       properties:
         id:
@@ -3925,6 +5001,101 @@ components:
       - msg
       - type
       title: ValidationError
+    ValidationMessage:
+      properties:
+        category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message
+      type: object
+      title: ValidationMessage
+      description: A ``{category, message}`` note on one validation-test result.
+    ValidationTestCase:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+      type: object
+      title: ValidationTestCase
+    ValidationTestCaseResult:
+      properties:
+        case:
+          anyOf:
+          - $ref: '#/components/schemas/ValidationTestCase'
+          - type: 'null'
+        resultType:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resulttype
+        duration:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Duration
+        exception:
+          anyOf:
+          - $ref: '#/components/schemas/ValidationMessage'
+          - type: 'null'
+        warnings:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ValidationMessage'
+            type: array
+          - type: 'null'
+          title: Warnings
+        skipReason:
+          anyOf:
+          - $ref: '#/components/schemas/ValidationMessage'
+          - type: 'null'
+        log:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Log
+      type: object
+      title: ValidationTestCaseResult
+    ValidationTests:
+      properties:
+        testSuiteVersion:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Testsuiteversion
+        ghIssue:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Ghissue
+        ghActionRun:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Ghactionrun
+        results:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ValidationTestCaseResult'
+            type: array
+          - type: 'null'
+          title: Results
+      type: object
+      title: ValidationTests
+      description: The test-suite block; present only when ``includeTests`` was requested
+        upstream.
     ValueFrequency:
       properties:
         value:
