@@ -1,0 +1,11 @@
+{
+  "rule": [
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "age": 30,
+        "matchesPrefix": ["verification-activity/", "verification-snapshots/index/"]
+      }
+    }
+  ]
+}

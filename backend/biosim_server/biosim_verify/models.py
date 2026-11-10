@@ -1,6 +1,7 @@
+import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Final, Optional
+from typing import Annotated, Final, Optional
 
 from pydantic import AwareDatetime, BaseModel, Field
 
@@ -13,6 +14,37 @@ from biosim_server.biosim_runs import BiosimSimulationRun, HDF5File, Hdf5DataVal
 # Module constants, not settings: they are published as OpenAPI `maxItems`.
 MAX_VERIFY_RUN_IDS: Final = 10
 MAX_VERIFY_SIMULATORS: Final = 10
+# One snapshot is one dataset of one run. The cap bounds download and comparison
+# work for a single recovery, on top of the run-id limit.
+MAX_VERIFY_SNAPSHOTS: Final = 200
+# Derived verifications one caller may start from one source in a day (D4, D5),
+# counted before the shared workflow budget is charged.
+MAX_DERIVED_PER_SOURCE_PER_DAY_AUTHENTICATED: Final = 10
+MAX_DERIVED_PER_SOURCE_PER_DAY_ANONYMOUS: Final = 3
+# What a permalink lists of its derived verifications: every owner- or admin-started
+# one and every one of the caller's own (each capped), then the newest others.
+DERIVED_LINKS_PRIORITY_LIMIT: Final = 10
+DERIVED_LINKS_OWN_LIMIT: Final = 10
+DERIVED_LINKS_OTHERS_LIMIT: Final = 5
+MAX_SNAPSHOT_CONCURRENCY: Final = 4
+
+# Documented defaults for POST /verify/{id}/reverify when the caller omits a field.
+# Numeric defaults match POST /verify/omex. The description names this action so a
+# re-verification is not presented as the original request. Cache reuse is never
+# promised: cache_buster "0" may hit a cache and may not.
+REVERIFY_DEFAULT_SIMULATORS: Final = ["amici", "copasi", "pysces", "tellurium", "vcell"]
+REVERIFY_DEFAULT_INCLUDE_OUTPUTS: Final = False
+REVERIFY_DEFAULT_DESCRIPTION: Final = "reverification"
+REVERIFY_DEFAULT_REL_TOL: Final = 0.0001
+REVERIFY_DEFAULT_ABS_TOL_MIN: Final = 0.001
+REVERIFY_DEFAULT_ABS_TOL_SCALE: Final = 0.00001
+REVERIFY_DEFAULT_CACHE_BUSTER: Final = "0"
+# Re-verification body bounds. These strings are stored with the request and
+# echoed into the new verification. Published as OpenAPI maxLength / maxItems.
+MAX_REVERIFY_DESCRIPTION_LENGTH: Final = 2000
+MAX_REVERIFY_OBSERVABLES: Final = 200
+MAX_REVERIFY_OBSERVABLE_LENGTH: Final = 512
+MAX_REVERIFY_CACHE_BUSTER_LENGTH: Final = 128
 
 
 class ComparisonStatistics(BaseModel):
@@ -58,11 +90,43 @@ class RunData(BaseModel):
     data: Hdf5DataValues  # n-dim array of data for this run, shape=(len(dataset_vars), len(times))
 
 
+class NumericalInputSnapshot(BaseModel):
+    """Immutable reference to one dataset used as a comparison input.
+
+    The bytes live in object storage. ``content_sha256`` is the SHA-256 of the
+    canonical uncompressed snapshot document, not of the gzip wrapper.
+    """
+
+    schema_version: int = 1
+    run_id: str
+    dataset_name: str
+    var_names: list[str]
+    shape: list[int]
+    simulator_version: str
+    content_sha256: str
+    encoding: str
+    uncompressed_bytes: int
+    artifact_reference: str
+
+
 
 class GenerateStatisticsActivityOutput(BaseModel):
     sims_run_info: list[SimulationRunInfo]
     comparison_statistics: dict[str, list[list[ComparisonStatistics]]]  # matrix of comparison statistics per dataset
     sim_run_data: Optional[list[RunData]] = None
+
+
+class GenerateStatisticsArtifactReference(BaseModel):
+    reference_schema_version: int = 1
+    artifact_reference: str
+    content_sha256: str
+    encoding: str
+    uncompressed_bytes: int
+
+
+class GenerateStatisticsActivityResult(BaseModel):
+    output: Optional[GenerateStatisticsActivityOutput] = None
+    reference: Optional[GenerateStatisticsArtifactReference] = None
 
 
 class SimulatorFailure(BaseModel):
@@ -86,6 +150,77 @@ class VerifyWorkflowStatus(StrEnum):
                         VerifyWorkflowStatus.RUN_ID_NOT_FOUND]
 
 
+class ReportPersistenceState(StrEnum):
+    PENDING = "pending"
+    STORED = "stored"
+    BLOCKED = "blocked"
+    UNAVAILABLE = "unavailable"
+
+
+class DerivationKind(StrEnum):
+    RECONSTRUCTION = "reconstruction"
+    REVERIFICATION = "reverification"
+
+
+class InitiatorRelation(StrEnum):
+    """Who started a derived verification, relative to its source.  Never an identity.
+
+    Decided when the verification is reserved: a caller's admin role at that
+    moment, not later, is what counts.
+    """
+    OWNER = "owner"
+    ADMIN = "admin"
+    OTHER = "other"
+    ANONYMOUS = "anonymous"
+
+
+class RecoveryAction(BaseModel):
+    eligible: bool
+    reason: Optional[str] = None
+    message: str = ""
+
+
+class ReconstructOffer(RecoveryAction):
+    """Explicit inputs a caller must send back. Empty when reconstruction is not eligible."""
+
+    run_ids: list[str] = Field(default_factory=list)
+    snapshot_sha256: list[str] = Field(default_factory=list)
+    compare_settings: Optional[CompareSettings] = None
+
+
+class ReverifyOffer(RecoveryAction):
+    """Documented defaults and the warning that re-verification can start simulations."""
+
+    may_start_simulations: bool = True
+    cache_reuse: str = "not_guaranteed"
+    defaults: Optional[CompareSettings] = None
+    default_simulators: list[str] = Field(default_factory=list)
+    default_cache_buster: str = REVERIFY_DEFAULT_CACHE_BUSTER
+    suggested_simulators: list[str] = Field(
+        default_factory=list,
+        description="Versions observed on the source. A suggestion only, not the original selection and not a cache guarantee.",
+    )
+
+
+class VerificationRecovery(BaseModel):
+    reconstruct: ReconstructOffer
+    reverify_archive: ReverifyOffer
+
+
+class DerivedVerificationLink(BaseModel):
+    workflow_id: str
+    derivation_kind: DerivationKind
+    created: datetime
+    initiator_relation: Optional[InitiatorRelation] = Field(
+        default=None,
+        description="Who started it relative to the source: owner, admin, other or anonymous. Never an identity.",
+    )
+    is_yours: bool = Field(default=False, description="Started by the authenticated caller.")
+    custom_settings: bool = Field(
+        default=False, description="Its comparison settings differ from the documented re-verification defaults.",
+    )
+
+
 class VerifyWorkflowOutput(BaseModel):
     workflow_id: str
     compare_settings: CompareSettings
@@ -93,12 +228,90 @@ class VerifyWorkflowOutput(BaseModel):
     timestamp: str
     workflow_run_id: Optional[str] = None
     workflow_error: Optional[str] = None
+    # Which check failed, when a reconstruction's retained inputs could not be compared:
+    # "checksum_mismatch" or "missing_numerical_inputs".
+    failure_code: Optional[str] = None
     # Requested simulators that produced no results (OmexVerifyWorkflow); empty when every one ran
     failed_simulators: list[SimulatorFailure] = []
     workflow_results: Optional[GenerateStatisticsActivityOutput] = None
+    workflow_results_reference: Optional[GenerateStatisticsArtifactReference] = None
     # Auth0 `sub` of the caller who started the workflow. Optional so in-flight
     # Temporal histories that predate this field still deserialize.
     owner_sub: Optional[str] = None
+    persistence_state: ReportPersistenceState = ReportPersistenceState.PENDING
+    report_id: Optional[str] = None
+    report_available: Optional[bool] = None
+    # Present on a derived verification. The original report's stored answer does not
+    # change when these are overlaid on a read.
+    source_verification_id: Optional[str] = None
+    derivation_kind: Optional[DerivationKind] = None
+    computed_at: Optional[datetime] = None
+    comparator_version: Optional[str] = None
+    # "new_calculation" for reconstruction. Byte-identical restoration is not claimed.
+    calculation: Optional[str] = None
+    derived_verifications: list[DerivedVerificationLink] = Field(default_factory=list)
+    derived_verifications_total: int = Field(
+        default=0, description="All derived verifications of this one; more than are listed when some are omitted.",
+    )
+    # On a derived re-verification: its settings differ from the documented defaults.
+    custom_settings: Optional[bool] = None
+    recovery: Optional[VerificationRecovery] = Field(
+        default=None,
+        description="Not set on a report response. GET /verify/{workflow_id}/recovery returns the offers on demand.",
+    )
+
+
+class VerificationProvenance(BaseModel):
+    schema_version: int = 1
+    verification_id: str
+    workflow_run_id: Optional[str] = None
+    owner_sub: Optional[str] = None
+    created_at: Optional[datetime] = None
+    computed_at: Optional[datetime] = None
+    requested_settings: dict[str, object] = Field(default_factory=dict)
+    workflow_input: dict[str, object] = Field(default_factory=dict)
+    origin: str = "workflow"
+    comparator_version: str | None = None
+    dependency_versions: dict[str, str] = Field(default_factory=dict)
+    actual_runs: list[SimulationRunInfo] = Field(default_factory=list)
+    # Retained numerical inputs. A saved request without these is not reconstructable.
+    ordered_run_ids: list[str] = Field(default_factory=list)
+    input_snapshots: list[NumericalInputSnapshot] = Field(default_factory=list)
+    # The manifest the snapshots came from.  The workflow's pointer to it is removed
+    # after persistence, so this reference is what keeps the manifest reachable.
+    snapshot_manifest_reference: str | None = None
+    # Why no snapshots were captured, when it was deliberate ("work_limit").
+    input_snapshots_skipped: str | None = None
+    source_verification_id: str | None = None
+    derivation_kind: DerivationKind | None = None
+
+
+def sanitize_workflow_error(error: object) -> str:
+    """Keep terminal errors useful without persisting payloads, paths, or URLs."""
+    text = (str(error).splitlines() or ["verification failed"])[0]
+    text = text.replace("\\", "/")
+    text = re.sub(r"https?://\S+", "[redacted-url]", text)
+    text = re.sub(r"(?<!\w)/(?:Users|home|tmp|var)/\S+", "[redacted-path]", text)
+    return str(text[:1000])
+
+
+class VerificationReportEnvelope(BaseModel):
+    report_id: str
+    workflow_id: str
+    workflow_run_id: Optional[str] = None
+    owner_sub: Optional[str] = None
+    report_schema_version: int = 1
+    provenance_schema_version: int = 1
+    report_kind: str = "verification"
+    workflow_status: VerifyWorkflowStatus
+    computed_at: datetime
+    saved_at: datetime
+    content_sha256: str
+    encoding: str
+    uncompressed_bytes: int
+    provenance: VerificationProvenance
+    inline_payload: Optional[bytes] = None
+    artifact_reference: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +328,24 @@ class VerificationType(StrEnum):
 # `pattern` of every `omex_hash` query parameter, so `?omex_hash=` (empty),
 # uppercase hex or an over-long value is a 422 before any database read.
 OMEX_HASH_PATTERN: Final = r"^[0-9a-f]{32}$"
+
+
+class PersistenceAck(BaseModel):
+    """An operator's acknowledgement of one persistence problem on a ledger row.
+
+    It never deletes or changes a report.  It applies only while the row's
+    ``persistence_state`` and ``persistence_error`` still equal the values it
+    acknowledged, so a new kind of failure brings attention back.
+    """
+
+    state: ReportPersistenceState
+    error: Optional[str] = None
+    reason: str
+    acknowledged_by: str
+    acknowledged_at: datetime
+
+    def covers(self, state: ReportPersistenceState, error: Optional[str]) -> bool:
+        return self.state == state and self.error == error
 
 
 class VerificationRecord(BaseModel):
@@ -135,6 +366,31 @@ class VerificationRecord(BaseModel):
     # first time it observes the workflow finished. None until then -- also for
     # verifications nobody polled and for ones whose Temporal history expired.
     status: Optional[VerifyWorkflowStatus] = None
+    request_schema_version: int = 1
+    workflow_input: dict[str, object] | None = None
+    request_hash: str | None = None
+    report_id: str | None = None
+    persistence_state: ReportPersistenceState = ReportPersistenceState.PENDING
+    persistence_attempted_at: datetime | None = None
+    persisted_at: datetime | None = None
+    workflow_run_id: str | None = None
+    persistence_error: str | None = None
+    # Set only on a recovery row. The source row is never rewritten with these.
+    # Mongo stores the enum's value, so rows written as plain strings still validate.
+    source_verification_id: str | None = None
+    derivation_kind: DerivationKind | None = None
+    # Caller who requested recovery. Quota and audit use this; owner_sub stays the source owner.
+    initiator_sub: str | None = None
+    initiator_relation: InitiatorRelation | None = None
+    custom_settings: bool | None = None
+    persistence_ack: PersistenceAck | None = None
+
+    @property
+    def persistence_acknowledged(self) -> bool:
+        """Whether an operator acknowledged the row's current persistence problem."""
+        return self.persistence_ack is not None and self.persistence_ack.covers(
+            self.persistence_state, self.persistence_error,
+        )
 
 
 class VerificationSummary(BaseModel):
@@ -154,6 +410,14 @@ class VerificationSummary(BaseModel):
             "finish. null means not yet observed as finished: still running, never polled, or "
             "polled only after its Temporal history expired."
         ),
+    )
+    source_verification_id: Optional[str] = Field(
+        default=None,
+        description="Original verification this row was derived from, when this row is a recovery.",
+    )
+    derivation_kind: Optional[DerivationKind] = Field(
+        default=None,
+        description="reconstruction (new comparison of retained inputs) or reverification (new archive run).",
     )
 
 
@@ -197,3 +461,51 @@ class VerificationIdsResponse(BaseModel):
             "null when this is the last page."
         ),
     )
+
+
+class ReconstructRequest(BaseModel):
+    """Explicit retained inputs. They must match stored provenance; nothing is inferred."""
+
+    run_ids: list[str] = Field(min_length=1, max_length=MAX_VERIFY_RUN_IDS)
+    snapshot_sha256: list[str] = Field(min_length=1, max_length=MAX_VERIFY_SNAPSHOTS)
+    compare_settings: CompareSettings
+
+
+class ReverifyRequest(BaseModel):
+    """Settings for a new archive verification. Omitted fields use the documented defaults."""
+
+    simulators: Optional[list[str]] = Field(default=None, max_length=MAX_VERIFY_SIMULATORS)
+    include_outputs: Optional[bool] = None
+    user_description: Optional[str] = Field(default=None, max_length=MAX_REVERIFY_DESCRIPTION_LENGTH)
+    # A negative tolerance would fail every comparison; the UI mirrors these bounds.
+    rel_tol: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    abs_tol_min: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    abs_tol_scale: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    observables: Optional[list[Annotated[str, Field(max_length=MAX_REVERIFY_OBSERVABLE_LENGTH)]]] = Field(
+        default=None, max_length=MAX_REVERIFY_OBSERVABLES,
+    )
+    cache_buster: Optional[str] = Field(default=None, max_length=MAX_REVERIFY_CACHE_BUSTER_LENGTH)
+
+
+class LinkedRecoveryAccepted(BaseModel):
+    workflow_id: str
+    source_verification_id: str
+    derivation_kind: DerivationKind
+    workflow_run_id: Optional[str] = None
+    may_start_simulations: bool
+    defaults_applied: list[str] = Field(default_factory=list)
+    compare_settings: CompareSettings
+    simulators: list[str] = Field(default_factory=list)
+    cache_reuse: Optional[str] = None
+    calculation: Optional[str] = None
+    message: str
+
+
+class RecoveryReservation(BaseModel):
+    caller_key: str
+    source_verification_id: str
+    operation: str
+    idempotency_key: str
+    request_hash: str
+    workflow_id: str
+    created: datetime

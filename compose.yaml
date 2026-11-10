@@ -18,15 +18,39 @@ services:
     volumes:
       - mongo_data:/data/db
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "if (db.runCommand({ping: 1}).ok !== 1) quit(1)"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  temporal-data-init:
+    # The server runs as uid/gid 1000, but a fresh /data volume is root-owned.
+    # Repair existing volumes too, before SQLite tries to create temporal.db.
+    image: busybox:1.37
+    command: ["chown", "-R", "1000:1000", "/data"]
+    volumes:
+      - temporal_data:/data
+    restart: "no"
 
   temporal:
-    # Single-binary dev mode (in-memory SQLite, no separate Postgres, no Web UI).
+    # Single-binary dev mode with a persistent SQLite database (no Web UI).
     # gRPC on 7233. If you need the workflow Web UI, swap to temporalio/auto-setup.
     image: temporalio/temporal:1.7.0
     container_name: platform-temporal
-    command: ["server", "start-dev", "--ip", "0.0.0.0"]
+    depends_on:
+      temporal-data-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "localhost:7233"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
     ports:
       - "7233:7233"
+    volumes:
+      - temporal_data:/data
     restart: unless-stopped
 
   minio:
@@ -47,4 +71,5 @@ services:
 
 volumes:
   mongo_data:
+  temporal_data:
   minio_data:

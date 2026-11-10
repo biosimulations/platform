@@ -1,23 +1,29 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import httpx
 from motor.motor_asyncio import AsyncIOMotorClient
 from temporalio.client import Client as TemporalClient
 
-from biosim_server.biosim_omex.database import OmexDatabaseService, OmexDatabaseServiceMongo
-from biosim_server.biosim_runs.biosim_service import BiosimService, BiosimServiceRest
-from biosim_server.biosim_runs.database import DatabaseService, DatabaseServiceMongo
 from biosim_server.common.auth.auth0_management import close_auth0_http_client
 from biosim_server.common.storage import FileService, FileServiceGCS, FileServiceLocal, FileServiceMinio
 from biosim_server.common.upstream import UPSTREAM_TIMEOUT_SECONDS
 from biosim_server.config import get_local_cache_dir, get_settings
 
 if TYPE_CHECKING:
+    from biosim_server.biosim_omex.database import OmexDatabaseService
+    from biosim_server.biosim_runs.biosim_service import BiosimService
+    from biosim_server.biosim_runs.database import DatabaseService
     # Imported lazily at runtime (see init_standalone) to avoid an import cycle:
     # simulations/__init__.py -> router -> dependencies.
     from biosim_server.simulations.database import SimulationRunDatabaseService
     from biosim_server.projects.database import ProjectDatabaseService
     from biosim_server.biosim_verify.database import VerificationDatabaseService
+    from biosim_server.biosim_verify.report_storage import VerificationReportStore
 
 #------ file service (standalone or pytest) ------
 
@@ -90,6 +96,16 @@ def set_verification_database_service(service: "VerificationDatabaseService | No
 def get_verification_database_service() -> "VerificationDatabaseService | None":
     global global_verification_database_service
     return global_verification_database_service
+
+global_verification_report_store: "VerificationReportStore | None" = None
+
+def set_verification_report_store(service: "VerificationReportStore | None") -> None:
+    global global_verification_report_store
+    global_verification_report_store = service
+
+def get_verification_report_store() -> "VerificationReportStore | None":
+    global global_verification_report_store
+    return global_verification_report_store
 
 #------- biosim service (standalone or pytest) ------
 
@@ -211,6 +227,55 @@ def get_temporal_client() -> TemporalClient | None:
     global global_temporal_client
     return global_temporal_client
 
+_temporal_reconnect_task: asyncio.Task[None] | None = None
+
+
+async def _connect_temporal() -> None:
+    from biosim_server.common.temporal import pydantic_data_converter
+    settings = get_settings()
+    client = await asyncio.wait_for(TemporalClient.connect(
+        settings.temporal_service_url, namespace=settings.temporal_namespace,
+        data_converter=pydantic_data_converter), timeout=5)
+    set_temporal_client(client)
+
+
+async def start_temporal_connection(retry_seconds: float = 5) -> None:
+    """Start with saved-report readers available, then reconnect without an API restart."""
+    global _temporal_reconnect_task
+    await stop_temporal_connection()
+    try:
+        await _connect_temporal()
+        return
+    except Exception:
+        set_temporal_client(None)
+        logging.getLogger(__name__).warning("Temporal unavailable; reconnect scheduled")
+
+    async def reconnect() -> None:
+        while get_temporal_client() is None:
+            await asyncio.sleep(retry_seconds)
+            try:
+                await _connect_temporal()
+            except Exception:
+                logging.getLogger(__name__).warning("Temporal reconnect failed; retry scheduled")
+
+    _temporal_reconnect_task = asyncio.create_task(reconnect(), name="temporal-reconnect")
+
+
+async def stop_temporal_connection() -> None:
+    global _temporal_reconnect_task
+    task, _temporal_reconnect_task = _temporal_reconnect_task, None
+    if task is not None:
+        task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+
+
+async def wait_for_temporal_client() -> TemporalClient:
+    while (client := get_temporal_client()) is None:
+        await asyncio.sleep(.1)
+    return client
+
+
 #------ initialized standalone application (standalone) ------
 
 def _make_file_service(backend: str) -> FileService:
@@ -224,6 +289,9 @@ def _make_file_service(backend: str) -> FileService:
 
 
 async def init_standalone() -> None:
+    from biosim_server.biosim_omex.database import OmexDatabaseServiceMongo
+    from biosim_server.biosim_runs.biosim_service import BiosimServiceRest
+    from biosim_server.biosim_runs.database import DatabaseServiceMongo
     settings = get_settings()
     set_file_service(_make_file_service(settings.storage_backend))
     set_biosim_service(BiosimServiceRest())
@@ -240,12 +308,11 @@ async def init_standalone() -> None:
             timeout=_COMBINE_TIMEOUT,
         )
     )
-    set_temporal_client(await TemporalClient.connect(settings.temporal_service_url))
-
     # Local import avoids the simulations -> dependencies import cycle at module load.
     from biosim_server.simulations.database import SimulationRunDatabaseServiceMongo
     from biosim_server.projects.search import ProjectSearchServiceMongo
     from biosim_server.biosim_verify.database import VerificationDatabaseServiceMongo
+    from biosim_server.biosim_verify.report_storage import VerificationReportStore
 
     motor_client = AsyncIOMotorClient(get_settings().mongodb_uri)
     set_mongo_client(motor_client)
@@ -256,6 +323,7 @@ async def init_standalone() -> None:
     # own $text index (see projects/search.py).
     projects_db_service = ProjectSearchServiceMongo(db_client=motor_client)
     verification_db_service = VerificationDatabaseServiceMongo(db_client=motor_client)
+    report_store = VerificationReportStore(db_client=motor_client, file_service=get_file_service())
 
     # create_index is idempotent; calling on every start keeps schema in sync as
     # we add lookups. Each service knows which fields its queries hit.
@@ -264,6 +332,7 @@ async def init_standalone() -> None:
     await runs_db_service.ensure_indexes()
     await projects_db_service.ensure_indexes()
     await verification_db_service.ensure_indexes()
+    await report_store.ensure_indexes()
     # Populate the search index on first run (no-op once built); refresh on demand
     # via POST /projects/reindex.
     await projects_db_service.rebuild_index_if_empty()
@@ -273,8 +342,11 @@ async def init_standalone() -> None:
     set_simulation_run_database_service(runs_db_service)
     set_project_database_service(projects_db_service)
     set_verification_database_service(verification_db_service)
+    set_verification_report_store(report_store)
+    await start_temporal_connection()
 
 async def shutdown_standalone() -> None:
+    await stop_temporal_connection()
     db_service = get_database_service()
     if db_service:
         await db_service.close()
@@ -309,4 +381,5 @@ async def shutdown_standalone() -> None:
     set_simulation_run_database_service(None)
     set_project_database_service(None)
     set_verification_database_service(None)
+    set_verification_report_store(None)
     set_mongo_client(None)

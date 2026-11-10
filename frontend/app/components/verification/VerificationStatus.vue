@@ -1,13 +1,22 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useClipboard } from '@vueuse/core'
-import type { VerifyWorkflowOutput, VerifyWorkflowStatus } from '~/models/verification'
+import { verificationIsDone, verificationIsSaving, verificationDisplayStatus, isUnavailableVerification, recoveryMode } from '~/utils/verification-status'
+import {
+  MAX_REVERIFY_SIMULATORS,
+  groupDerivedLinks,
+  reverifyBody,
+  reverifyDraftFromOffer,
+  reverifyErrors
+} from '~/utils/verification-recovery'
+import type { ReverifyDraft } from '~/utils/verification-recovery'
+import type { DerivedVerificationLink, VerificationRecovery, VerifyWorkflowOutput } from '~/models/verification'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   workflowId: string
   modelValue?: VerifyWorkflowOutput | null
   autoPoll?: boolean
-}>()
+}>(), { autoPoll: true })
 
 const emit = defineEmits<{
   'update:modelValue': [value: VerifyWorkflowOutput]
@@ -41,15 +50,156 @@ const nextRefreshCountdown = ref<number>(POLL_INTERVAL_SECONDS)
 let timer: ReturnType<typeof setInterval> | null = null
 let inFlight: AbortController | null = null
 
-const status = computed<VerifyWorkflowStatus>(() => {
-  return workflowData.value?.workflow_status || 'PENDING'
-})
+const unavailable = ref(false)
+const recovery = ref<VerificationRecovery | null>(null)
+// A finished report offers recovery behind a collapsed "Recompute…"; opening it loads the offers once
+const recoveryOpen = ref(false)
+const recoveryLoading = ref(false)
+const reverifyConfirmed = ref(false)
+const reverifyDraft = ref<ReverifyDraft>(reverifyDraftFromOffer(null))
+const linkedVerificationId = ref<string | null>(null)
+// Verifications derived from this one. Shown beside the original result, never in place of it
+const derivedVerifications = ref<DerivedVerificationLink[]>([])
+const derivedTotal = ref(0)
+const recoveryError = ref<string | null>(null)
+const recoveryPending = ref(false)
+const recoveryKeys = new Map<string, string>()
+type RecoveryOperation = 'reconstruct' | 'reverify'
 
-const isDone = computed(() => {
-  return status.value === 'COMPLETED' || status.value === 'FAILED' || status.value === 'RUN_ID_NOT_FOUND'
-})
+const mode = computed(() => recoveryMode(workflowData.value, unavailable.value))
+// Actions show unprompted only for an unavailable original; a finished report shows them once opened
+const showRecoveryActions = computed(() => recovery.value != null
+  && (mode.value === 'automatic' || (mode.value === 'on_request' && recoveryOpen.value)))
+const reverifyProblems = computed(() => reverifyErrors(reverifyDraft.value))
+const simulatorOptions = computed(() => [...new Set([
+  ...(recovery.value?.reverify_archive.default_simulators ?? []),
+  ...(recovery.value?.reverify_archive.suggested_simulators ?? []),
+  ...reverifyDraft.value.simulators
+])])
+const derivedView = computed(() => groupDerivedLinks(derivedVerifications.value, derivedTotal.value))
+
+function applyRecovery(value: VerificationRecovery | null) {
+  const first = recovery.value == null && value != null
+  recovery.value = value
+  if (!value || !first) return
+  reverifyDraft.value = reverifyDraftFromOffer(value)
+  reverifyConfirmed.value = false
+}
+
+function applyDerived(links: DerivedVerificationLink[] | undefined, total: number | undefined) {
+  derivedVerifications.value = links ?? []
+  derivedTotal.value = total ?? derivedVerifications.value.length
+}
+
+// Toggle the "Recompute…" disclosure; the first opening asks the server for the offers
+async function toggleRecompute() {
+  recoveryOpen.value = !recoveryOpen.value
+  if (!recoveryOpen.value || recovery.value || recoveryLoading.value) return
+  const workflowId = props.workflowId
+  recoveryLoading.value = true
+  recoveryError.value = null
+  try {
+    const res = await $fetch<VerificationRecovery>(`${config.public.api_url}/verify/${workflowId}/recovery`)
+    if (workflowId !== props.workflowId) return
+    applyRecovery(res)
+  } catch (err: any) {
+    if (workflowId !== props.workflowId) return
+    recoveryError.value = err?.data?.detail || err?.message || 'Recovery options could not be loaded'
+  } finally {
+    if (workflowId === props.workflowId) recoveryLoading.value = false
+  }
+}
+
+function addSimulator(name: string) {
+  const value = name.trim()
+  if (value && !reverifyDraft.value.simulators.includes(value)) reverifyDraft.value.simulators.push(value)
+}
+
+function idempotencyKey(operation: RecoveryOperation, body: unknown): string {
+  const key = `${props.workflowId}\n${operation}\n${JSON.stringify(body)}`
+  const existing = recoveryKeys.get(key)
+  if (existing) return existing
+  // Fixed length within the server's Idempotency-Key pattern; getRandomValues also works off HTTPS
+  const random = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+  const created = `recovery-${random}`
+  recoveryKeys.set(key, created)
+  return created
+}
+
+function resetRecovery() {
+  recovery.value = null
+  recoveryOpen.value = false
+  recoveryLoading.value = false
+  reverifyDraft.value = reverifyDraftFromOffer(null)
+  linkedVerificationId.value = null
+  derivedVerifications.value = []
+  derivedTotal.value = 0
+  recoveryError.value = null
+  recoveryPending.value = false
+  reverifyConfirmed.value = false
+  recoveryKeys.clear()
+}
+
+function derivationLabel(kind: 'reconstruction' | 'reverification' | null | undefined): string | null {
+  switch (kind) {
+    case 'reconstruction':
+      return 'New calculation'
+    case 'reverification':
+      return 'Re-verification'
+    case undefined:
+    case null:
+      return null
+    default: {
+      const unexpected: never = kind
+      return unexpected
+    }
+  }
+}
+
+async function submitRecovery(operation: RecoveryOperation) {
+  const workflowId = props.workflowId
+  const offer = recovery.value
+  if (!workflowId || !offer) return
+  if (operation === 'reverify' && !reverifyConfirmed.value) {
+    recoveryError.value = 'Confirm that re-verification can start new simulations before submitting.'
+    return
+  }
+  if (operation === 'reverify' && reverifyProblems.value.length) {
+    recoveryError.value = reverifyProblems.value.join(' ')
+    return
+  }
+  const body = operation === 'reconstruct'
+    ? {
+        run_ids: offer.reconstruct.run_ids ?? [],
+        snapshot_sha256: offer.reconstruct.snapshot_sha256 ?? [],
+        compare_settings: offer.reconstruct.compare_settings
+      }
+    : reverifyBody(reverifyDraft.value)
+  const key = idempotencyKey(operation, body)
+  recoveryPending.value = true
+  recoveryError.value = null
+  try {
+    const res = await $fetch<{ workflow_id: string }>(`${config.public.api_url}/verify/${workflowId}/${operation}`, {
+      method: 'POST',
+      body,
+      headers: { 'Idempotency-Key': key },
+    })
+    if (workflowId !== props.workflowId) return
+    linkedVerificationId.value = res.workflow_id
+  } catch (err: any) {
+    if (workflowId !== props.workflowId) return
+    recoveryError.value = err?.data?.detail || err?.message || 'Recovery was not started'
+  } finally {
+    if (workflowId === props.workflowId) recoveryPending.value = false
+  }
+}
+
+const status = computed(() => verificationDisplayStatus(workflowData.value, halted.value))
+const isDone = computed(() => verificationIsDone(workflowData.value))
+const isSaving = computed(() => verificationIsSaving(workflowData.value))
 
 const statusBadgeColor = computed(() => {
+  if (isSaving.value) return 'warning'
   switch (status.value) {
     case 'COMPLETED':
       return 'success'
@@ -105,12 +255,13 @@ async function fetchStatus() {
     pollInterval.value = POLL_INTERVAL_SECONDS
     if (res) {
       workflowData.value = res
+      applyDerived(res.derived_verifications, res.derived_verifications_total)
       emit('update:modelValue', res)
 
-      if (res.workflow_status === 'COMPLETED') {
+      if (verificationIsDone(res) && res.workflow_status === 'COMPLETED') {
         stopTimers()
         emit('completed', res)
-      } else if (res.workflow_status === 'FAILED' || res.workflow_status === 'RUN_ID_NOT_FOUND') {
+      } else if (verificationIsDone(res) && (res.workflow_status === 'FAILED' || res.workflow_status === 'RUN_ID_NOT_FOUND')) {
         stopTimers()
         const err = res.workflow_error || `Verification failed with status: ${res.workflow_status}`
         errorMsg.value = err
@@ -120,7 +271,12 @@ async function fetchStatus() {
   } catch (err: any) {
     if (controller.signal.aborted || workflowId !== props.workflowId) return
     const errText = err?.data?.detail || err?.message || 'Failed to poll verification workflow'
-    errorMsg.value = errText
+    unavailable.value = isUnavailableVerification(err)
+    if (unavailable.value) {
+      applyRecovery(err?.data?.recovery ?? null)
+      applyDerived(err?.data?.derived_verifications, err?.data?.derived_verifications_total)
+    }
+    errorMsg.value = unavailable.value ? null : errText
     const status: number | undefined = err?.response?.status ?? err?.statusCode
     if (status !== undefined && status >= 400 && status < 500 && !TRANSIENT_CLIENT_ERRORS.has(status)) {
       halted.value = true
@@ -165,6 +321,7 @@ function stopTimers() {
 // Also the retry after a 4xx halted polling
 function manualRefresh() {
   halted.value = false
+  unavailable.value = false
   pollInterval.value = POLL_INTERVAL_SECONDS
   if (!timer) {
     timer = setInterval(tick, 1000)
@@ -186,6 +343,8 @@ watch(() => props.workflowId, (newId) => {
   workflowData.value = matchingModelValue()
   errorMsg.value = null
   halted.value = false
+  unavailable.value = false
+  resetRecovery()
   pollInterval.value = POLL_INTERVAL_SECONDS
   if (newId) {
     startTimers()
@@ -229,11 +388,12 @@ onUnmounted(() => {
         >
           <UIcon :name="statusIcon" class="size-4" />
           <span>{{ status }}</span>
+          <span v-if="isSaving" class="text-xs">Saving report</span>
         </UBadge>
         <div>
           <h3 class="text-base font-semibold text-neutral-900 flex items-center gap-2">
             Verification Run
-            <span v-if="!isDone" class="text-xs font-normal text-neutral-500">
+            <span v-if="!isDone && !unavailable" class="text-xs font-normal text-neutral-500">
               ({{ secondsElapsed }}s elapsed)
             </span>
             <span
@@ -260,7 +420,7 @@ onUnmounted(() => {
 
       <div class="flex items-center gap-2">
         <UButton
-          v-if="!isDone"
+          v-if="!isDone && !unavailable"
           icon="i-lucide-refresh-cw"
           size="sm"
           variant="soft"
@@ -319,5 +479,149 @@ onUnmounted(() => {
       :description="errorMsg || workflowData?.workflow_error || ''"
       class="mt-4"
     />
+    <UAlert
+      v-if="unavailable"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-archive-x"
+      title="Original report unavailable"
+      description="The original verification result is no longer available."
+      class="mt-4"
+    />
+
+    <div
+      v-if="workflowData?.source_verification_id || workflowData?.derivation_kind || workflowData?.computed_at || workflowData?.comparator_version"
+      class="mt-4 rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-700 space-y-1"
+    >
+      <p v-if="derivationLabel(workflowData?.derivation_kind)" class="font-medium flex flex-wrap items-center gap-2">
+        {{ derivationLabel(workflowData?.derivation_kind) }}
+        <UBadge v-if="workflowData?.custom_settings" color="warning" variant="subtle" size="sm">Custom tolerances</UBadge>
+      </p>
+      <p v-if="workflowData?.source_verification_id">
+        Source verification
+        <NuxtLink class="font-mono text-primary underline break-all" :to="`?workflow_id=${workflowData.source_verification_id}`">
+          {{ workflowData.source_verification_id }}
+        </NuxtLink>
+      </p>
+      <p v-if="workflowData?.computed_at">Computed {{ new Date(workflowData.computed_at).toLocaleString() }}</p>
+      <p v-if="workflowData?.comparator_version">Comparator {{ workflowData.comparator_version }}</p>
+      <p v-if="workflowData?.calculation === 'new_calculation'">
+        New calculation from retained inputs. This is not an exact restoration of the original report.
+      </p>
+    </div>
+
+    <div v-if="derivedVerifications.length" class="mt-4 rounded-lg border border-neutral-200 p-3 text-sm text-neutral-700 space-y-2">
+      <p class="font-medium">Derived verifications</p>
+      <p class="text-xs text-neutral-500">New verifications linked to this one. They do not replace this result.</p>
+      <div v-for="group in derivedView.groups" :key="group.key" class="space-y-1">
+        <p class="text-xs font-semibold uppercase tracking-wider text-neutral-500">{{ group.label }}</p>
+        <ul class="space-y-1">
+          <li v-for="item in group.items" :key="item.workflow_id" class="flex flex-wrap items-center gap-2">
+            <UBadge color="warning" variant="subtle" size="sm">{{ derivationLabel(item.derivation_kind) }}</UBadge>
+            <UBadge v-if="item.custom_settings" color="neutral" variant="outline" size="sm">Custom tolerances</UBadge>
+            <NuxtLink class="font-mono text-primary underline break-all" :to="`?workflow_id=${item.workflow_id}`">
+              {{ item.workflow_id }}
+            </NuxtLink>
+            <span class="text-xs text-neutral-500">{{ new Date(item.created).toLocaleString() }}</span>
+          </li>
+        </ul>
+      </div>
+      <p v-if="derivedView.more" class="text-xs text-neutral-500">
+        {{ derivedView.more }} more {{ derivedView.more === 1 ? 'derived verification is' : 'derived verifications are' }} not listed.
+      </p>
+    </div>
+
+    <div v-if="mode === 'on_request'" class="mt-4">
+      <UButton
+        label="Recompute…"
+        color="neutral"
+        variant="ghost"
+        size="sm"
+        :trailing-icon="recoveryOpen ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
+        :loading="recoveryLoading"
+        :aria-expanded="recoveryOpen"
+        @click="toggleRecompute"
+      />
+      <p v-if="recoveryOpen && recovery && !recovery.reconstruct.eligible && !recovery.reverify_archive.eligible" class="mt-2 text-sm text-neutral-600">
+        {{ recovery.reconstruct.message }} {{ recovery.reverify_archive.message }}
+      </p>
+    </div>
+
+    <div v-if="showRecoveryActions && recovery?.reconstruct.eligible" class="mt-4 rounded-lg border border-neutral-200 p-3 space-y-2">
+      <p class="text-sm text-neutral-700">{{ recovery.reconstruct.message }}</p>
+      <UButton
+        label="Reconstruct comparison"
+        color="neutral"
+        variant="outline"
+        :loading="recoveryPending"
+        @click="submitRecovery('reconstruct')"
+      />
+    </div>
+
+    <div v-if="showRecoveryActions && recovery?.reverify_archive.eligible" class="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-3">
+      <p class="text-sm text-neutral-800">{{ recovery.reverify_archive.message }}</p>
+      <p v-if="recovery.reverify_archive.may_start_simulations" class="text-sm font-medium text-amber-900">
+        This can submit new simulation jobs. Cache reuse is not guaranteed.
+      </p>
+      <p v-if="recovery.reverify_archive.suggested_simulators?.length" class="text-xs text-neutral-600">
+        Suggested from cached runs only, not proof of the original selection:
+        {{ recovery.reverify_archive.suggested_simulators.join(', ') }}.
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <UFormField
+          label="Simulators"
+          :hint="`Default: ${(recovery.reverify_archive.default_simulators ?? []).join(', ')}`"
+          :help="`1 to ${MAX_REVERIFY_SIMULATORS}. Type a name, or name:version, to add one.`"
+          class="sm:col-span-2"
+        >
+          <USelectMenu
+            v-model="reverifyDraft.simulators"
+            multiple
+            create-item
+            :items="simulatorOptions"
+            class="w-full"
+            placeholder="Choose simulators"
+            @create="addSimulator"
+          />
+        </UFormField>
+        <UFormField label="Relative tolerance" :hint="`Default: ${recovery.reverify_archive.defaults?.rel_tol ?? 0.0001}`" help="At least 0">
+          <UInput v-model="reverifyDraft.rel_tol" type="number" min="0" step="any" class="w-full" />
+        </UFormField>
+        <UFormField label="Minimum absolute tolerance" :hint="`Default: ${recovery.reverify_archive.defaults?.abs_tol_min ?? 0.001}`" help="At least 0">
+          <UInput v-model="reverifyDraft.abs_tol_min" type="number" min="0" step="any" class="w-full" />
+        </UFormField>
+        <UFormField label="Absolute tolerance scale" :hint="`Default: ${recovery.reverify_archive.defaults?.abs_tol_scale ?? 0.00001}`" help="At least 0">
+          <UInput v-model="reverifyDraft.abs_tol_scale" type="number" min="0" step="any" class="w-full" />
+        </UFormField>
+        <UFormField label="Description" :hint="`Default: ${recovery.reverify_archive.defaults?.user_description ?? 'reverification'}`">
+          <UInput v-model="reverifyDraft.user_description" class="w-full" />
+        </UFormField>
+        <UFormField :hint="`Default: ${(recovery.reverify_archive.defaults?.include_outputs ?? false) ? 'on' : 'off'}`">
+          <UCheckbox v-model="reverifyDraft.include_outputs" label="Store simulation outputs" />
+        </UFormField>
+      </div>
+      <ul v-if="reverifyProblems.length" class="text-sm text-red-700 list-disc pl-5">
+        <li v-for="problem in reverifyProblems" :key="problem">{{ problem }}</li>
+      </ul>
+      <label class="flex items-start gap-2 text-sm text-neutral-800">
+        <input v-model="reverifyConfirmed" type="checkbox" class="mt-1">
+        <span>I understand re-verification can start new simulations.</span>
+      </label>
+      <UButton
+        label="Start re-verification"
+        color="warning"
+        :disabled="!reverifyConfirmed || reverifyProblems.length > 0"
+        :loading="recoveryPending"
+        @click="submitRecovery('reverify')"
+      />
+    </div>
+
+    <p v-if="recoveryError" class="mt-3 text-sm text-red-700">{{ recoveryError }}</p>
+    <p v-if="linkedVerificationId" class="mt-3 text-sm text-neutral-700">
+      New verification
+      <NuxtLink class="font-mono text-primary underline" :to="`?workflow_id=${linkedVerificationId}`">
+        {{ linkedVerificationId }}
+      </NuxtLink>
+    </p>
   </div>
 </template>

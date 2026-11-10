@@ -1,4 +1,5 @@
 export type VerifyWorkflowStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'RUN_ID_NOT_FOUND'
+export type ReportPersistenceState = 'pending' | 'stored' | 'blocked' | 'unavailable'
 
 export interface CompareSettings {
   user_description: string
@@ -77,6 +78,59 @@ export interface GenerateStatisticsActivityOutput {
   sim_run_data?: RunData[] | null
 }
 
+export type DerivationKind = 'reconstruction' | 'reverification'
+
+export interface ReconstructOffer {
+  eligible: boolean
+  reason?: string | null
+  message?: string
+  run_ids?: string[]
+  snapshot_sha256?: string[]
+  compare_settings?: CompareSettings | null
+}
+
+export interface ReverifyOffer {
+  eligible: boolean
+  reason?: string | null
+  message?: string
+  may_start_simulations?: boolean
+  cache_reuse?: string
+  defaults?: CompareSettings | null
+  default_simulators?: string[]
+  default_cache_buster?: string
+  suggested_simulators?: string[]
+}
+
+export interface VerificationRecovery {
+  reconstruct: ReconstructOffer
+  reverify_archive: ReverifyOffer
+}
+
+// Who started a derived verification, relative to its source. Never an identity.
+export type InitiatorRelation = 'owner' | 'admin' | 'other' | 'anonymous'
+
+export interface DerivedVerificationLink {
+  workflow_id: string
+  derivation_kind: DerivationKind
+  created: string
+  initiator_relation?: InitiatorRelation | null
+  is_yours?: boolean
+  // Its comparison settings differ from the documented re-verification defaults
+  custom_settings?: boolean
+}
+
+// POST /verify/{id}/reverify. Omitted fields use the documented defaults.
+export interface ReverifyRequest {
+  simulators?: string[] | null
+  include_outputs?: boolean | null
+  user_description?: string | null
+  rel_tol?: number | null
+  abs_tol_min?: number | null
+  abs_tol_scale?: number | null
+  observables?: string[] | null
+  cache_buster?: string | null
+}
+
 export interface VerifyWorkflowOutput {
   workflow_id: string
   compare_settings: CompareSettings
@@ -84,8 +138,25 @@ export interface VerifyWorkflowOutput {
   timestamp: string
   workflow_run_id?: string | null
   workflow_error?: string | null
+  // Which check failed when a reconstruction's retained inputs could not be compared
+  failure_code?: 'checksum_mismatch' | 'missing_numerical_inputs' | null
   workflow_results?: GenerateStatisticsActivityOutput | null
   owner_sub?: string | null
+  persistence_state?: ReportPersistenceState
+  report_id?: string | null
+  report_available?: boolean | null
+  source_verification_id?: string | null
+  derivation_kind?: DerivationKind | null
+  computed_at?: string | null
+  comparator_version?: string | null
+  calculation?: string | null
+  derived_verifications?: DerivedVerificationLink[]
+  // All derived verifications; more than are listed when some are omitted
+  derived_verifications_total?: number
+  // On a derived re-verification: its settings differ from the documented defaults
+  custom_settings?: boolean | null
+  // Never set on a report; GET /verify/{id}/recovery returns the offers on demand
+  recovery?: VerificationRecovery | null
 }
 
 // Client-side Pre-check types
@@ -174,6 +245,8 @@ export interface VerificationSummary {
   omex_hash?: string | null
   // Terminal status once the server has observed it; null means not known to be finished yet
   status?: VerifyWorkflowStatus | null
+  source_verification_id?: string | null
+  derivation_kind?: DerivationKind | null
 }
 
 export interface VerificationIdsResponse {
