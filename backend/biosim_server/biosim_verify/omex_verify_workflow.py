@@ -4,15 +4,15 @@ from datetime import timedelta
 from typing import Any, Coroutine
 
 from pydantic import BaseModel
-from temporalio import workflow
+from temporalio import activity, workflow
 from temporalio.workflow import ChildWorkflowHandle
-
 from biosim_server.biosim_omex import OmexFile
 from biosim_server.biosim_runs import BiosimulatorVersion, OmexSimWorkflow, OmexSimWorkflowInput, OmexSimWorkflowOutput, \
     BiosimulatorWorkflowRun
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.biosim_verify.models import SimulatorFailure, VerifyWorkflowStatus, VerifyWorkflowOutput
 from biosim_server.biosim_verify.runs_verify_workflow import generate_statistics
+from biosim_server.dependencies import get_verification_database_service
 
 
 class OmexVerifyWorkflowInput(BaseModel):
@@ -22,6 +22,12 @@ class OmexVerifyWorkflowInput(BaseModel):
     compare_settings: CompareSettings
     owner_sub: str | None = None
 
+
+@activity.defn(name="update_verify_workflow_output_activity")
+async def update_verify_workflow_output_activity(input: VerifyWorkflowOutput) -> None:
+    # Perform I/O or side-effects here
+    get_verification_database_service().update_verify_workflow_output(input)
+    return None
 
 @workflow.defn
 class OmexVerifyWorkflow:
@@ -88,6 +94,7 @@ class OmexVerifyWorkflow:
             self.verify_output.workflow_error = no_results
         else:
             self.verify_output.workflow_status = VerifyWorkflowStatus.COMPLETED
+
         return self.verify_output
 
 
@@ -117,3 +124,6 @@ def no_results_error(requested: list[BiosimulatorVersion], runs: list[Biosimulat
     reasons = "; ".join(f"{f.simulator_version}: {(f.error_message or 'no error recorded').splitlines()[0]}"
                         for f in failures)
     return f"No requested simulator produced results ({reasons})"[:4000]
+
+async def get_verify_workflow_output_from_database(verify_output: VerifyWorkflowOutput) -> None:
+    return get_verification_database_service().get_verify_workflow_output(workflow_id=verify_output.workflow_id)
