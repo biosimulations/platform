@@ -4,7 +4,7 @@ import pytest
 import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorCollection
 from testcontainers.mongodb import MongoDbContainer  # type: ignore
-
+from biosim_server.biosim_verify.report_store import VerificationReportStore
 from biosim_server.biosim_runs import DatabaseServiceMongo
 from biosim_server.config import get_settings
 from biosim_server.dependencies import set_database_service, get_database_service, set_omex_database_service, \
@@ -167,3 +167,12 @@ async def verification_database_service_mongo(
 
     await verification_db_service.delete_all_verifications()
     set_verification_database_service(old_service)
+
+@pytest_asyncio.fixture(scope="function")
+async def verification_report_store_mongo(
+    mongo_test_client: AsyncIOMotorClient,
+) -> AsyncGenerator[VerificationReportStore, None]:
+    store = VerificationReportStore(db_client=mongo_test_client)
+    await store.ensure_indexes()
+    yield store
+    await store.delete_all()
