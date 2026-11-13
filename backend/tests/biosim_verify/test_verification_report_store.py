@@ -5,18 +5,24 @@ the store depends on: determinism, integrity, and lossless handling of the
 values a real report contains (NaN, infinities, non-ASCII text, dataset keys
 with dots and dollars).
 
-``VerificationReportStore`` itself is not covered here yet; the missing cases
-are listed at the end of the file.
+The store tests at the end run against a real MongoDB through the
+``verification_report_store_mongo`` fixture. They cover the write-once
+contract: a first save succeeds, a second returns ``False`` and leaves the
+original readable, and two in-flight saves leave exactly one report.
 """
 
+import asyncio
 import gzip
 import hashlib
 import math
+
 import pytest
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from biosim_server.biosim_verify import ComparisonStatistics
 from biosim_server.biosim_verify.report_store import (
     ReportCorrupt,
     REPORT_ENCODING,
+    VerificationReportStore,
     decode_report,
     encode_report,
 )
@@ -26,6 +32,7 @@ from biosim_server.biosim_verify.models import (
     VerifyWorkflowOutput,
     VerifyWorkflowStatus,
 )
+from biosim_server.config import get_settings
 
 
 # Fixtures
@@ -198,19 +205,121 @@ def test_dataset_key_with_dot_and_dollar_round_trips(
 
 
 # ---------------------------------------------------------------------------
-# Not yet covered: VerificationReportStore
+# VerificationReportStore (real MongoDB)
 # ---------------------------------------------------------------------------
-# The store needs a real MongoDB (GridFS is not worth faking) and this module
-# has no database fixture. Missing cases, in priority order:
-#
-# 1. save then get returns an equal report.
-# 2. get on an unknown workflow_id returns None, not an exception.
-# 3. a second save for the same workflow_id raises DuplicateKeyError and leaves
-#    the first report readable -- the write-once guarantee.
-# 4. get raises ReportCorrupt when the index document names an unknown encoding,
-#    and when the GridFS file behind it is missing.
-# 5. delete_all removes both index documents and blobs, and is safe on an empty
-#    store.
-#
-# Use the existing ``mongo_test_client`` fixture in tests/conftest.py rather
-# than adding a second one.
+
+
+@pytest.mark.asyncio
+async def test_save_then_get_returns_the_same_report(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+) -> None:
+    """Test that save then get returns the same report."""
+    # save() returns True on success, not the report
+    assert await verification_report_store_mongo.save(verify_workflow_output) is True
+    loaded = await verification_report_store_mongo.get(
+        verify_workflow_output.workflow_id
+    )
+    assert loaded == verify_workflow_output
+
+
+@pytest.mark.asyncio
+async def test_get_missing_workflow_returns_none(
+    verification_report_store_mongo: VerificationReportStore,
+) -> None:
+    """Test that get on a missing workflow returns None."""
+    # A miss is None, not an exception; only a damaged payload raises
+    assert await verification_report_store_mongo.get("missing-workflow-id") is None
+
+
+def _reports_collection(
+    mongo_test_client: AsyncIOMotorClient,
+) -> AsyncIOMotorCollection:
+    # The store's own collection, so a test can tamper with a stored document
+    settings = get_settings()
+    database = mongo_test_client.get_database(settings.mongodb_database)
+    return database.get_collection(settings.mongodb_collection_verify_reports)
+
+
+@pytest.mark.asyncio
+async def test_save_rejects_an_unfinished_report(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+) -> None:
+    """An in-progress report is a caller mistake, and nothing is written."""
+    verify_workflow_output.workflow_status = VerifyWorkflowStatus.IN_PROGRESS
+    with pytest.raises(ValueError) as excinfo:
+        await verification_report_store_mongo.save(verify_workflow_output)
+    # A caller mistake, not stored damage: ValueError, never ReportCorrupt
+    assert not isinstance(excinfo.value, ReportCorrupt)
+    assert (
+        await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_rejects_an_unknown_encoding(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    mongo_test_client: AsyncIOMotorClient,
+) -> None:
+    """A stored document tagged with a future encoding is not decoded."""
+    await verification_report_store_mongo.save(verify_workflow_output)
+    # Rewrite the tag behind the store's back to simulate a newer format
+    await _reports_collection(mongo_test_client).update_one(
+        {"workflow_id": verify_workflow_output.workflow_id},
+        {"$set": {"encoding": "xml-v9"}},
+    )
+    with pytest.raises(ReportCorrupt):
+        await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
+
+
+@pytest.mark.asyncio
+async def test_get_rejects_a_replaced_payload(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    mongo_test_client: AsyncIOMotorClient,
+) -> None:
+    """Replacing the stored bytes fails the integrity check."""
+    await verification_report_store_mongo.save(verify_workflow_output)
+    # The digest still matches the original, so only the hash check can catch this
+    await _reports_collection(mongo_test_client).update_one(
+        {"workflow_id": verify_workflow_output.workflow_id},
+        {"$set": {"payload": b"not-the-stored-bytes"}},
+    )
+    with pytest.raises(ReportCorrupt):
+        await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
+
+
+@pytest.mark.asyncio
+async def test_second_save_keeps_the_original_report(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+) -> None:
+    """A later save of the same workflow_id does not replace the stored report."""
+    original = verify_workflow_output.model_copy(deep=True)
+    changed = verify_workflow_output.model_copy(deep=True)
+    changed.compare_settings.user_description = "changed after the first save"
+    assert await verification_report_store_mongo.save(original) is True
+    # False, not an exception: losing the write is an expected outcome
+    assert await verification_report_store_mongo.save(changed) is False
+    assert await verification_report_store_mongo.get(original.workflow_id) == original
+
+
+@pytest.mark.asyncio
+async def test_concurrent_saves_one_wins(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+) -> None:
+    """Two in-flight saves of one workflow leave exactly one stored report."""
+    # Both may pass the find_one check; the unique index decides the winner
+    results = await asyncio.gather(
+        verification_report_store_mongo.save(verify_workflow_output),
+        verification_report_store_mongo.save(verify_workflow_output),
+    )
+    assert sorted(results) == [False, True]
+    assert (
+        await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
+        == verify_workflow_output
+    )

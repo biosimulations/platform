@@ -6,22 +6,30 @@ owns the third: the Temporal workflow result (gone once retention passes), the
 the report bytes kept here.
 
 Two halves: ``encode_report`` / ``decode_report`` are the pure codec, and
-``VerificationReportStore`` persists those bytes in GridFS with a small index
-document in ``BiosimVerifyReports``.
+``VerificationReportStore`` keeps one document per verification in
+``BiosimVerifyReports`` holding both the index fields and the compressed
+payload.
 
 Two properties are load-bearing. **Determinism**: the same report always
 encodes to the same bytes and digest, so two writers recovering the same
 execution converge on one stored object. **Integrity**: every read re-checks
-the SHA-256, so a damaged blob raises ``ReportCorrupt`` instead of being served
-as a plausible report.
+the SHA-256, so a damaged payload raises ``ReportCorrupt`` instead of being
+served as a plausible report.
+
+``save`` is write-once and reports it: a second save for the same
+``workflow_id`` returns ``False`` rather than replacing the stored report.
 """
 
+import asyncio
+from datetime import datetime, UTC
 import gzip
 import hashlib
 import json
-from typing import Any, cast
+from typing import Any
 
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
+
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput
 from biosim_server.config import get_settings
 
@@ -32,7 +40,7 @@ class ReportCorrupt(ValueError):
 
 
 # Written beside every report and checked on every read; bump it whenever the
-# encoding changes so an old blob is refused rather than misread.
+# encoding changes so an old payload is refused rather than misread.
 REPORT_ENCODING = "json-gzip-v1"
 
 
@@ -79,48 +87,61 @@ class VerificationReportStore:
     def __init__(self, db_client: AsyncIOMotorClient) -> None:
         settings = get_settings()
         database = db_client.get_database(settings.mongodb_database)
-        self._reports = database.get_collection(settings.mongodb_collection_verify_reports)
-        # GridFS chunks anything past the 16 MB BSON limit, so large reports store fine.
-        self._files = AsyncIOMotorGridFSBucket(database, bucket_name="biosim_verify_reports")
+        self._collection = database.get_collection(
+            settings.mongodb_collection_verify_reports
+        )
 
     async def ensure_indexes(self) -> None:
         # The unique index is what makes save() write-once; it must exist before
         # the first save, or two writers can both insert.
-        await self._reports.create_index("workflow_id", unique=True)
+        await self._collection.create_index("workflow_id", unique=True)
 
-    async def save(self, output: VerifyWorkflowOutput) -> None:
-        compressed, length, sha256 = encode_report(output)
-        # Blob first, so an index document always points at a file that exists.
-        file_id = await self._files.upload_from_stream(
-            output.workflow_id,
-            compressed,
-            metadata={"sha256": sha256, "encoding": REPORT_ENCODING},
-        )
-        await self._reports.insert_one(
-            {
-                "workflow_id": output.workflow_id,
-                "encoding": REPORT_ENCODING,
-                "sha256": sha256,
-                "uncompressed_length": length,
-                "file_id": file_id,
-            }
-        )
+    async def save(self, output: VerifyWorkflowOutput) -> bool:
+        # A caller mistake, not stored damage: nothing is encoded or written.
+        if not output.workflow_status.is_done:
+            raise ValueError("Only a finished verification can be stored")
+        # Cheap path once a save has committed. Two in-flight saves can both
+        # pass this check; the unique index below is what decides the winner.
+        if (
+            await self._collection.find_one({"workflow_id": output.workflow_id})
+            is not None
+        ):
+            return False
+        # Compression is CPU-bound, so keep it off the event loop.
+        compressed, length, sha256 = await asyncio.to_thread(encode_report, output)
+        # The index fields are duplicated out of the payload so a listing can be
+        # served without decompressing every report.
+        document: dict[str, Any] = {
+            "workflow_id": output.workflow_id,
+            "workflow_run_id": output.workflow_run_id,
+            "owner_sub": output.owner_sub,
+            "workflow_status": output.workflow_status.value,
+            "saved_at": datetime.now(UTC),
+            "encoding": REPORT_ENCODING,
+            "uncompressed_bytes": length,
+            "sha256": sha256,
+            "payload": compressed,
+        }
+        try:
+            await self._collection.insert_one(document)
+        # Lost the race against a concurrent save: the first report stands.
+        except DuplicateKeyError:
+            return False
+        return True
 
     async def get(self, workflow_id: str) -> VerifyWorkflowOutput | None:
-        document = await self._reports.find_one({"workflow_id": workflow_id})
+        document = await self._collection.find_one({"workflow_id": workflow_id})
         # No row means never stored (or removed): a miss, not an error.
         if document is None:
             return None
-        # An unknown tag means a future format; refuse it rather than misread it.
-        if document["encoding"] != REPORT_ENCODING:
-            raise ReportCorrupt(f"Unsupported encoding: {document['encoding']}")
-        grid_out = await self._files.open_download_stream(document["file_id"])
-        compressed = await grid_out.read()
-        return decode_report(compressed, document["sha256"])
+        # An unknown or missing tag means a format this code cannot read; refuse
+        # it rather than misread it.
+        if document.get("encoding") != REPORT_ENCODING:
+            raise ReportCorrupt(f"Unsupported encoding: {document.get('encoding')}")
+        payload = bytes(document["payload"])
+        # Decompression is CPU-bound, so keep it off the event loop.
+        return await asyncio.to_thread(decode_report, payload, document["sha256"])
 
     async def delete_all(self) -> None:
         # Tests only: production code never removes a stored report.
-        # The bucket has no bulk delete, so remove each file by id.
-        async for stored_file in self._files.find({}):
-            await self._files.delete(cast(Any, stored_file)._id)
-        await self._reports.delete_many({})
+        await self._collection.delete_many({})
