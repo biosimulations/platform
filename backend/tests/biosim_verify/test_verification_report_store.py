@@ -7,21 +7,22 @@ with dots and dollars).
 
 The store tests at the end run against a real MongoDB through the
 ``verification_report_store_mongo`` fixture. They cover the write-once
-contract: a first save succeeds, a second returns ``False`` and leaves the
-original readable, and two in-flight saves leave exactly one report.
+contract (a first save succeeds, a second returns ``False`` and leaves the
+original readable, two in-flight saves leave exactly one report) and the two
+storage paths: small reports inline in the document, large ones in GridFS.
 """
 
 import asyncio
-from enum import verify
 import gzip
 import hashlib
 import math
-
-from numpy import real
 import pytest
+from typing import Any
+
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from biosim_server.biosim_verify import ComparisonStatistics
 from biosim_server.biosim_verify.report_store import (
+    GRIDFS_BUCKET,
     ReportCorrupt,
     REPORT_ENCODING,
     VerificationReportStore,
@@ -319,6 +320,7 @@ async def test_second_save_keeps_the_original_report(
 async def test_concurrent_saves_one_wins(
     verification_report_store_mongo: VerificationReportStore,
     verify_workflow_output: VerifyWorkflowOutput,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two concurrent saves of the same workflow leave exactly one stored report."""
     store = verification_report_store_mongo
@@ -326,24 +328,22 @@ async def test_concurrent_saves_one_wins(
     arrived = 0
     release = asyncio.Event()
 
-    async def wait_until_both_have_arrived(*args, **kwargs):
+    async def wait_until_both_have_arrived(*args: Any, **kwargs: Any) -> Any:
         nonlocal arrived
         found = await real_find_one(*args, **kwargs)
         arrived += 1
         if arrived == 2:
             release.set()
-        await release.wait()
+        await asyncio.wait_for(release.wait(), timeout=5)
         return found
 
-    store._collection.find_one = wait_until_both_have_arrived
-    try:
-        results = await asyncio.gather(
-            store.save(verify_workflow_output),
-            store.save(verify_workflow_output),
-        )
-    finally:
-        store._collection.find_one = real_find_one
+    monkeypatch.setattr(store._collection, "find_one", wait_until_both_have_arrived)
+    results = await asyncio.gather(
+        store.save(verify_workflow_output),
+        store.save(verify_workflow_output),
+    )
     assert sorted(results) == [False, True]
+
 
 @pytest.mark.asyncio
 async def test_small_report_is_stored_inline(
@@ -357,11 +357,13 @@ async def test_small_report_is_stored_inline(
         {"workflow_id": verify_workflow_output.workflow_id}
     )
     assert document is not None
+    # Under the threshold: bytes in the document, no GridFS file at all
     assert document.get("payload") is not None
     assert document.get("file_id") is None
     assert (
         await verification_report_store_mongo.get(verify_workflow_output.workflow_id) == verify_workflow_output
     )
+
 
 @pytest.mark.asyncio
 async def test_large_report_is_stored_in_gridfs(
@@ -371,6 +373,7 @@ async def test_large_report_is_stored_in_gridfs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A large report is stored in GridFS."""
+    # A zero threshold forces every report down the GridFS path
     monkeypatch.setattr(
         "biosim_server.biosim_verify.report_store.INLINE_PAYLOAD_MAX_BYTES",
         0,
@@ -380,11 +383,14 @@ async def test_large_report_is_stored_in_gridfs(
         {"workflow_id": verify_workflow_output.workflow_id}
     )
     assert document is not None
+    # Over the threshold: no inline bytes, a file_id instead
     assert document.get("payload") is None
     assert document.get("file_id") is not None
+    # The reader does not care which path was taken
     assert (
         await verification_report_store_mongo.get(verify_workflow_output.workflow_id) == verify_workflow_output
     )
+
 
 @pytest.mark.asyncio
 async def test_get_rejects_a_document_with_no_bytes(
@@ -394,12 +400,14 @@ async def test_get_rejects_a_document_with_no_bytes(
 ) -> None:
     """A document with no payload or file_id is rejected."""
     await verification_report_store_mongo.save(verify_workflow_output)
+    # Strip the bytes but leave the row, so the document is damaged, not absent
     await _reports_collection(mongo_test_client).update_one(
         {"workflow_id": verify_workflow_output.workflow_id},
         {"$unset": {"payload": ""}},
     )
     with pytest.raises(ReportCorrupt, match="No payload or file_id in document"):
         await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
+
 
 @pytest.mark.asyncio
 async def test_losing_gridfs_save_deletes_its_upload(
@@ -411,23 +419,86 @@ async def test_losing_gridfs_save_deletes_its_upload(
     store = verification_report_store_mongo
     assert await store.save(verify_workflow_output) is True
 
-    real_find_one = store._collection.find_one
-
-    async def pretend_missing(*args, **kwargs):
+    async def pretend_missing(*args: Any, **kwargs: Any) -> Any:
+        # Hide the committed row so the next save takes the slow path
         return None
-    
-    store._collection.find_one = pretend_missing
-    monkeypatch.setattr(
-        "biosim_server.biosim_verify.report_store.INLINE_PAYLOAD_MAX_BYTES",
-        0,
-    )
-    try:
-        assert await store.save(verify_workflow_output) is False
-    finally:
-        store._collection.find_one = real_find_one
 
+    with monkeypatch.context() as patched:
+        patched.setattr(store._collection, "find_one", pretend_missing)
+        patched.setattr(
+            "biosim_server.biosim_verify.report_store.INLINE_PAYLOAD_MAX_BYTES",
+            0,
+        )
+        # The insert hits the unique index, so this save loses
+        assert await store.save(verify_workflow_output) is False
+
+    # The loser's upload was cleaned up rather than left orphaned
     count = 0
     async for _stored in store._files.find({}):
         count += 1
     assert count == 0
+    # And the winner's report is still readable
     assert await store.get(verify_workflow_output.workflow_id) == verify_workflow_output
+
+
+@pytest.mark.asyncio
+async def test_get_rejects_a_gridfs_file_with_no_chunks(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    mongo_test_client: AsyncIOMotorClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file whose chunks are gone is damaged, not missing."""
+    # Force the GridFS path so there is a file whose chunks can be removed
+    monkeypatch.setattr(
+        "biosim_server.biosim_verify.report_store.INLINE_PAYLOAD_MAX_BYTES",
+        0,
+    )
+    assert await verification_report_store_mongo.save(verify_workflow_output) is True
+    settings = get_settings()
+    chunks = mongo_test_client.get_database(settings.mongodb_database).get_collection(
+        f"{GRIDFS_BUCKET}.chunks"
+    )
+    # The file row survives; only its bytes are gone
+    await chunks.delete_many({})
+    with pytest.raises(ReportCorrupt, match="Stored file is missing"):
+        await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
+
+@pytest.mark.asyncio
+async def test_get_rejects_a_missing_gridfs_file(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    mongo_test_client: AsyncIOMotorClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file whose row is gone is damaged, not missing."""
+    monkeypatch.setattr(
+        "biosim_server.biosim_verify.report_store.INLINE_PAYLOAD_MAX_BYTES",
+        0,
+    )
+    assert await verification_report_store_mongo.save(verify_workflow_output) is True
+
+    document = await _reports_collection(mongo_test_client).find_one(
+        {"workflow_id": verify_workflow_output.workflow_id}
+    )
+
+    assert document is not None
+    assert verification_report_store_mongo._files.delete(document["file_id"])
+
+    with pytest.raises(ReportCorrupt, match="Stored file is missing"):
+        await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
+
+@pytest.mark.asyncio
+async def test_get_rejects_a_document_with_no_sha256(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    mongo_test_client: AsyncIOMotorClient,
+) -> None:
+    """A document with no sha256 is rejected before decoding."""
+    assert await verification_report_store_mongo.save(verify_workflow_output) is True
+    await _reports_collection(mongo_test_client).update_one(
+        {"workflow_id": verify_workflow_output.workflow_id},
+        {"$unset": {"sha256": ""}},
+    )
+    with pytest.raises(ReportCorrupt, match="no sha256"):
+        await verification_report_store_mongo.get(verify_workflow_output.workflow_id)

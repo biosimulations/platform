@@ -7,6 +7,7 @@ from temporalio.client import Client as TemporalClient
 from biosim_server.biosim_omex.database import OmexDatabaseService, OmexDatabaseServiceMongo
 from biosim_server.biosim_runs.biosim_service import BiosimService, BiosimServiceRest
 from biosim_server.biosim_runs.database import DatabaseService, DatabaseServiceMongo
+from biosim_server.biosim_verify.report_store import VerificationReportStore
 from biosim_server.common.auth.auth0_management import close_auth0_http_client
 from biosim_server.common.storage import FileService, FileServiceGCS, FileServiceLocal, FileServiceMinio
 from biosim_server.common.upstream import UPSTREAM_TIMEOUT_SECONDS
@@ -90,6 +91,18 @@ def set_verification_database_service(service: "VerificationDatabaseService | No
 def get_verification_database_service() -> "VerificationDatabaseService | None":
     global global_verification_database_service
     return global_verification_database_service
+
+#------- verification report store (standalone or pytest) ------
+
+global_verification_report_store: "VerificationReportStore | None" = None
+
+def set_verification_report_store(store: "VerificationReportStore | None") -> None:
+    global global_verification_report_store
+    global_verification_report_store = store
+
+def get_verification_report_store() -> "VerificationReportStore | None":
+    global global_verification_report_store
+    return global_verification_report_store
 
 #------- biosim service (standalone or pytest) ------
 
@@ -246,6 +259,7 @@ async def init_standalone() -> None:
     from biosim_server.simulations.database import SimulationRunDatabaseServiceMongo
     from biosim_server.projects.search import ProjectSearchServiceMongo
     from biosim_server.biosim_verify.database import VerificationDatabaseServiceMongo
+    from biosim_server.biosim_verify.report_store import VerificationReportStore
 
     motor_client = AsyncIOMotorClient(get_settings().mongodb_uri)
     set_mongo_client(motor_client)
@@ -256,6 +270,7 @@ async def init_standalone() -> None:
     # own $text index (see projects/search.py).
     projects_db_service = ProjectSearchServiceMongo(db_client=motor_client)
     verification_db_service = VerificationDatabaseServiceMongo(db_client=motor_client)
+    verification_report_store = VerificationReportStore(db_client=motor_client)
 
     # create_index is idempotent; calling on every start keeps schema in sync as
     # we add lookups. Each service knows which fields its queries hit.
@@ -267,12 +282,14 @@ async def init_standalone() -> None:
     # Populate the search index on first run (no-op once built); refresh on demand
     # via POST /projects/reindex.
     await projects_db_service.rebuild_index_if_empty()
+    await verification_report_store.ensure_indexes()
 
     set_database_service(db_service)
     set_omex_database_service(omex_db_service)
     set_simulation_run_database_service(runs_db_service)
     set_project_database_service(projects_db_service)
     set_verification_database_service(verification_db_service)
+    set_verification_report_store(verification_report_store)
 
 async def shutdown_standalone() -> None:
     db_service = get_database_service()
@@ -310,3 +327,4 @@ async def shutdown_standalone() -> None:
     set_project_database_service(None)
     set_verification_database_service(None)
     set_mongo_client(None)
+    set_verification_report_store(None)
