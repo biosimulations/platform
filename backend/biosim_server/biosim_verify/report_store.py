@@ -27,7 +27,8 @@ import hashlib
 import json
 from typing import Any
 
-from motor.motor_asyncio import AsyncIOMotorClient
+from gridfs.errors import NoFile
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from pymongo.errors import DuplicateKeyError
 
 from biosim_server.biosim_verify.models import VerifyWorkflowOutput
@@ -42,6 +43,9 @@ class ReportCorrupt(ValueError):
 # Written beside every report and checked on every read; bump it whenever the
 # encoding changes so an old payload is refused rather than misread.
 REPORT_ENCODING = "json-gzip-v1"
+
+# BSON documents are limited to 16 MB. Anything larger is stored in GridFS.
+INLINE_PAYLOAD_MAX_BYTES = 1_000_000
 
 
 def encode_report(output: VerifyWorkflowOutput) -> tuple[bytes, int, str]:
@@ -90,6 +94,7 @@ class VerificationReportStore:
         self._collection = database.get_collection(
             settings.mongodb_collection_verify_reports
         )
+        self._files = AsyncIOMotorGridFSBucket(database, bucket_name="biosim-verify-reports")
 
     async def ensure_indexes(self) -> None:
         # The unique index is what makes save() write-once; it must exist before
@@ -120,12 +125,23 @@ class VerificationReportStore:
             "encoding": REPORT_ENCODING,
             "uncompressed_bytes": length,
             "sha256": sha256,
-            "payload": compressed,
         }
+        file_id = None
+        if len(compressed) <= INLINE_PAYLOAD_MAX_BYTES:
+            document["payload"] = compressed
+        else:
+            file_id = await self._files.upload_from_stream(
+                output.workflow_id,
+                compressed,
+                metadata={"sha256": sha256, "encoding": REPORT_ENCODING},
+            )
+            document["file_id"] = file_id
         try:
             await self._collection.insert_one(document)
         # Lost the race against a concurrent save: the first report stands.
         except DuplicateKeyError:
+            if file_id is not None:
+                await self._files.delete(file_id)
             return False
         return True
 
@@ -138,10 +154,23 @@ class VerificationReportStore:
         # it rather than misread it.
         if document.get("encoding") != REPORT_ENCODING:
             raise ReportCorrupt(f"Unsupported encoding: {document.get('encoding')}")
-        payload = bytes(document["payload"])
+        if document.get("payload") is not None:
+            payload = bytes(document["payload"])
+        elif document.get("file_id") is not None:
+            try:
+                grid_out = await self._files.open_download_stream(document["file_id"])
+            except NoFile as e:
+                raise ReportCorrupt(f"Stored file is missing: {e}") from e
+            payload = await grid_out.read()
+        else:
+            raise ReportCorrupt("No payload or file_id in document")
         # Decompression is CPU-bound, so keep it off the event loop.
         return await asyncio.to_thread(decode_report, payload, document["sha256"])
 
     async def delete_all(self) -> None:
         # Tests only: production code never removes a stored report.
         await self._collection.delete_many({})
+        database = self._collection.database
+        await database["biosim-verify-reports.files"].drop()
+        await database["biosim-verify-reports.chunks"].drop()
+

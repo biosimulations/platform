@@ -12,10 +12,12 @@ original readable, and two in-flight saves leave exactly one report.
 """
 
 import asyncio
+from enum import verify
 import gzip
 import hashlib
 import math
 
+from numpy import real
 import pytest
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from biosim_server.biosim_verify import ComparisonStatistics
@@ -105,7 +107,10 @@ def test_encode_report_is_repeatable(
     ) = encode_report(verify_workflow_output)
     second, _second_length, _second_sha256 = encode_report(verify_workflow_output)
     # Pins gzip.compress(mtime=0): without it the header carries the clock
+    assert first[4:8] == b"\x00\x00\x00\x00"
+    assert second[4:8] == b"\x00\x00\x00\x00"
     assert first == second
+
 
 
 def test_report_encoding_names_this_format() -> None:
@@ -284,11 +289,14 @@ async def test_get_rejects_a_replaced_payload(
     """Replacing the stored bytes fails the integrity check."""
     await verification_report_store_mongo.save(verify_workflow_output)
     # The digest still matches the original, so only the hash check can catch this
+    other = verify_workflow_output.model_copy(deep=True)
+    other.compare_settings.user_description = "a different finished report"
+    other_payload, _length, _sha256 = encode_report(other)
     await _reports_collection(mongo_test_client).update_one(
         {"workflow_id": verify_workflow_output.workflow_id},
-        {"$set": {"payload": b"not-the-stored-bytes"}},
+        {"$set": {"payload": other_payload}},
     )
-    with pytest.raises(ReportCorrupt):
+    with pytest.raises(ReportCorrupt, match="SHA-256 mismatch"):
         await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
 
 
@@ -312,14 +320,114 @@ async def test_concurrent_saves_one_wins(
     verification_report_store_mongo: VerificationReportStore,
     verify_workflow_output: VerifyWorkflowOutput,
 ) -> None:
-    """Two in-flight saves of one workflow leave exactly one stored report."""
-    # Both may pass the find_one check; the unique index decides the winner
-    results = await asyncio.gather(
-        verification_report_store_mongo.save(verify_workflow_output),
-        verification_report_store_mongo.save(verify_workflow_output),
-    )
+    """Two concurrent saves of the same workflow leave exactly one stored report."""
+    store = verification_report_store_mongo
+    real_find_one = store._collection.find_one
+    arrived = 0
+    release = asyncio.Event()
+
+    async def wait_until_both_have_arrived(*args, **kwargs):
+        nonlocal arrived
+        found = await real_find_one(*args, **kwargs)
+        arrived += 1
+        if arrived == 2:
+            release.set()
+        await release.wait()
+        return found
+
+    store._collection.find_one = wait_until_both_have_arrived
+    try:
+        results = await asyncio.gather(
+            store.save(verify_workflow_output),
+            store.save(verify_workflow_output),
+        )
+    finally:
+        store._collection.find_one = real_find_one
     assert sorted(results) == [False, True]
-    assert (
-        await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
-        == verify_workflow_output
+
+@pytest.mark.asyncio
+async def test_small_report_is_stored_inline(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    mongo_test_client: AsyncIOMotorClient,
+) -> None:
+    """A small report is stored inline in the document."""
+    assert await verification_report_store_mongo.save(verify_workflow_output) is True
+    document = await _reports_collection(mongo_test_client).find_one(
+        {"workflow_id": verify_workflow_output.workflow_id}
     )
+    assert document is not None
+    assert document.get("payload") is not None
+    assert document.get("file_id") is None
+    assert (
+        await verification_report_store_mongo.get(verify_workflow_output.workflow_id) == verify_workflow_output
+    )
+
+@pytest.mark.asyncio
+async def test_large_report_is_stored_in_gridfs(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    mongo_test_client: AsyncIOMotorClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A large report is stored in GridFS."""
+    monkeypatch.setattr(
+        "biosim_server.biosim_verify.report_store.INLINE_PAYLOAD_MAX_BYTES",
+        0,
+    )
+    assert await verification_report_store_mongo.save(verify_workflow_output) is True
+    document = await _reports_collection(mongo_test_client).find_one(
+        {"workflow_id": verify_workflow_output.workflow_id}
+    )
+    assert document is not None
+    assert document.get("payload") is None
+    assert document.get("file_id") is not None
+    assert (
+        await verification_report_store_mongo.get(verify_workflow_output.workflow_id) == verify_workflow_output
+    )
+
+@pytest.mark.asyncio
+async def test_get_rejects_a_document_with_no_bytes(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    mongo_test_client: AsyncIOMotorClient,
+) -> None:
+    """A document with no payload or file_id is rejected."""
+    await verification_report_store_mongo.save(verify_workflow_output)
+    await _reports_collection(mongo_test_client).update_one(
+        {"workflow_id": verify_workflow_output.workflow_id},
+        {"$unset": {"payload": ""}},
+    )
+    with pytest.raises(ReportCorrupt, match="No payload or file_id in document"):
+        await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
+
+@pytest.mark.asyncio
+async def test_losing_gridfs_save_deletes_its_upload(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A save that loses the write-once race deletes the GridFS upload."""
+    store = verification_report_store_mongo
+    assert await store.save(verify_workflow_output) is True
+
+    real_find_one = store._collection.find_one
+
+    async def pretend_missing(*args, **kwargs):
+        return None
+    
+    store._collection.find_one = pretend_missing
+    monkeypatch.setattr(
+        "biosim_server.biosim_verify.report_store.INLINE_PAYLOAD_MAX_BYTES",
+        0,
+    )
+    try:
+        assert await store.save(verify_workflow_output) is False
+    finally:
+        store._collection.find_one = real_find_one
+
+    count = 0
+    async for _stored in store._files.find({}):
+        count += 1
+    assert count == 0
+    assert await store.get(verify_workflow_output.workflow_id) == verify_workflow_output
