@@ -168,7 +168,8 @@ backend/
 
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
-- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created, omex_hash, status). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; `status` is written once by `GET /verify/{workflow_id}` when it first sees the workflow finished; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired.
+- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created, omex_hash, status). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; `status` is written once by `GET /verify/{workflow_id}` when it first sees the workflow finished; read by `GET /verification_ids` and used by `GET /verify/{workflow_id}` to distinguish "exists but no longer retained" from "not found". The ledger carries identity and terminal status only; the report itself lives in **BiosimVerifyReports**.
+- **BiosimVerifyReports** - Durable verification reports (workflow_id, workflow_run_id, owner_sub, workflow_status, saved_at, encoding, uncompressed_bytes, sha256, and either an inline `payload` or a GridFS `file_id`). Written once by `save_verification_report_activity` (write-once: a second save returns False); read first by `GET /verify/{workflow_id}`, which falls back to Temporal when there is no stored report. Reports above `INLINE_PAYLOAD_MAX_BYTES` are stored in the **biosim-verify-reports** GridFS bucket (`.files` + `.chunks`).
 - **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns
@@ -617,9 +618,9 @@ recovered-from-history paths too, with a guarded `update_one({"status": None})` 
 the first observed status sticks and rows written before the field existed are
 covered. Nothing is written at insert and a ledger error never fails the GET.
 `null` in the listing therefore means "not yet observed as finished": still running,
-never polled, or polled only after its Temporal history expired (that path 404s
-before any write). A client that needs a live status still has to poll
-`GET /verify/{workflow_id}`.
+never polled, or polled only after its Temporal history expired **and** with no stored
+report (a stored report is served and recorded, so that path no longer 404s). A client
+that needs a live status still has to poll `GET /verify/{workflow_id}`.
 
 **Which token to send:** the Platform API is an OAuth resource server and
 accepts **access tokens** only. Do not send an OIDC ID token in

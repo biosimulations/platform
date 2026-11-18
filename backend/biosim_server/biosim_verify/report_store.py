@@ -7,7 +7,8 @@ the report bytes kept here.
 
 Two halves: ``encode_report`` / ``decode_report`` are the pure codec, and
 ``VerificationReportStore`` keeps one document per verification in
-``BiosimVerifyReports`` holding the index fields plus the compressed payload.
+``BiosimVerifyReports`` holding the index fields plus the report bytes, either
+inline or by GridFS reference.
 
 A report is stored one of two ways, decided by its compressed size. Below
 ``INLINE_PAYLOAD_MAX_BYTES`` the bytes sit in the document itself; above it they
@@ -144,10 +145,12 @@ class VerificationReportStore:
             document["payload"] = compressed
         else:
             # Upload before the insert, so the document only ever points at a
-            # file that already exists.
-            # If the process dies between the upload and the insert, no document ever points at the file.
-            # get never returns it and nothing deletes it; it only occupies space.
-            # The handler below covers the race, not a crash.
+            # file that already exists. The reverse order would let a reader find
+            # a file_id with no file behind it.
+            # Anything that stops the insert leaves the upload unreferenced: a
+            # crash between the two writes, a non-duplicate insert error, or the
+            # activity being cancelled. Only the duplicate case below cleans up;
+            # the rest leak one blob that nothing points at and nothing reads.
             file_id = await self._files.upload_from_stream(
                 output.workflow_id,
                 compressed,

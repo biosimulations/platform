@@ -33,6 +33,7 @@ from biosim_server.biosim_verify.database import (
     decode_verification_cursor,
     encode_verification_cursor,
 )
+from biosim_server.biosim_verify.report_store import ReportCorrupt
 from biosim_server.compatibility import compatibility_router
 from biosim_server.simulations import run_summary_router, simulations_router
 from biosim_server.projects.router import router as projects_router
@@ -66,6 +67,7 @@ from biosim_server.config import get_local_cache_dir, get_settings
 from biosim_server.dependencies import (
     get_file_service,
     get_temporal_client,
+    get_verification_report_store,
     init_standalone,
     shutdown_standalone,
     get_biosim_service,
@@ -680,6 +682,57 @@ async def _record_terminal_status(output: VerifyWorkflowOutput) -> None:
     except Exception as e:
         logger.warning("Could not record terminal status for %s: %s", output.workflow_id, e)
 
+async def _read_stored_report(
+    workflow_id: str, user: AuthenticatedUser | None,
+) -> VerifyWorkflowOutput | None:
+    """
+    The stored report for this verification, or None to fall through to Temporal.
+
+    Ownership is checked here, before anything is returned: without it the store
+    would become a way to read another user's report. A corrupt stored report is
+    logged and treated as a miss -- Temporal may still be able to answer, and a
+    damaged copy is not a reason to return 500.
+    """
+    store = get_verification_report_store()
+    if store is None:
+        return None
+    try:
+        stored = await store.get(workflow_id)
+    except ReportCorrupt as e:
+        logger.error(
+            "Stored verification report is corrupt %s: %s", workflow_id, e,
+        )
+        return None
+    except Exception as e:
+        # A store outage must not fail the GET; Temporal is the fallback.
+        logger.warning(
+            "Could not read stored verification report %s: %s", workflow_id, e,
+        )
+        return None
+    if stored is None:
+        return None
+    _authorize_verification_read(user, stored.owner_sub)
+    return stored
+
+async def _catch_up_save(output: VerifyWorkflowOutput) -> None:
+    """
+    Store a finished report that was never saved.
+
+    Covers verifications that finished before the deploy, or whose save failed.
+    Only a finished output is stored, and a failure never fails the GET -- the
+    same rule the ledger status write follows.
+    """
+    if not output.workflow_status.is_done:
+        return
+    store = get_verification_report_store()
+    if store is None:
+        return
+    try:
+        await store.save(output)
+    except Exception as e:
+        logger.warning(
+            "Could not catch up verification report for %s: %s", output.workflow_id, e,
+        )
 
 @app.get(
     "/verify/{workflow_id}",
@@ -701,6 +754,15 @@ async def get_verify_output(
         user: AuthenticatedUser | None = Depends(get_optional_user),
 ) -> VerifyWorkflowOutput:
     logger.info("in get /verify/%s", workflow_id)
+
+    # Step 0: the durable store. A stored report outlives Temporal retention, so
+    # it is served even when Temporal is down or has forgotten this workflow.
+    stored = await _read_stored_report(workflow_id, user)
+    if stored is not None:
+        # Record the status here too, so /verification_ids learns about a
+        # verification whose only reader was the store.
+        await _record_terminal_status(stored)
+        return stored
 
     # D2 fix: check for None *before* entering the try so AssertionError → 503, not 404.
     temporal_client = get_temporal_client()
@@ -742,6 +804,7 @@ async def get_verify_output(
             await _ledger_fallback_404(workflow_id, user)
         recovered = await _recover_terminal_verification(temporal_client, desc, user)
         if recovered is not None:
+            await _catch_up_save(recovered)
             await _record_terminal_status(recovered)
             return recovered
         logger.error("Temporal query failed for %s: %s", workflow_id, rpc_err, exc_info=rpc_err)
@@ -749,6 +812,7 @@ async def get_verify_output(
     except (WorkflowQueryFailedError, WorkflowQueryRejectedError) as e:
         recovered = await _recover_terminal_verification(temporal_client, desc, user)
         if recovered is not None:
+            await _catch_up_save(recovered)
             await _record_terminal_status(recovered)
             return recovered
         logger.warning("Workflow query failed for %s: %s", workflow_id, e, exc_info=e)
@@ -756,6 +820,7 @@ async def get_verify_output(
     except Exception as e:
         recovered = await _recover_terminal_verification(temporal_client, desc, user)
         if recovered is not None:
+            await _catch_up_save(recovered)
             await _record_terminal_status(recovered)
             return recovered
         logger.error("Unexpected error querying workflow %s", workflow_id, exc_info=e)
@@ -768,6 +833,7 @@ async def get_verify_output(
     workflow_output = _reconcile_terminal_status(workflow_output, desc.status)
 
     # Step 5: remember the terminal status for the listing (after authorization).
+    await _catch_up_save(workflow_output)
     await _record_terminal_status(workflow_output)
 
     return workflow_output
