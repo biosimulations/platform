@@ -22,18 +22,22 @@ from biosim_server.biosim_verify.models import GenerateStatisticsActivityOutput,
 SAVE_REPORT_PATCH_ID = "save-verification-report-v1"
 
 # One minute per attempt. Motor sets no socket timeout, so this is what ends a
-# stuck write. Five attempts plus the waits between them (2 + 4 + 8 + 16
-# seconds) is about five and a half minutes. An insert or a GridFS upload of a
-# report finishes well inside one minute.
+# stuck write. Timeout bounds one attempt.
+# An insert or a GridFS upload of a report finishes well inside one minute.
 SAVE_REPORT_START_TO_CLOSE_TIMEOUT = timedelta(minutes=1)
 
-# Repeated saves converge instead of conflicting -- the store is write-once -- so
-# retrying a transient database failure is safe.
+# Retry transient failures without a limit. The store is write-once, so repeated
+# saves converge rather than conflict. A cap here would close the workflow during
+# a storage outage and start the retention clock with no stored report -- turning
+# a recoverable outage into permanent loss, which is what this feature prevents.
+# A workflow that keeps retrying also keeps its history, so the result stays
+# recoverable.
 SAVE_REPORT_RETRY_POLICY = RetryPolicy(
     initial_interval=timedelta(seconds=2),
     backoff_coefficient=2.0,
     maximum_interval=timedelta(seconds=30),
-    maximum_attempts=5,
+    # No maximum_attempts: 0 means unlimited.
+    maximum_attempts=0,
 )
 
 

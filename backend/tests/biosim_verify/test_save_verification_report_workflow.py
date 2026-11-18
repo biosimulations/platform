@@ -8,6 +8,7 @@ cancellation is not.
 
 import asyncio
 import uuid
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -28,6 +29,7 @@ from biosim_server.biosim_verify.models import GenerateStatisticsActivityOutput,
     VerifyWorkflowStatus
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflow, OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.report_store import VerificationReportStore
+from biosim_server.biosim_verify import runs_verify_workflow
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflow, RunsVerifyWorkflowInput
 from tests.biosim_verify.test_compatibility import _file
 
@@ -232,3 +234,40 @@ async def test_real_activity_stores_the_finished_report(
 
     assert result.workflow_status == VerifyWorkflowStatus.COMPLETED
     assert await verification_report_store_mongo.get(result.workflow_id) == result
+
+@pytest.mark.asyncio
+async def test_save_succeeds_after_more_than_five_failures(
+    temporal_client: Client, simulator_version_copasi: BiosimulatorVersion,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A save that fails more than five times still succeeds: no attempt cap.
+
+    The old policy gave up after five attempts, which closed the workflow and
+    started the retention clock with no stored report -- turning a storage outage
+    longer than a few minutes into permanent loss.
+    """
+    # Shorten only the intervals. The attempt limit is taken from the real policy,
+    # so this test fails if a cap is reintroduced.
+    real_policy = runs_verify_workflow.SAVE_REPORT_RETRY_POLICY
+    assert real_policy.maximum_attempts == 0, "the save retry policy must be uncapped"
+    monkeypatch.setattr(
+        runs_verify_workflow, "SAVE_REPORT_RETRY_POLICY",
+        RetryPolicy(initial_interval=timedelta(milliseconds=10),
+                    backoff_coefficient=1.0, maximum_interval=timedelta(milliseconds=10),
+                    maximum_attempts=real_policy.maximum_attempts),
+    )
+    attempts = 0
+
+    @activity.defn(name="save_verification_report_activity")
+    async def save(_: VerifyWorkflowOutput) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 7:
+            raise RuntimeError("transient database error")
+        return True
+
+    result = await _execute_runs_workflow(
+        temporal_client, [_found_run(simulator_version_copasi), _empty_statistics(), save], ["run1"])
+
+    assert result.workflow_status == VerifyWorkflowStatus.COMPLETED
+    assert attempts == 8

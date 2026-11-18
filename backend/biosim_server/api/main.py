@@ -1,3 +1,4 @@
+from enum import StrEnum
 import logging
 import os
 import uuid
@@ -594,6 +595,18 @@ _FAILED_EXECUTION_STATUSES = frozenset({
 })
 
 
+class _StoreRead(StrEnum):
+    """How a stored-report read turned out.
+
+    The outcome matters as much as the report: a corrupt or unreachable store
+    must not be reported to the caller as "this verification never existed".
+    """
+    HIT = "hit"                 # a report was returned
+    MISS = "miss"               # the store answered: nothing stored
+    CORRUPT = "corrupt"         # a report exists but cannot be decoded
+    UNAVAILABLE = "unavailable" # the store could not be reached
+
+
 async def _read_verification_input(
     client: Client,
     handle: WorkflowHandle[Any, VerifyWorkflowOutput],
@@ -618,6 +631,7 @@ async def _read_verification_input(
 
 async def _recover_terminal_verification(
     client: Client, desc: WorkflowExecutionDescription, user: AuthenticatedUser | None,
+    store_read: _StoreRead,
 ) -> VerifyWorkflowOutput | None:
     """Reconstruct an unqueryable terminal output without bypassing ownership."""
     if desc.status not in _FAILED_EXECUTION_STATUSES:
@@ -627,7 +641,7 @@ async def _recover_terminal_verification(
         original = await _read_verification_input(client, handle, desc.workflow_type)
     except RPCError as error:
         if error.status == RPCStatusCode.NOT_FOUND:
-            await _ledger_fallback_404(desc.id, user)
+            await _ledger_fallback_404(desc.id, user, store_read)
         logger.warning("Unable to recover terminal verification %s", desc.id, exc_info=error)
         raise HTTPException(status_code=503, detail="Temporal service unavailable")
     except Exception as error:
@@ -682,9 +696,10 @@ async def _record_terminal_status(output: VerifyWorkflowOutput) -> None:
     except Exception as e:
         logger.warning("Could not record terminal status for %s: %s", output.workflow_id, e)
 
+
 async def _read_stored_report(
     workflow_id: str, user: AuthenticatedUser | None,
-) -> VerifyWorkflowOutput | None:
+) -> tuple[_StoreRead, VerifyWorkflowOutput | None]:
     """
     The stored report for this verification, or None to fall through to Temporal.
 
@@ -695,34 +710,87 @@ async def _read_stored_report(
     """
     store = get_verification_report_store()
     if store is None:
-        return None
+        # No store configured means there is no stored report to find -- a miss,
+        # not an outage. A deployment that has not enabled the store must keep
+        # behaving exactly as it did before the store existed.
+        return _StoreRead.MISS, None
     try:
         stored = await store.get(workflow_id)
     except ReportCorrupt as e:
         logger.error(
             "Stored verification report is corrupt %s: %s", workflow_id, e,
         )
-        return None
+        return _StoreRead.CORRUPT, None
     except Exception as e:
         # A store outage must not fail the GET; Temporal is the fallback.
         logger.warning(
             "Could not read stored verification report %s: %s", workflow_id, e,
         )
-        return None
+        return _StoreRead.UNAVAILABLE, None
     if stored is None:
-        return None
+        return _StoreRead.MISS, None
     _authorize_verification_read(user, stored.owner_sub)
-    return stored
+    return _StoreRead.HIT, stored
 
-async def _catch_up_save(output: VerifyWorkflowOutput) -> None:
+
+async def _computed_output_from_history(
+    client: Client, desc: WorkflowExecutionDescription,
+) -> tuple[bool, VerifyWorkflowOutput | None]:
+    """The output the workflow computed, and whether the history scan succeeded.
+
+    The persist activity is scheduled only at a finished exit point, and its
+    argument is the output. Finding that event is proof a result existed; a
+    successful scan that finds none is evidence that none was computed by a
+    build that had the save step -- but not proof, because a history recorded
+    before that step existed never schedules the activity at all.
+
+    The boolean separates those two from a failed scan, which proves nothing.
+    That distinction is what stops a rebuilt, results-free shell from occupying
+    the write-once slot: a verification terminated after its comparison finished
+    has its real result in history, and storing the shell would make that result
+    unstorable forever.
+    """
+    handle = client.get_workflow_handle(desc.id, run_id=desc.run_id)
+    try:
+        async for event in handle.fetch_history_events(rpc_timeout=timedelta(seconds=10)):
+            if not event.HasField("activity_task_scheduled_event_attributes"):
+                continue
+            attrs = event.activity_task_scheduled_event_attributes
+            if attrs.activity_type.name != "save_verification_report_activity":
+                continue
+            decoded = await client.data_converter.decode(
+                attrs.input.payloads, [VerifyWorkflowOutput])
+            if len(decoded) == 1 and isinstance(decoded[0], VerifyWorkflowOutput):
+                return True, decoded[0]
+    except Exception as e:
+        logger.warning("Could not scan history for %s: %s", desc.id, e)
+        return False, None
+    return True, None
+
+
+async def _catch_up_save(
+    output: VerifyWorkflowOutput, *, has_computed_result: bool = True,
+) -> None:
     """
     Store a finished report that was never saved.
 
     Covers verifications that finished before the deploy, or whose save failed.
     Only a finished output is stored, and a failure never fails the GET -- the
     same rule the ledger status write follows.
+
+    ``has_computed_result`` says whether a computed result is known to exist. A
+    rebuilt output carries no results, and storing one would occupy the
+    write-once slot with a permanent FAILED report and make the real result
+    unstorable later. The recovery paths pass ``False`` when history proves
+    nothing was computed, so the shell is served but never persisted.
     """
     if not output.workflow_status.is_done:
+        return
+    if not has_computed_result and output.workflow_results is None:
+        logger.info(
+            "Not catch-up saving %s: history proves nothing was computed",
+            output.workflow_id,
+        )
         return
     store = get_verification_report_store()
     if store is None:
@@ -733,6 +801,41 @@ async def _catch_up_save(output: VerifyWorkflowOutput) -> None:
         logger.warning(
             "Could not catch up verification report for %s: %s", output.workflow_id, e,
         )
+
+
+async def _serve_recovered(
+    temporal_client: Client, desc: WorkflowExecutionDescription,
+    user: AuthenticatedUser | None, store_read: _StoreRead,
+) -> VerifyWorkflowOutput | None:
+    """Recover a terminal output, prefer a computed result, and persist it.
+
+    One helper for the three query-failure paths, so the recovery rules cannot
+    drift apart between them.
+
+    What to serve, and whether to write, depends on what the history scan found:
+
+    | scan result          | serve          | write |
+    | -------------------- | -------------- | ----- |
+    | computed result      | that result    | yes   |
+    | searched, found none | rebuilt shell  | no    |
+    | search failed        | rebuilt shell  | no    |
+
+    The last row is the one that is easy to get wrong. A failed scan proves
+    nothing about what was computed, and the store is write-once: writing the
+    shell there would permanently block the real result. A skipped write is
+    retried by the next GET; a wrong write cannot be undone.
+    """
+    recovered = await _recover_terminal_verification(temporal_client, desc, user, store_read)
+    if recovered is None:
+        return None
+    scanned, computed = await _computed_output_from_history(temporal_client, desc)
+    if computed is not None:
+        recovered = computed
+    # Only a computed result justifies consuming the write-once slot.
+    await _catch_up_save(recovered, has_computed_result=computed is not None)
+    await _record_terminal_status(recovered)
+    return recovered
+
 
 @app.get(
     "/verify/{workflow_id}",
@@ -757,7 +860,7 @@ async def get_verify_output(
 
     # Step 0: the durable store. A stored report outlives Temporal retention, so
     # it is served even when Temporal is down or has forgotten this workflow.
-    stored = await _read_stored_report(workflow_id, user)
+    store_read, stored = await _read_stored_report(workflow_id, user)
     if stored is not None:
         # Record the status here too, so /verification_ids learns about a
         # verification whose only reader was the store.
@@ -779,7 +882,7 @@ async def get_verify_output(
         desc = await handle.describe(rpc_timeout=timedelta(seconds=60))
     except RPCError as rpc_err:
         if rpc_err.status == RPCStatusCode.NOT_FOUND:
-            await _ledger_fallback_404(workflow_id, user)
+            await _ledger_fallback_404(workflow_id, user, store_read)
         logger.error("Temporal describe failed for %s: %s", workflow_id, rpc_err, exc_info=rpc_err)
         raise HTTPException(status_code=503, detail="Temporal service unavailable")
     except Exception as e:
@@ -801,27 +904,21 @@ async def get_verify_output(
     except RPCError as rpc_err:
         if rpc_err.status == RPCStatusCode.NOT_FOUND:
             # History purged between describe and query: same answer as a describe miss.
-            await _ledger_fallback_404(workflow_id, user)
-        recovered = await _recover_terminal_verification(temporal_client, desc, user)
+            await _ledger_fallback_404(workflow_id, user, store_read)
+        recovered = await _serve_recovered(temporal_client, desc, user, store_read)
         if recovered is not None:
-            await _catch_up_save(recovered)
-            await _record_terminal_status(recovered)
             return recovered
         logger.error("Temporal query failed for %s: %s", workflow_id, rpc_err, exc_info=rpc_err)
         raise HTTPException(status_code=503, detail="Temporal service unavailable")
     except (WorkflowQueryFailedError, WorkflowQueryRejectedError) as e:
-        recovered = await _recover_terminal_verification(temporal_client, desc, user)
+        recovered = await _serve_recovered(temporal_client, desc, user, store_read)
         if recovered is not None:
-            await _catch_up_save(recovered)
-            await _record_terminal_status(recovered)
             return recovered
         logger.warning("Workflow query failed for %s: %s", workflow_id, e, exc_info=e)
         raise HTTPException(status_code=404, detail=f"Verification not found: {workflow_id}")
     except Exception as e:
-        recovered = await _recover_terminal_verification(temporal_client, desc, user)
+        recovered = await _serve_recovered(temporal_client, desc, user, store_read)
         if recovered is not None:
-            await _catch_up_save(recovered)
-            await _record_terminal_status(recovered)
             return recovered
         logger.error("Unexpected error querying workflow %s", workflow_id, exc_info=e)
         raise HTTPException(status_code=503, detail="Temporal service unavailable")
@@ -839,13 +936,21 @@ async def get_verify_output(
     return workflow_output
 
 
-async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None) -> NoReturn:
-    """Temporal returned NOT_FOUND.  Check the ledger for an expired-but-known ID.
+async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None, store_read: _StoreRead) -> NoReturn:
+    """Temporal returned NOT_FOUND. Decide what that means for the caller.
 
-    Raises HTTPException(404) with a detail that distinguishes:
+    A 404 is only honest when the store answered and had nothing. A corrupt or
+    unreachable store means the report may still exist, so that answer is a 503.
+
+    Otherwise raises HTTPException(404) with a detail that distinguishes:
     - "no longer retained" — ledger row exists and caller may see it
     - generic "not found" — no row, or belongs to someone else (no existence leak)
     """
+    if store_read in (_StoreRead.CORRUPT, _StoreRead.UNAVAILABLE):
+        raise HTTPException(
+            status_code=503,
+            detail="Verification storage is unavailable; the report may still exist.",
+        )
     ledger = get_verification_database_service()
     if ledger is not None:
         try:
