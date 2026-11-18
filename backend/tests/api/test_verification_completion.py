@@ -337,7 +337,7 @@ async def test_real_temporal_and_mongo_roundtrip(
     from biosim_server.biosim_omex.models import OmexFile
     from biosim_server.biosim_runs.models import BiosimSimulationRun, BiosimSimulationRunStatus, BiosimulatorWorkflowRun, Hdf5DataValues
     from biosim_server.biosim_runs.activities import GetExistingBiosimSimulationRunActivityInput, GetExistingBiosimSimulationRunActivityOutput
-    from biosim_server.biosim_verify.activities import generate_statistics_activity
+    from biosim_server.biosim_verify.activities import generate_statistics_activity, save_verification_report_activity
     from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflow
     from temporalio import activity
     from temporalio.client import WorkflowFailureError
@@ -361,7 +361,8 @@ async def test_real_temporal_and_mongo_roundtrip(
         ))
 
     async with Worker(temporal_client, task_queue="verification_tasks", workflows=[RunsVerifyWorkflow],
-                      activities=[fetch_run, generate_statistics_activity], workflow_runner=UnsandboxedWorkflowRunner()):
+                      activities=[fetch_run, generate_statistics_activity, save_verification_report_activity],
+                      workflow_runner=UnsandboxedWorkflowRunner()):
         with patch("biosim_server.biosim_verify.activities.BiosimServiceRest.get_hdf5_data",
                    new=AsyncMock(return_value=Hdf5DataValues(shape=[2, 3], values=[0, 1, 2, 3, 4, 5]))):
             response = await client.post("/verify/runs", params={"biosimulations_run_ids": "run1"})

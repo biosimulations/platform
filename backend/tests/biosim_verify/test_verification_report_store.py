@@ -472,6 +472,7 @@ async def test_get_rejects_a_missing_gridfs_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A file whose row is gone is damaged, not missing."""
+    # Force the GridFS path so the document points at a file
     monkeypatch.setattr(
         "biosim_server.biosim_verify.report_store.INLINE_PAYLOAD_MAX_BYTES",
         0,
@@ -483,6 +484,7 @@ async def test_get_rejects_a_missing_gridfs_file(
     )
 
     assert document is not None
+    # Remove the file row itself, unlike the chunks test above
     assert verification_report_store_mongo._files.delete(document["file_id"])
 
     with pytest.raises(ReportCorrupt, match="Stored file is missing"):
@@ -496,6 +498,8 @@ async def test_get_rejects_a_document_with_no_sha256(
 ) -> None:
     """A document with no sha256 is rejected before decoding."""
     assert await verification_report_store_mongo.save(verify_workflow_output) is True
+    # Drop the digest but keep the bytes: without it the payload cannot be
+    # integrity-checked, so the read must refuse rather than decode blindly
     await _reports_collection(mongo_test_client).update_one(
         {"workflow_id": verify_workflow_output.workflow_id},
         {"$unset": {"sha256": ""}},

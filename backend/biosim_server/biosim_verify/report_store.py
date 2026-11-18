@@ -187,6 +187,9 @@ class VerificationReportStore:
         else:
             raise ReportCorrupt("No payload or file_id in document")
         sha256 = document.get("sha256")
+        # A document without a digest cannot be integrity-checked, so it is
+        # damaged rather than decodable. Narrowing here also tells mypy the
+        # value is a str before it reaches decode_report.
         if not isinstance(sha256, str):
             raise ReportCorrupt("Report document has no sha256")
         # Decompression is CPU-bound, so keep it off the event loop.

@@ -12,9 +12,7 @@ from biosim_server.biosim_runs import BiosimulatorVersion, OmexSimWorkflow, Omex
     BiosimulatorWorkflowRun
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.biosim_verify.models import SimulatorFailure, VerifyWorkflowStatus, VerifyWorkflowOutput
-from biosim_server.biosim_verify.runs_verify_workflow import generate_statistics
-#from biosim_server.dependencies import get_verification_database_service
-
+from biosim_server.biosim_verify.runs_verify_workflow import generate_statistics, save_verification_report
 
 class OmexVerifyWorkflowInput(BaseModel):
     omex_file: OmexFile
@@ -22,13 +20,6 @@ class OmexVerifyWorkflowInput(BaseModel):
     cache_buster: str
     compare_settings: CompareSettings
     owner_sub: str | None = None
-
-
-#@activity.defn(name="update_verify_workflow_output_activity")
-#async def update_verify_workflow_output_activity(input: VerifyWorkflowOutput) -> None:
-    # Perform I/O or side-effects here
-    #get_verification_database_service().update_verify_workflow_output(input)
-    #return None
 
 @workflow.defn
 class OmexVerifyWorkflow:
@@ -96,6 +87,7 @@ class OmexVerifyWorkflow:
         else:
             self.verify_output.workflow_status = VerifyWorkflowStatus.COMPLETED
 
+        await save_verification_report(self.verify_output)
         return self.verify_output
 
 
@@ -125,6 +117,3 @@ def no_results_error(requested: list[BiosimulatorVersion], runs: list[Biosimulat
     reasons = "; ".join(f"{f.simulator_version}: {(f.error_message or 'no error recorded').splitlines()[0]}"
                         for f in failures)
     return f"No requested simulator produced results ({reasons})"[:4000]
-
-#async def get_verify_workflow_output_from_database(verify_output: VerifyWorkflowOutput) -> None:
-    #return get_verification_database_service().get_verify_workflow_output(workflow_id=verify_output.workflow_id)

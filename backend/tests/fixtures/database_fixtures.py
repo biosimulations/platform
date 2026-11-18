@@ -168,11 +168,15 @@ async def verification_database_service_mongo(
     await verification_db_service.delete_all_verifications()
     set_verification_database_service(old_service)
 
+# A store bound to the test database, with its unique index already created so
+# write-once behaviour is live. delete_all() on teardown clears the collection
+# and the GridFS bucket, so each test starts empty.
 @pytest_asyncio.fixture(scope="function")
 async def verification_report_store_mongo(
     mongo_test_client: AsyncIOMotorClient,
 ) -> AsyncGenerator[VerificationReportStore, None]:
     store = VerificationReportStore(db_client=mongo_test_client)
+    # Must run before the first save, or two writers can both insert.
     await store.ensure_indexes()
     yield store
     await store.delete_all()
