@@ -21,9 +21,11 @@ from biosim_server.biosim_verify.models import GenerateStatisticsActivityOutput,
 # the activity and a run recorded after it replays with it.
 SAVE_REPORT_PATCH_ID = "save-verification-report-v1"
 
-# A save compresses the report and writes one document (or a GridFS file plus a
-# document), so it needs more room than a lookup but not minutes of work.
-SAVE_REPORT_START_TO_CLOSE_TIMEOUT = timedelta(minutes=5)
+# One minute per attempt. Motor sets no socket timeout, so this is what ends a
+# stuck write. Five attempts plus the waits between them (2 + 4 + 8 + 16
+# seconds) is about five and a half minutes. An insert or a GridFS upload of a
+# report finishes well inside one minute.
+SAVE_REPORT_START_TO_CLOSE_TIMEOUT = timedelta(minutes=1)
 
 # Repeated saves converge instead of conflicting -- the store is write-once -- so
 # retrying a transient database failure is safe.

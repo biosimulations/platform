@@ -26,6 +26,7 @@ from biosim_server.biosim_verify.models import (
     VerificationType,
     VerifyWorkflowStatus,
 )
+from biosim_server.biosim_verify.report_store import VerificationReportStore
 from biosim_server.common.auth import AuthenticatedUser, get_current_user, get_optional_user
 from tests.api.test_main import _make_temporal_for_runs, _make_verify_output, _temporal_with_describe, _verify_omex_mocks
 from tests.biosim_verify.test_compatibility import _file
@@ -330,6 +331,7 @@ async def test_real_temporal_and_mongo_roundtrip(
     client: AsyncClient,
     temporal_client: "Client",
     verification_database_service_mongo: VerificationDatabaseServiceMongo,
+    verification_report_store_mongo: VerificationReportStore,
     simulator_version_copasi: "BiosimulatorVersion",
     outcome: str,
 ) -> None:
@@ -382,6 +384,19 @@ async def test_real_temporal_and_mongo_roundtrip(
             assert "private worker error" not in response.text
             if outcome == "completed":
                 assert body["workflow_results"]["comparison_statistics"]["shared"][0][0]["score"] == [0.0, 0.0]
+            # "failed" raises inside fetch_run, before either finished return, so
+            # the save activity never runs. The other two outcomes reach a return
+            # that saves, and the fixture has published the store they write to.
+            stored = await verification_report_store_mongo.get(workflow_id)
+            if outcome == "failed":
+                assert stored is None
+            else:
+                assert stored is not None
+                assert stored.workflow_id == workflow_id
+                assert stored.workflow_status.value == {
+                    "completed": "COMPLETED",
+                    "missing": "RUN_ID_NOT_FOUND",
+                }[outcome]
 
 
 @pytest.mark.integration_local

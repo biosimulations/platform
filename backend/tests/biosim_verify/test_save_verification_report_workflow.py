@@ -22,7 +22,7 @@ from biosim_server.biosim_runs import BiosimSimulationRun, BiosimSimulationRunSt
     BiosimulatorWorkflowRun
 from biosim_server.biosim_runs.activities import GetExistingBiosimSimulationRunActivityInput, \
     GetExistingBiosimSimulationRunActivityOutput
-from biosim_server.biosim_verify import CompareSettings, activities
+from biosim_server.biosim_verify import CompareSettings
 from biosim_server.biosim_verify.activities import GenerateStatisticsActivityInput, save_verification_report_activity
 from biosim_server.biosim_verify.models import GenerateStatisticsActivityOutput, VerifyWorkflowOutput, \
     VerifyWorkflowStatus
@@ -223,11 +223,8 @@ async def test_cancellation_during_save_cancels_the_workflow(temporal_client: Cl
 @pytest.mark.asyncio
 async def test_real_activity_stores_the_finished_report(
         temporal_client: Client, verification_report_store_mongo: VerificationReportStore,
-        simulator_version_copasi: BiosimulatorVersion, monkeypatch: pytest.MonkeyPatch) -> None:
+        simulator_version_copasi: BiosimulatorVersion) -> None:
     """The real activity, store and workflow together: the report is readable back."""
-    monkeypatch.setattr(activities, "get_verification_report_store",
-                        lambda: verification_report_store_mongo)
-
     result = await _execute_runs_workflow(
         temporal_client,
         [_found_run(simulator_version_copasi), _empty_statistics(), save_verification_report_activity],

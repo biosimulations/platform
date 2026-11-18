@@ -10,7 +10,8 @@ from biosim_server.config import get_settings
 from biosim_server.dependencies import set_database_service, get_database_service, set_omex_database_service, \
     get_omex_database_service, set_simulation_run_database_service, get_simulation_run_database_service, \
     set_project_database_service, get_project_database_service, \
-    set_verification_database_service, get_verification_database_service
+    set_verification_database_service, get_verification_database_service, \
+    get_verification_report_store, set_verification_report_store
 from biosim_server.biosim_omex import OmexDatabaseServiceMongo
 from biosim_server.simulations import SimulationRunDatabaseServiceMongo
 from biosim_server.projects import ProjectDatabaseServiceMongo, ProjectSearchServiceMongo
@@ -178,5 +179,10 @@ async def verification_report_store_mongo(
     store = VerificationReportStore(db_client=mongo_test_client)
     # Must run before the first save, or two writers can both insert.
     await store.ensure_indexes()
+    old_store = get_verification_report_store()
+    set_verification_report_store(store)
+
     yield store
+
     await store.delete_all()
+    set_verification_report_store(old_store)

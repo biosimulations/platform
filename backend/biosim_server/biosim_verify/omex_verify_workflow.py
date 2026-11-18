@@ -5,7 +5,6 @@ from typing import Any, Coroutine
 
 from pydantic import BaseModel
 from temporalio import workflow
-#from temporalio import activity, workflow
 from temporalio.workflow import ChildWorkflowHandle
 from biosim_server.biosim_omex import OmexFile
 from biosim_server.biosim_runs import BiosimulatorVersion, OmexSimWorkflow, OmexSimWorkflowInput, OmexSimWorkflowOutput, \

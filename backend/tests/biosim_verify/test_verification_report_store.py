@@ -484,8 +484,10 @@ async def test_get_rejects_a_missing_gridfs_file(
     )
 
     assert document is not None
-    # Remove the file row itself, unlike the chunks test above
-    assert verification_report_store_mongo._files.delete(document["file_id"])
+    # Remove the file row itself, unlike the chunks test above. Await the
+    # future: delete starts on a background thread, and get() can otherwise
+    # read the file before that thread finishes.
+    await verification_report_store_mongo._files.delete(document["file_id"])
 
     with pytest.raises(ReportCorrupt, match="Stored file is missing"):
         await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
