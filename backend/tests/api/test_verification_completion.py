@@ -664,6 +664,15 @@ async def test_terminal_status_is_recorded_on_the_recovered_path(client: AsyncCl
         query_side_effect=RPCError("closed", RPCStatusCode.INTERNAL, b""))
     desc = temporal.get_workflow_handle.return_value.describe.return_value
     desc.id, desc.run_id, desc.close_time = "wf", "execution", datetime.now(UTC)
+    # A terminated workflow's history is still readable, so the recovery scan runs
+    # and finds no save event: that is NONE, not FAILED, and the status is recorded.
+    # Without this the handle's AsyncMock would make the scan raise, which is a
+    # different case (see test_failed_scan_does_not_store_the_rebuilt_shell).
+    async def _empty_history(*_args: object, **_kwargs: object) -> object:
+        return
+        yield  # pragma: no cover -- makes this an async generator that yields nothing
+
+    temporal.get_workflow_handle.return_value.fetch_history_events = _empty_history
     ledger = AsyncMock()
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \

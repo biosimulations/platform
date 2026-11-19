@@ -614,7 +614,9 @@ the cached runs come from different archives. The parameter is pattern-validated
 **`status` on the ledger row** is the terminal `VerifyWorkflowStatus` (`COMPLETED`,
 `FAILED`, `RUN_ID_NOT_FOUND`), written **once** by `GET /verify/{workflow_id}` the
 first time it observes the workflow finished -- after the ownership check, on the
-recovered-from-history paths too, with a guarded `update_one({"status": None})` so
+recovered-from-history paths too (unless the history scan fails, in which case the
+status is a guess and is left unrecorded for a later GET to settle), with a guarded
+`update_one({"status": None})` so
 the first observed status sticks and rows written before the field existed are
 covered. Nothing is written at insert and a ledger error never fails the GET.
 `null` in the listing therefore means "not yet observed as finished": still running,
@@ -631,26 +633,51 @@ answer depends on how the store read went:
 | store read | Temporal | answer |
 | --- | --- | --- |
 | miss (nothing stored) | NOT_FOUND | **404** -- "no longer retained" when the ledger row is visible, else generic "not found" |
-| corrupt, or store unreachable | NOT_FOUND | **503** -- the report may still exist, so permanent absence would be a lie |
+| store unreachable | NOT_FOUND | **503 with `Retry-After: 5`** -- waiting may fix it |
+| corrupt stored report | NOT_FOUND | **503 without `Retry-After`** -- retrying cannot repair the bytes |
 
 The 503 matters: a corrupt or unreadable store is repairable, and answering 404 there
-would make a client discard a verification that is still recoverable.
+would make a client discard a verification that is still recoverable. The two 503s are
+deliberately not identical: only the outage carries a retry hint, because telling a
+client to retry corruption would just make it poll a permanent failure.
 
 **Recovery from a failed execution** rebuilds an output from the start input, which
 carries no results. Before persisting it, the endpoint scans the workflow history for
 the `save_verification_report_activity` scheduled event, whose argument is the output
 the workflow computed. What it serves and whether it writes:
 
-| scan result | serve | write |
-| --- | --- | --- |
-| computed result found | that result | yes |
-| searched, found none | rebuilt shell | no |
-| scan failed | rebuilt shell | no |
+| scan result | serve | save report | record status |
+| --- | --- | --- | --- |
+| computed result found, identity matches | that result | yes | yes |
+| searched, found none | rebuilt shell | no | yes |
+| scan failed, or hit `_HISTORY_SCAN_EVENT_LIMIT` | rebuilt shell | no | **no** |
+| computed result found, identity differs (`MISMATCH`) | rebuilt shell | no | yes |
 
-The last two leave the write-once slot free so the real result can still be stored
+The last three leave the write-once slot free so the real result can still be stored
 later; a skipped write is retried by the next GET, while a wrong write cannot be undone.
 Note that a history recorded before the save step existed never schedules the activity,
 so "searched, found none" is evidence rather than proof that nothing was computed.
+
+The ledger status follows the same rule for the same reason: only the scan can tell
+whether a comparison finished, so when the scan fails the shell's `FAILED` status is a
+guess, and recording it would freeze that guess in the listing where nothing retries it.
+`_computed_output_from_history` therefore returns a `_HistoryScan` outcome alongside the
+output -- `FOUND`, `NONE`, `MISMATCH` or `FAILED` -- and only `FAILED` suppresses the
+status write. A later GET that can read the history records the real status instead.
+
+**A decoded result must belong to the execution it came from.** The caller is
+authorized against the shell rebuilt from the start input, and the decoded output then
+replaces that shell and is written to the write-once store, so `_belongs_to_execution`
+compares its `workflow_id`, `workflow_run_id` and `owner_sub` against that shell. A
+mismatch is treated exactly like "no proof": the shell is served and nothing is written.
+Otherwise a payload from another execution would be stored permanently under the wrong
+identity, and `owner_sub` is what the store's ownership check reads. `expected_owner_sub`
+is a required argument so a call site cannot silently omit it, and the run id is compared
+whenever both sides have one (every exit point sets it, so in practice always). The scan
+is also bounded by `_HISTORY_SCAN_EVENT_LIMIT` (5000 events), far above what the request
+limits (`MAX_VERIFY_RUN_IDS` and `MAX_VERIFY_SIMULATORS`, both 10) allow, so it only
+protects GET latency on a history that grew some other way; running past the cap counts
+as a failed scan.
 
 **Report persistence retries without a cap.** `SAVE_REPORT_RETRY_POLICY` sets
 `maximum_attempts=0`, so a transient storage failure keeps the workflow open instead of

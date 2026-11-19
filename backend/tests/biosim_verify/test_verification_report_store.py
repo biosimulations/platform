@@ -185,6 +185,29 @@ def test_decode_report_rejects_a_flipped_byte(
         decode_report(bytes(flipped), sha256)
 
 
+def test_decode_report_rejects_a_truncated_gzip(
+    verify_workflow_output: VerifyWorkflowOutput,
+) -> None:
+    """A truncated gzip blob raises ReportCorrupt, not EOFError.
+
+    gzip.decompress raises EOFError for a stream that ends before its
+    end-of-stream marker, which is a different exception from the
+    ``gzip.BadGzipFile`` the bad-gzip and flipped-byte tests reach (BadGzipFile
+    subclasses OSError). The broad ``except Exception`` in decode_report is what
+    turns the EOFError into ReportCorrupt, so this test stops someone narrowing
+    that except to OSError later. An escaped EOFError would not be a 500: it
+    would fall into ``_read_stored_report``'s broad handler and be classed as
+    UNAVAILABLE, answering the outage 503 with Retry-After for a report that is
+    permanently damaged -- which is why the broad except here matters.
+    """
+    compressed, _length, sha256 = encode_report(verify_workflow_output)
+    truncated = compressed[:len(compressed) // 2]
+    with pytest.raises(ReportCorrupt, match="Decompression failed") as excinfo:
+        decode_report(truncated, sha256)
+    # Prove the underlying failure really was the EOF path, not a zlib error.
+    assert isinstance(excinfo.value.__cause__, EOFError)
+
+
 def test_dataset_key_with_dot_and_dollar_round_trips(
     verify_workflow_output: VerifyWorkflowOutput,
 ) -> None:

@@ -1261,10 +1261,16 @@ paths:
             Also returned when Temporal has forgotten the workflow and the report
             store answered that nothing is stored.
         '503':
-          description: Temporal is unreachable or the client is not initialized. Also
-            returned when Temporal has forgotten the workflow but the report store
-            could not be read (corrupt or unavailable), because the report may still
-            exist.
+          description: 'Temporal is unreachable or the client is not initialized.
+            Also returned when Temporal has forgotten the workflow but the report
+            store could not be read: unavailable (with Retry-After) or corrupt (without,
+            since retrying will not repair it), because the report may still exist.'
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. Sent when the report store
+                is unreachable; omitted when the stored report is corrupt.
+              schema:
+                type: integer
         '422':
           description: Validation Error
           content:

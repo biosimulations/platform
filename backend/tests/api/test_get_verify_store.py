@@ -235,6 +235,56 @@ async def test_store_error_falls_back_to_temporal() -> None:
     assert response.json()["workflow_id"] == temporal_output.workflow_id
 
 
+def _temporal_owning(output: VerifyWorkflowOutput) -> Any:
+    """A Temporal client whose query answers with an owned verification."""
+    temporal = MagicMock()
+    handle = MagicMock()
+    handle.describe = AsyncMock(return_value=MagicMock(
+        workflow_type="OmexVerifyWorkflow", status=None, id=output.workflow_id,
+        run_id="run-1", close_time=None, start_time=datetime(2025, 1, 1, tzinfo=UTC)))
+    handle.query = AsyncMock(return_value=output)
+    temporal.get_workflow_handle.return_value = handle
+    return temporal
+
+
+@pytest.mark.asyncio
+async def test_store_outage_does_not_skip_ownership_for_another_user() -> None:
+    """The UNAVAILABLE branch must not become a way around the ownership check.
+
+    A store outage only means "fall back to Temporal". The Temporal answer is
+    still somebody's private verification, so another user gets 403.
+    """
+    store = MagicMock()
+    store.get = AsyncMock(side_effect=RuntimeError("mongo is down"))
+    store.save = AsyncMock(return_value=True)
+    owned = _output(workflow_id="omex-verification-private", owner_sub="auth0|owner")
+
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_owning(owned)), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
+        response = await _get(owned.workflow_id, AuthenticatedUser(sub="auth0|intruder", email="i@e.com"))
+
+    assert response.status_code == 403
+    store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_store_outage_does_not_skip_authentication_for_an_owned_report() -> None:
+    """With the store down, an owned verification still needs a token: 401."""
+    store = MagicMock()
+    store.get = AsyncMock(side_effect=RuntimeError("mongo is down"))
+    store.save = AsyncMock(return_value=True)
+    owned = _output(workflow_id="omex-verification-private-anon", owner_sub="auth0|owner")
+
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_owning(owned)), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
+        response = await _get(owned.workflow_id, None)
+
+    assert response.status_code == 401
+    store.save.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Fix 1: a broken store must not be reported as permanent absence
 # ---------------------------------------------------------------------------
@@ -267,11 +317,17 @@ async def test_store_unavailable_and_temporal_not_found_is_503() -> None:
 
     assert response.status_code == 503
     assert "storage is unavailable" in response.json()["detail"]
+    # An unreachable store may come back, so the client gets a retry hint.
+    assert response.headers["Retry-After"] == "5"
 
 
 @pytest.mark.asyncio
 async def test_corrupt_store_and_temporal_not_found_is_503() -> None:
-    """A corrupt stored report plus a missing history is a 503, not "no longer retained"."""
+    """A corrupt stored report plus a missing history is a 503, not "no longer retained".
+
+    No Retry-After here: retrying cannot repair corrupt bytes, so a hint would
+    only make the client poll a permanent failure.
+    """
     store = MagicMock()
     store.get = AsyncMock(side_effect=ReportCorrupt("payload is garbage"))
     with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
@@ -280,6 +336,8 @@ async def test_corrupt_store_and_temporal_not_found_is_503() -> None:
         response = await _get("omex-verification-corrupt-gone", None)
 
     assert response.status_code == 503
+    assert "corrupt" in response.json()["detail"]
+    assert "Retry-After" not in response.headers
 
 
 @pytest.mark.asyncio
@@ -299,16 +357,33 @@ async def test_store_miss_and_temporal_not_found_is_still_404() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _temporal_terminated(*, with_computed: bool) -> Any:
+def _temporal_terminated(
+    *, with_computed: bool, converter: Any = None, computed_override: Any = None,
+    owner_sub: str | None = None,
+) -> Any:
     """A Temporal client whose workflow is TERMINATED and whose query fails.
 
     ``with_computed`` controls whether history contains the persist activity's
     scheduled event, which is the only proof that a result was ever computed.
+
+    ``converter`` selects the payload converter used to write and read the
+    history. Production connects without one (``dependencies.py``), so it uses
+    ``DataConverter.default``; the tests default to the pydantic converter they
+    have always used, and are parametrized over both where it matters.
+
+    ``computed_override`` replaces the decoded output, so a test can present a
+    payload that does not belong to this execution.
+
+    ``owner_sub`` is written into the start input *and* the computed output, the
+    way the real workflow copies ``verify_input.owner_sub`` into its result, so
+    the two agree unless a test deliberately overrides one.
     """
     from temporalio.api.history.v1 import HistoryEvent
     from temporalio.client import WorkflowExecutionStatus, WorkflowQueryFailedError
 
     from biosim_server.common.temporal import pydantic_data_converter
+
+    data_converter = converter if converter is not None else pydantic_data_converter
 
     # Deliberately unlike the rebuilt shell in three ways the test can assert on:
     # it is COMPLETED (the shell is FAILED), it carries results (the shell has
@@ -316,10 +391,13 @@ def _temporal_terminated(*, with_computed: bool) -> Any:
     computed = _output(
         workflow_id="omex-verification-terminated",
         status=VerifyWorkflowStatus.COMPLETED,
+        owner_sub=owner_sub,
     )
     computed.timestamp = "2025-01-01T00:00:00Z"
+    computed.workflow_run_id = "run-1"
     computed.workflow_results = GenerateStatisticsActivityOutput(
         sims_run_info=[], comparison_statistics={"shared": []})
+    payload_output = computed_override if computed_override is not None else computed
 
     def _events(*_args: Any, **_kwargs: Any) -> Any:
         # fetch_history_events is a sync method returning an async iterator, so
@@ -331,15 +409,15 @@ def _temporal_terminated(*, with_computed: bool) -> Any:
         start = HistoryEvent()
         start.workflow_execution_started_event_attributes.workflow_type.name = "OmexVerifyWorkflow"
         start.workflow_execution_started_event_attributes.input.payloads.extend(
-            await pydantic_data_converter.encode([
+            await data_converter.encode([
                 OmexVerifyWorkflowInput(
                     omex_file=OmexFile(file_hash_md5="hash", uploaded_filename="m.omex",
                                        bucket_name="test", omex_gcs_path="m.omex", file_size=1),
                     requested_simulators=[], compare_settings=computed.compare_settings,
-                    cache_buster="0")]))
+                    owner_sub=owner_sub, cache_buster="0")]))
         yield start
         if with_computed:
-            payloads = await pydantic_data_converter.encode([computed])
+            payloads = await data_converter.encode([payload_output])
             event = HistoryEvent()
             event.activity_task_scheduled_event_attributes.activity_type.name = \
                 "save_verification_report_activity"
@@ -357,7 +435,7 @@ def _temporal_terminated(*, with_computed: bool) -> Any:
 
     temporal = MagicMock()
     temporal.get_workflow_handle.return_value = handle
-    temporal.data_converter = pydantic_data_converter
+    temporal.data_converter = data_converter
     return temporal
 
 
@@ -404,6 +482,202 @@ async def test_terminated_after_computing_stores_the_computed_result() -> None:
     assert body["workflow_results"] is not None
 
 
+# ---------------------------------------------------------------------------
+# Fix 3: the recovered output must belong to the execution it came from
+# ---------------------------------------------------------------------------
+
+
+def _mismatched(workflow_id: str | None = None, owner_sub: str | None = None) -> Any:
+    """A computed result that differs from the shell in identity only."""
+    other = _output(
+        workflow_id=workflow_id or "omex-verification-terminated",
+        status=VerifyWorkflowStatus.COMPLETED,
+        owner_sub=owner_sub,
+    )
+    other.timestamp = "2025-01-01T00:00:00Z"
+    other.workflow_run_id = "run-1"
+    other.workflow_results = GenerateStatisticsActivityOutput(
+        sims_run_info=[], comparison_statistics={"shared": []})
+    return other
+
+
+@pytest.mark.asyncio
+async def test_computed_result_for_another_workflow_is_not_served_or_stored() -> None:
+    """A payload from a different workflow id is no proof, so nothing is written.
+
+    The caller was authorized against the shell rebuilt from this execution's
+    start input. Serving and storing another execution's output would put it in
+    the write-once slot under the wrong identity, permanently.
+    """
+    store = _store_returning(None)
+    temporal = _temporal_terminated(
+        with_computed=True, computed_override=_mismatched(workflow_id="omex-verification-other"))
+    ledger = MagicMock()
+    ledger.record_terminal_status = AsyncMock()
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        response = await _get("omex-verification-terminated", None)
+
+    assert response.status_code == 200
+    # The rebuilt shell is served: FAILED, no results, and this execution's id.
+    body = response.json()
+    assert body["workflow_id"] == "omex-verification-terminated"
+    assert body["workflow_status"] == "FAILED"
+    assert body["workflow_results"] is None
+    store.save.assert_not_awaited()
+    # A MISMATCH is read from a history that never changes, so every later GET
+    # serves the same shell: its FAILED status is a settled answer, recorded once,
+    # and under this execution's id rather than the mismatched payload's.
+    ledger.record_terminal_status.assert_awaited_once_with(
+        "omex-verification-terminated", VerifyWorkflowStatus.FAILED)
+
+
+@pytest.mark.asyncio
+async def test_computed_result_with_another_run_id_is_not_served_or_stored() -> None:
+    """A payload from a different run of the same workflow id is also no proof."""
+    store = _store_returning(None)
+    other_run = _mismatched()
+    other_run.workflow_run_id = "run-2"
+    temporal = _temporal_terminated(with_computed=True, computed_override=other_run)
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
+        response = await _get("omex-verification-terminated", None)
+
+    assert response.status_code == 200
+    assert response.json()["workflow_status"] == "FAILED"
+    store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_computed_result_for_another_owner_is_not_served_or_stored() -> None:
+    """A payload owned by someone else must not be stored under this identity.
+
+    The owner_sub is what the store's ownership check reads, so writing a report
+    carrying another user's sub would hand them a report they never asked for and
+    hide it from the caller who did.
+    """
+    store = _store_returning(None)
+    # The start input (which the caller was authorized against) is ownerless, so
+    # the caller is allowed through; the payload in history claims an owner.
+    temporal = _temporal_terminated(
+        with_computed=True, owner_sub=None,
+        computed_override=_mismatched(owner_sub="auth0|someone-else"))
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
+        response = await _get("omex-verification-terminated", None)
+
+    assert response.status_code == 200
+    assert response.json()["workflow_status"] == "FAILED"
+    store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_owned_computed_result_is_served_and_stored_for_its_owner() -> None:
+    """The happy path for an owned verification: owner reads it, result is stored.
+
+    This is the test that pins the owner argument. The start input and the
+    computed output share an owner, and the caller is that owner, so the identity
+    check must pass: the response is the COMPLETED result and it is saved once.
+
+    If the call site stopped passing ``recovered.owner_sub`` and the parameter
+    defaulted to None, the owner comparison would see ``auth0|owner`` against
+    None and reject the real result -- serving the FAILED shell and writing
+    nothing. That is what makes this test fail when the argument is dropped.
+    """
+    store = _store_returning(None)
+    owner = AuthenticatedUser(sub="auth0|owner", email="o@e.com")
+    temporal = _temporal_terminated(with_computed=True, owner_sub="auth0|owner")
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
+        response = await _get("omex-verification-terminated", owner)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["workflow_status"] == "COMPLETED"
+    assert body["workflow_results"] is not None
+    assert body["owner_sub"] == "auth0|owner"
+    store.save.assert_awaited_once()
+    saved = store.save.await_args.args[0]
+    assert saved.owner_sub == "auth0|owner"
+    assert saved.workflow_status == VerifyWorkflowStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: the recovery scan must work with the converter production uses
+# ---------------------------------------------------------------------------
+
+
+def _production_converter() -> Any:
+    """The converter production actually uses: connect() passes none, so default."""
+    from temporalio.converter import DataConverter
+    return DataConverter.default
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("converter_name", ["pydantic", "default"])
+async def test_recovery_scan_works_with_either_data_converter(converter_name: str) -> None:
+    """The scan must decode history with the converter production configured.
+
+    Production calls TemporalClient.connect() with no converter, so it uses
+    DataConverter.default, while these tests have always used the pydantic one.
+    A payload format change in either would otherwise break only production.
+    """
+    from biosim_server.common.temporal import pydantic_data_converter
+
+    converter = pydantic_data_converter if converter_name == "pydantic" else _production_converter()
+    store = _store_returning(None)
+    temporal = _temporal_terminated(with_computed=True, converter=converter)
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
+        response = await _get("omex-verification-terminated", None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["workflow_status"] == "COMPLETED"
+    assert body["workflow_results"] is not None
+    store.save.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Fix 5: a history scan is bounded
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_history_scan_stops_at_the_event_limit() -> None:
+    """Past the event cap the scan counts as failed: shell served, nothing stored.
+
+    The cap only protects GET latency on a pathological history. Treating it as
+    "no proof" is the safe answer, since the store is write-once -- and the same
+    reasoning applies to the ledger status, which must not record a guess.
+    """
+    from biosim_server.api import main as api_main
+
+    store = _store_returning(None)
+    temporal = _temporal_terminated(with_computed=True)
+    ledger = MagicMock()
+    ledger.record_terminal_status = AsyncMock()
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
+         patch.object(api_main, "_HISTORY_SCAN_EVENT_LIMIT", 1):
+        response = await _get("omex-verification-terminated", None)
+
+    assert response.status_code == 200
+    # The limit of 1 is consumed by the start event, so the computed result is
+    # never reached and the shell is what comes back.
+    assert response.json()["workflow_status"] == "FAILED"
+    store.save.assert_not_awaited()
+    # Running past the cap is a failed scan, so the shell's FAILED status is a
+    # guess and must not be frozen into the ledger.
+    ledger.record_terminal_status.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_failed_scan_does_not_store_the_rebuilt_shell() -> None:
     """A scan that raises proves nothing, so the shell must not be written.
@@ -428,10 +702,35 @@ async def test_failed_scan_does_not_store_the_rebuilt_shell() -> None:
 
     handle.fetch_history_events = _flaky
 
+    ledger = MagicMock()
+    ledger.record_terminal_status = AsyncMock()
     with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
          patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
-         patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
         response = await _get("omex-verification-terminated", None)
 
     assert response.status_code == 200
     store.save.assert_not_awaited()
+    # The ledger status is a second irreversible write, and a failed scan cannot
+    # tell whether a comparison finished. Recording the shell's FAILED status
+    # would freeze a guess in the listing, where nothing retries it.
+    ledger.record_terminal_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completed_scan_records_the_terminal_status() -> None:
+    """A scan that succeeded does record the status, so the guard is not a blanket skip."""
+    store = _store_returning(None)
+    ledger = MagicMock()
+    ledger.record_terminal_status = AsyncMock()
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client",
+               return_value=_temporal_terminated(with_computed=False)), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        response = await _get("omex-verification-terminated", None)
+
+    assert response.status_code == 200
+    ledger.record_terminal_status.assert_awaited_once()
+    recorded = ledger.record_terminal_status.await_args.args
+    assert recorded[0] == "omex-verification-terminated"
+    assert recorded[1] == VerifyWorkflowStatus.FAILED
