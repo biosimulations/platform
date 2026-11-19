@@ -19,53 +19,20 @@ from temporalio.exceptions import ApplicationError, is_cancelled_exception
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
 from biosim_server.biosim_omex import OmexFile
-from biosim_server.biosim_runs import BiosimSimulationRun, BiosimSimulationRunStatus, BiosimulatorVersion, \
-    BiosimulatorWorkflowRun
+from biosim_server.biosim_runs import BiosimSimulationRunStatus, BiosimulatorVersion
 from biosim_server.biosim_runs.activities import GetExistingBiosimSimulationRunActivityInput, \
     GetExistingBiosimSimulationRunActivityOutput
-from biosim_server.biosim_verify import CompareSettings
-from biosim_server.biosim_verify.activities import GenerateStatisticsActivityInput, save_verification_report_activity
-from biosim_server.biosim_verify.models import GenerateStatisticsActivityOutput, VerifyWorkflowOutput, \
-    VerifyWorkflowStatus
+from biosim_server.biosim_verify.activities import save_verification_report_activity
+from biosim_server.biosim_verify.models import VerifyWorkflowOutput, VerifyWorkflowStatus
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflow, OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.report_store import VerificationReportStore
 from biosim_server.biosim_verify import runs_verify_workflow
 from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflow, RunsVerifyWorkflowInput
-from tests.biosim_verify.test_compatibility import _file
-
-
-def _compare_settings() -> CompareSettings:
-    return CompareSettings(user_description="", include_outputs=False,
-                           rel_tol=1e-6, abs_tol_min=1e-9, abs_tol_scale=1.0)
-
-
-def _workflow_run(run_id: str, simulator_version: BiosimulatorVersion) -> BiosimulatorWorkflowRun:
-    run = BiosimSimulationRun(id=run_id, name="test", simulator_version=simulator_version,
-                              status=BiosimSimulationRunStatus.SUCCEEDED)
-    archive = OmexFile(file_hash_md5="hash", uploaded_filename="m.omex", bucket_name="test",
-                       omex_gcs_path="m.omex", file_size=1)
-    return BiosimulatorWorkflowRun(workflow_id="wf", file_hash_md5="hash", image_digest="digest",
-                                   cache_buster="0", omex_file=archive,
-                                   simulator_version=simulator_version, biosim_run=run,
-                                   hdf5_file=_file(run_id, {"shared": ["t", "x"]}))
-
-
-def _found_run(simulator_version: BiosimulatorVersion) -> Any:
-    @activity.defn(name="get_existing_biosim_simulation_run_activity")
-    async def found(arg: GetExistingBiosimSimulationRunActivityInput) -> GetExistingBiosimSimulationRunActivityOutput:
-        return GetExistingBiosimSimulationRunActivityOutput(
-            status=BiosimSimulationRunStatus.SUCCEEDED,
-            biosim_workflow_run=_workflow_run(arg.biosim_run_id, simulator_version))
-
-    return found
-
-
-def _empty_statistics() -> Any:
-    @activity.defn(name="generate_statistics_activity")
-    async def statistics(_: GenerateStatisticsActivityInput) -> GenerateStatisticsActivityOutput:
-        return GenerateStatisticsActivityOutput(sims_run_info=[], comparison_statistics={})
-
-    return statistics
+from tests.biosim_verify.save_report_helpers import (
+    compare_settings,
+    empty_statistics,
+    found_run,
+)
 
 
 async def _execute_runs_workflow(client: Client, activities: list[Any],
@@ -75,7 +42,7 @@ async def _execute_runs_workflow(client: Client, activities: list[Any],
         result: VerifyWorkflowOutput = await client.execute_workflow(
             RunsVerifyWorkflow.run,
             args=[RunsVerifyWorkflowInput(biosimulations_run_ids=run_ids,
-                                          compare_settings=_compare_settings())],
+                                          compare_settings=compare_settings())],
             id=f"save-report-{uuid.uuid4()}", task_queue="verification_tasks",
             retry_policy=RetryPolicy(maximum_attempts=1))
     return result
@@ -114,7 +81,7 @@ async def test_completed_exit_point_saves_the_report(temporal_client: Client,
         return True
 
     result = await _execute_runs_workflow(
-        temporal_client, [_found_run(simulator_version_copasi), _empty_statistics(), save], ["run1"])
+        temporal_client, [found_run(simulator_version_copasi), empty_statistics(), save], ["run1"])
 
     assert result.workflow_status == VerifyWorkflowStatus.COMPLETED
     assert len(saved) == 1
@@ -135,14 +102,14 @@ async def test_omex_exit_point_saves_the_report(temporal_client: Client) -> None
     archive = OmexFile(file_hash_md5="hash", uploaded_filename="m.omex", bucket_name="test",
                        omex_gcs_path="m.omex", file_size=1)
     async with Worker(temporal_client, task_queue="verification_tasks", workflows=[OmexVerifyWorkflow],
-                      activities=[_empty_statistics(), save],
+                      activities=[empty_statistics(), save],
                       workflow_runner=UnsandboxedWorkflowRunner()):
         result: VerifyWorkflowOutput = await temporal_client.execute_workflow(
             OmexVerifyWorkflow.run,
             # No requested simulators: the workflow still reaches its single
             # finished exit point, without starting child simulation workflows.
             args=[OmexVerifyWorkflowInput(omex_file=archive, requested_simulators=[],
-                                          compare_settings=_compare_settings(), cache_buster="0")],
+                                          compare_settings=compare_settings(), cache_buster="0")],
             id=f"save-report-{uuid.uuid4()}", task_queue="verification_tasks",
             retry_policy=RetryPolicy(maximum_attempts=1))
 
@@ -164,7 +131,7 @@ async def test_failed_save_does_not_fail_the_verification(temporal_client: Clien
         raise ApplicationError("storage down", non_retryable=True)
 
     result = await _execute_runs_workflow(
-        temporal_client, [_found_run(simulator_version_copasi), _empty_statistics(), save], ["run1"])
+        temporal_client, [found_run(simulator_version_copasi), empty_statistics(), save], ["run1"])
 
     assert result.workflow_status == VerifyWorkflowStatus.COMPLETED
     # non_retryable means exactly one attempt, not five
@@ -186,7 +153,7 @@ async def test_transient_save_failure_is_retried(temporal_client: Client,
         return True
 
     result = await _execute_runs_workflow(
-        temporal_client, [_found_run(simulator_version_copasi), _empty_statistics(), save], ["run1"])
+        temporal_client, [found_run(simulator_version_copasi), empty_statistics(), save], ["run1"])
 
     assert result.workflow_status == VerifyWorkflowStatus.COMPLETED
     assert attempts == 2
@@ -205,12 +172,12 @@ async def test_cancellation_during_save_cancels_the_workflow(temporal_client: Cl
         return True
 
     async with Worker(temporal_client, task_queue="verification_tasks", workflows=[RunsVerifyWorkflow],
-                      activities=[_found_run(simulator_version_copasi), _empty_statistics(), save],
+                      activities=[found_run(simulator_version_copasi), empty_statistics(), save],
                       workflow_runner=UnsandboxedWorkflowRunner()):
         handle = await temporal_client.start_workflow(
             RunsVerifyWorkflow.run,
             args=[RunsVerifyWorkflowInput(biosimulations_run_ids=["run1"],
-                                          compare_settings=_compare_settings())],
+                                          compare_settings=compare_settings())],
             id=f"save-report-{uuid.uuid4()}", task_queue="verification_tasks",
             retry_policy=RetryPolicy(maximum_attempts=1))
         await asyncio.wait_for(started.wait(), timeout=30)
@@ -229,7 +196,7 @@ async def test_real_activity_stores_the_finished_report(
     """The real activity, store and workflow together: the report is readable back."""
     result = await _execute_runs_workflow(
         temporal_client,
-        [_found_run(simulator_version_copasi), _empty_statistics(), save_verification_report_activity],
+        [found_run(simulator_version_copasi), empty_statistics(), save_verification_report_activity],
         ["run1"])
 
     assert result.workflow_status == VerifyWorkflowStatus.COMPLETED
@@ -267,7 +234,7 @@ async def test_save_succeeds_after_more_than_five_failures(
         return True
 
     result = await _execute_runs_workflow(
-        temporal_client, [_found_run(simulator_version_copasi), _empty_statistics(), save], ["run1"])
+        temporal_client, [found_run(simulator_version_copasi), empty_statistics(), save], ["run1"])
 
     assert result.workflow_status == VerifyWorkflowStatus.COMPLETED
     assert attempts == 8

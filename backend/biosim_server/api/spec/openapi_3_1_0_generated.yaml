@@ -1258,8 +1258,13 @@ paths:
           description: Caller is not the workflow owner or an admin.
         '404':
           description: Verification not found, or not a verification workflow ID.
+            Also returned when Temporal has forgotten the workflow and the report
+            store answered that nothing is stored.
         '503':
-          description: Temporal is unreachable or the client is not initialized.
+          description: Temporal is unreachable or the client is not initialized. Also
+            returned when Temporal has forgotten the workflow but the report store
+            could not be read (corrupt or unavailable), because the report may still
+            exist.
         '422':
           description: Validation Error
           content:

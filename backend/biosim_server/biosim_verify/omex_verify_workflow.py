@@ -6,6 +6,7 @@ from typing import Any, Coroutine
 from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.workflow import ChildWorkflowHandle
+
 from biosim_server.biosim_omex import OmexFile
 from biosim_server.biosim_runs import BiosimulatorVersion, OmexSimWorkflow, OmexSimWorkflowInput, OmexSimWorkflowOutput, \
     BiosimulatorWorkflowRun
@@ -13,12 +14,14 @@ from biosim_server.biosim_verify import CompareSettings
 from biosim_server.biosim_verify.models import SimulatorFailure, VerifyWorkflowStatus, VerifyWorkflowOutput
 from biosim_server.biosim_verify.runs_verify_workflow import generate_statistics, save_verification_report
 
+
 class OmexVerifyWorkflowInput(BaseModel):
     omex_file: OmexFile
     requested_simulators: list[BiosimulatorVersion]
     cache_buster: str
     compare_settings: CompareSettings
     owner_sub: str | None = None
+
 
 @workflow.defn
 class OmexVerifyWorkflow:

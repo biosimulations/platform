@@ -701,12 +701,17 @@ async def _read_stored_report(
     workflow_id: str, user: AuthenticatedUser | None,
 ) -> tuple[_StoreRead, VerifyWorkflowOutput | None]:
     """
-    The stored report for this verification, or None to fall through to Temporal.
+    The stored report for this verification, plus how the read went.
 
     Ownership is checked here, before anything is returned: without it the store
     would become a way to read another user's report. A corrupt stored report is
-    logged and treated as a miss -- Temporal may still be able to answer, and a
-    damaged copy is not a reason to return 500.
+    logged and reported as ``CORRUPT`` rather than raised -- Temporal may still be
+    able to answer, and a damaged copy is not a reason to return 500 -- but the
+    outcome is kept distinct from a miss, because only a miss justifies a 404.
+
+    The ``_StoreRead`` outcome is returned alongside the report so the caller can
+    tell a genuine miss from a store it could not read: only the former justifies
+    a 404 when Temporal has also forgotten the workflow.
     """
     store = get_verification_report_store()
     if store is None:
@@ -735,20 +740,24 @@ async def _read_stored_report(
 
 async def _computed_output_from_history(
     client: Client, desc: WorkflowExecutionDescription,
-) -> tuple[bool, VerifyWorkflowOutput | None]:
-    """The output the workflow computed, and whether the history scan succeeded.
+) -> VerifyWorkflowOutput | None:
+    """The output the workflow computed, or None when history does not prove one.
 
     The persist activity is scheduled only at a finished exit point, and its
-    argument is the output. Finding that event is proof a result existed; a
-    successful scan that finds none is evidence that none was computed by a
-    build that had the save step -- but not proof, because a history recorded
-    before that step existed never schedules the activity at all.
+    argument is the output. Finding that event is proof a result existed.
 
-    The boolean separates those two from a failed scan, which proves nothing.
-    That distinction is what stops a rebuilt, results-free shell from occupying
-    the write-once slot: a verification terminated after its comparison finished
-    has its real result in history, and storing the shell would make that result
-    unstorable forever.
+    None covers two cases that the caller treats the same way, because neither
+    justifies writing:
+
+    * the scan completed and found no such event -- which is evidence that
+      nothing was computed by a build that had the save step, but not proof,
+      since a history recorded before that step existed never schedules the
+      activity at all;
+    * the scan itself failed, which proves nothing either way.
+
+    Both must leave the write-once slot free: a verification terminated after
+    its comparison finished has its real result in history, and storing a
+    rebuilt, results-free shell would make that result unstorable forever.
     """
     handle = client.get_workflow_handle(desc.id, run_id=desc.run_id)
     try:
@@ -761,11 +770,11 @@ async def _computed_output_from_history(
             decoded = await client.data_converter.decode(
                 attrs.input.payloads, [VerifyWorkflowOutput])
             if len(decoded) == 1 and isinstance(decoded[0], VerifyWorkflowOutput):
-                return True, decoded[0]
+                return decoded[0]
     except Exception as e:
         logger.warning("Could not scan history for %s: %s", desc.id, e)
-        return False, None
-    return True, None
+        return None
+    return None
 
 
 async def _catch_up_save(
@@ -781,14 +790,16 @@ async def _catch_up_save(
     ``has_computed_result`` says whether a computed result is known to exist. A
     rebuilt output carries no results, and storing one would occupy the
     write-once slot with a permanent FAILED report and make the real result
-    unstorable later. The recovery paths pass ``False`` when history proves
-    nothing was computed, so the shell is served but never persisted.
+    unstorable later. The recovery paths pass ``False`` whenever the scan did not
+    produce a result -- whether it searched and found none, or failed outright --
+    because neither case proves anything was computed. The shell is then served
+    but never persisted, and the next GET retries the write.
     """
     if not output.workflow_status.is_done:
         return
     if not has_computed_result and output.workflow_results is None:
         logger.info(
-            "Not catch-up saving %s: history proves nothing was computed",
+            "Not catch-up saving %s: no computed result to store",
             output.workflow_id,
         )
         return
@@ -828,7 +839,7 @@ async def _serve_recovered(
     recovered = await _recover_terminal_verification(temporal_client, desc, user, store_read)
     if recovered is None:
         return None
-    scanned, computed = await _computed_output_from_history(temporal_client, desc)
+    computed = await _computed_output_from_history(temporal_client, desc)
     if computed is not None:
         recovered = computed
     # Only a computed result justifies consuming the write-once slot.
@@ -848,8 +859,8 @@ async def _serve_recovered(
     responses={
         401: {"description": "Invalid bearer token, or no token for a verification started with one."},
         403: {"description": "Caller is not the workflow owner or an admin."},
-        404: {"description": "Verification not found, or not a verification workflow ID."},
-        503: {"description": "Temporal is unreachable or the client is not initialized."},
+        404: {"description": "Verification not found, or not a verification workflow ID. Also returned when Temporal has forgotten the workflow and the report store answered that nothing is stored."},
+        503: {"description": "Temporal is unreachable or the client is not initialized. Also returned when Temporal has forgotten the workflow but the report store could not be read (corrupt or unavailable), because the report may still exist."},
     },
 )
 async def get_verify_output(

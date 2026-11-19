@@ -144,10 +144,14 @@ async def save_verification_report(output: VerifyWorkflowOutput) -> None:
 
     * The patch guard is inside, so a history recorded before this step replays
       without the activity instead of failing non-determinism.
-    * A save failure is logged and swallowed. The verification's own result is
-      what the caller asked for, and the report is still in Temporal history
-      until retention expires; one storage outage must not turn a COMPLETED
-      verification into a failed workflow.
+    * Only a non-retryable failure reaches the logging branch. Transient errors
+      never get here: ``SAVE_REPORT_RETRY_POLICY`` has no attempt limit, so a
+      storage outage keeps the workflow retrying rather than closing it. What
+      lands in ``except`` is a failure a retry cannot fix -- no store configured,
+      or a ``ValueError`` such as an unfinished report -- and it is logged and
+      swallowed so the verification completes with its own status. The report is
+      then not stored, but the output is still in Temporal history, so a later
+      GET can save it while the history is retained.
     * Cancellation is re-raised. ``is_cancelled_exception`` covers Temporal's
       own ``CancelledError`` and an ``ActivityError`` wrapping one; plain
       ``asyncio.CancelledError`` is a ``BaseException`` and already bypasses the

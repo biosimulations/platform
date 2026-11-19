@@ -622,6 +622,57 @@ never polled, or polled only after its Temporal history expired **and** with no 
 report (a stored report is served and recorded, so that path no longer 404s). A client
 that needs a live status still has to poll `GET /verify/{workflow_id}`.
 
+**`GET /verify/{workflow_id}` reads the report store first.** A stored report is
+served even when Temporal is unreachable or has forgotten the workflow, and ownership
+is checked on the store hit before anything is returned. When there is no stored report
+the endpoint falls back to Temporal as before; if Temporal then answers NOT_FOUND, the
+answer depends on how the store read went:
+
+| store read | Temporal | answer |
+| --- | --- | --- |
+| miss (nothing stored) | NOT_FOUND | **404** -- "no longer retained" when the ledger row is visible, else generic "not found" |
+| corrupt, or store unreachable | NOT_FOUND | **503** -- the report may still exist, so permanent absence would be a lie |
+
+The 503 matters: a corrupt or unreadable store is repairable, and answering 404 there
+would make a client discard a verification that is still recoverable.
+
+**Recovery from a failed execution** rebuilds an output from the start input, which
+carries no results. Before persisting it, the endpoint scans the workflow history for
+the `save_verification_report_activity` scheduled event, whose argument is the output
+the workflow computed. What it serves and whether it writes:
+
+| scan result | serve | write |
+| --- | --- | --- |
+| computed result found | that result | yes |
+| searched, found none | rebuilt shell | no |
+| scan failed | rebuilt shell | no |
+
+The last two leave the write-once slot free so the real result can still be stored
+later; a skipped write is retried by the next GET, while a wrong write cannot be undone.
+Note that a history recorded before the save step existed never schedules the activity,
+so "searched, found none" is evidence rather than proof that nothing was computed.
+
+**Report persistence retries without a cap.** `SAVE_REPORT_RETRY_POLICY` sets
+`maximum_attempts=0`, so a transient storage failure keeps the workflow open instead of
+closing it. A cap would close the workflow during an outage and start the 24-hour
+Temporal retention clock with no stored report, turning a recoverable outage into
+permanent loss; a workflow that keeps retrying also keeps its history, so the result
+stays recoverable.
+
+Only a failure a retry cannot fix escapes that loop. `save_verification_report_activity`
+marks two cases non-retryable: a worker with no report store configured, and a
+`ValueError` from `VerificationReportStore.save` (an unfinished report, or one that
+cannot be serialized). `save_verification_report` catches either one, logs
+`Failed to save verification report for workflow <id>; the verification result is
+unaffected.`, and returns -- the workflow then completes with its own status
+(`COMPLETED`, `FAILED`, or `RUN_ID_NOT_FOUND`) rather than failing on the save. Nothing
+is marked blocked and nothing is retried further; the report is simply not stored yet.
+That is recoverable, because the output is still in Temporal history: a later
+`GET /verify/{workflow_id}` finds no stored report, reads the output from history, and
+saves it while the history is still retained. Watch for the
+`Failed to save verification report` log line rather than capping the retries: it is
+the only signal that a report was not stored.
+
 **Which token to send:** the Platform API is an OAuth resource server and
 accepts **access tokens** only. Do not send an OIDC ID token in
 `Authorization`. Full contract: `docs/auth0-tokens-claims-endpoints.md`.
