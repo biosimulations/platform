@@ -168,7 +168,8 @@ backend/
 
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
-- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created, omex_hash, status). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; `status` is written once by `GET /verify/{workflow_id}` when it first sees the workflow finished; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired.
+- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created, omex_hash, status). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; `status` is written once by `GET /verify/{workflow_id}` when it first sees the workflow finished; read by `GET /verification_ids` and used by `GET /verify/{workflow_id}` to distinguish "exists but no longer retained" from "not found". The ledger carries identity and terminal status only; the report itself lives in **BiosimVerifyReports**.
+- **BiosimVerifyReports** - Durable verification reports (workflow_id, workflow_run_id, owner_sub, workflow_status, saved_at, encoding, uncompressed_bytes, sha256, and either an inline `payload` or a GridFS `file_id`). Written once by `save_verification_report_activity` (write-once: a second save returns False); read first by `GET /verify/{workflow_id}`, which falls back to Temporal when there is no stored report. Reports above `INLINE_PAYLOAD_MAX_BYTES` are stored in the **biosim-verify-reports** GridFS bucket (`.files` + `.chunks`).
 - **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns
@@ -613,13 +614,91 @@ the cached runs come from different archives. The parameter is pattern-validated
 **`status` on the ledger row** is the terminal `VerifyWorkflowStatus` (`COMPLETED`,
 `FAILED`, `RUN_ID_NOT_FOUND`), written **once** by `GET /verify/{workflow_id}` the
 first time it observes the workflow finished -- after the ownership check, on the
-recovered-from-history paths too, with a guarded `update_one({"status": None})` so
+recovered-from-history paths too (unless the history scan fails, in which case the
+status is a guess and is left unrecorded for a later GET to settle), with a guarded
+`update_one({"status": None})` so
 the first observed status sticks and rows written before the field existed are
 covered. Nothing is written at insert and a ledger error never fails the GET.
 `null` in the listing therefore means "not yet observed as finished": still running,
-never polled, or polled only after its Temporal history expired (that path 404s
-before any write). A client that needs a live status still has to poll
-`GET /verify/{workflow_id}`.
+never polled, or polled only after its Temporal history expired **and** with no stored
+report (a stored report is served and recorded, so that path no longer 404s). A client
+that needs a live status still has to poll `GET /verify/{workflow_id}`.
+
+**`GET /verify/{workflow_id}` reads the report store first.** A stored report is
+served even when Temporal is unreachable or has forgotten the workflow, and ownership
+is checked on the store hit before anything is returned. When there is no stored report
+the endpoint falls back to Temporal as before; if Temporal then answers NOT_FOUND, the
+answer depends on how the store read went:
+
+| store read | Temporal | answer |
+| --- | --- | --- |
+| miss (nothing stored) | NOT_FOUND | **404** -- "no longer retained" when the ledger row is visible, else generic "not found" |
+| store unreachable | NOT_FOUND | **503 with `Retry-After: 5`** -- waiting may fix it |
+| corrupt stored report | NOT_FOUND | **503 without `Retry-After`** -- retrying cannot repair the bytes |
+
+The 503 matters: a corrupt or unreadable store is repairable, and answering 404 there
+would make a client discard a verification that is still recoverable. The two 503s are
+deliberately not identical: only the outage carries a retry hint, because telling a
+client to retry corruption would just make it poll a permanent failure.
+
+**Recovery from a failed execution** rebuilds an output from the start input, which
+carries no results. Before persisting it, the endpoint scans the workflow history for
+the `save_verification_report_activity` scheduled event, whose argument is the output
+the workflow computed. What it serves and whether it writes:
+
+| scan result | serve | save report | record status |
+| --- | --- | --- | --- |
+| computed result found, identity matches | that result | yes | yes |
+| searched, found none | rebuilt shell | no | yes |
+| scan failed, or hit `_HISTORY_SCAN_EVENT_LIMIT` | rebuilt shell | no | **no** |
+| computed result found, identity differs (`MISMATCH`) | rebuilt shell | no | yes |
+
+The last three leave the write-once slot free so the real result can still be stored
+later; a skipped write is retried by the next GET, while a wrong write cannot be undone.
+Note that a history recorded before the save step existed never schedules the activity,
+so "searched, found none" is evidence rather than proof that nothing was computed.
+
+The ledger status follows the same rule for the same reason: only the scan can tell
+whether a comparison finished, so when the scan fails the shell's `FAILED` status is a
+guess, and recording it would freeze that guess in the listing where nothing retries it.
+`_computed_output_from_history` therefore returns a `_HistoryScan` outcome alongside the
+output -- `FOUND`, `NONE`, `MISMATCH` or `FAILED` -- and only `FAILED` suppresses the
+status write. A later GET that can read the history records the real status instead.
+
+**A decoded result must belong to the execution it came from.** The caller is
+authorized against the shell rebuilt from the start input, and the decoded output then
+replaces that shell and is written to the write-once store, so `_belongs_to_execution`
+compares its `workflow_id`, `workflow_run_id` and `owner_sub` against that shell. A
+mismatch is treated exactly like "no proof": the shell is served and nothing is written.
+Otherwise a payload from another execution would be stored permanently under the wrong
+identity, and `owner_sub` is what the store's ownership check reads. `expected_owner_sub`
+is a required argument so a call site cannot silently omit it, and the run id is compared
+whenever both sides have one (every exit point sets it, so in practice always). The scan
+is also bounded by `_HISTORY_SCAN_EVENT_LIMIT` (5000 events), far above what the request
+limits (`MAX_VERIFY_RUN_IDS` and `MAX_VERIFY_SIMULATORS`, both 10) allow, so it only
+protects GET latency on a history that grew some other way; running past the cap counts
+as a failed scan.
+
+**Report persistence retries without a cap.** `SAVE_REPORT_RETRY_POLICY` sets
+`maximum_attempts=0`, so a transient storage failure keeps the workflow open instead of
+closing it. A cap would close the workflow during an outage and start the 24-hour
+Temporal retention clock with no stored report, turning a recoverable outage into
+permanent loss; a workflow that keeps retrying also keeps its history, so the result
+stays recoverable.
+
+Only a failure a retry cannot fix escapes that loop. `save_verification_report_activity`
+marks two cases non-retryable: a worker with no report store configured, and a
+`ValueError` from `VerificationReportStore.save` (an unfinished report, or one that
+cannot be serialized). `save_verification_report` catches either one, logs
+`Failed to save verification report for workflow <id>; the verification result is
+unaffected.`, and returns -- the workflow then completes with its own status
+(`COMPLETED`, `FAILED`, or `RUN_ID_NOT_FOUND`) rather than failing on the save. Nothing
+is marked blocked and nothing is retried further; the report is simply not stored yet.
+That is recoverable, because the output is still in Temporal history: a later
+`GET /verify/{workflow_id}` finds no stored report, reads the output from history, and
+saves it while the history is still retained. Watch for the
+`Failed to save verification report` log line rather than capping the retries: it is
+the only signal that a report was not stored.
 
 **Which token to send:** the Platform API is an OAuth resource server and
 accepts **access tokens** only. Do not send an OIDC ID token in

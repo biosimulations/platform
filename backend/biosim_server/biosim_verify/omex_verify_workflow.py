@@ -12,7 +12,7 @@ from biosim_server.biosim_runs import BiosimulatorVersion, OmexSimWorkflow, Omex
     BiosimulatorWorkflowRun
 from biosim_server.biosim_verify import CompareSettings
 from biosim_server.biosim_verify.models import SimulatorFailure, VerifyWorkflowStatus, VerifyWorkflowOutput
-from biosim_server.biosim_verify.runs_verify_workflow import generate_statistics
+from biosim_server.biosim_verify.runs_verify_workflow import generate_statistics, save_verification_report
 
 
 class OmexVerifyWorkflowInput(BaseModel):
@@ -88,6 +88,8 @@ class OmexVerifyWorkflow:
             self.verify_output.workflow_error = no_results
         else:
             self.verify_output.workflow_status = VerifyWorkflowStatus.COMPLETED
+
+        await save_verification_report(self.verify_output)
         return self.verify_output
 
 

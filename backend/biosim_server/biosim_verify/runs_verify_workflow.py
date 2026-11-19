@@ -4,15 +4,41 @@ from datetime import timedelta
 from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError
+from temporalio.exceptions import ActivityError, is_cancelled_exception
 
 from biosim_server.biosim_runs import BiosimSimulationRunStatus, BiosimulatorWorkflowRun, \
     GetExistingBiosimSimulationRunActivityInput, get_existing_biosim_simulation_run_activity
 from biosim_server.biosim_runs.activities import GetExistingBiosimSimulationRunActivityOutput
 from biosim_server.biosim_verify import CompareSettings
-from biosim_server.biosim_verify.activities import generate_statistics_activity, GenerateStatisticsActivityInput
+from biosim_server.biosim_verify.activities import generate_statistics_activity, GenerateStatisticsActivityInput, \
+    save_verification_report_activity
 from biosim_server.biosim_verify.models import GenerateStatisticsActivityOutput, SimulationRunInfo, \
     VerifyWorkflowOutput, VerifyWorkflowStatus
+
+
+# Identifies the history change that added report saving. Both verifying workflows
+# mark their histories with it, so a run recorded before the change replays without
+# the activity and a run recorded after it replays with it.
+SAVE_REPORT_PATCH_ID = "save-verification-report-v1"
+
+# One minute per attempt. Motor sets no socket timeout, so this is what ends a
+# stuck write. Timeout bounds one attempt.
+# An insert or a GridFS upload of a report finishes well inside one minute.
+SAVE_REPORT_START_TO_CLOSE_TIMEOUT = timedelta(minutes=1)
+
+# Retry transient failures without a limit. The store is write-once, so repeated
+# saves converge rather than conflict. A cap here would close the workflow during
+# a storage outage and start the retention clock with no stored report -- turning
+# a recoverable outage into permanent loss, which is what this feature prevents.
+# A workflow that keeps retrying also keeps its history, so the result stays
+# recoverable.
+SAVE_REPORT_RETRY_POLICY = RetryPolicy(
+    initial_interval=timedelta(seconds=2),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(seconds=30),
+    # No maximum_attempts: 0 means unlimited.
+    maximum_attempts=0,
+)
 
 
 class RunsVerifyWorkflowInput(BaseModel):
@@ -66,6 +92,7 @@ class RunsVerifyWorkflow:
                     compare_settings=verify_input.compare_settings, workflow_run_id=workflow.info().run_id,
                     workflow_status=status, timestamp=str(workflow.now()),
                     workflow_error=error_message, owner_sub=verify_input.owner_sub)
+                await save_verification_report(self.verify_output)
                 return self.verify_output
             else:
                 simulator_workflow_runs.append(output.biosim_workflow_run)
@@ -75,6 +102,7 @@ class RunsVerifyWorkflow:
         stats = await generate_statistics(sim_workflow_runs=simulator_workflow_runs, compare_settings=self.verify_input.compare_settings)
         self.verify_output.workflow_results = stats
         self.verify_output.workflow_status = VerifyWorkflowStatus.COMPLETED
+        await save_verification_report(self.verify_output)
         return self.verify_output
 
 
@@ -107,3 +135,40 @@ async def generate_statistics(sim_workflow_runs: list[BiosimulatorWorkflowRun], 
     except ActivityError as e:
         workflow.logger.exception(f"Failed to generate statistics in workflow_id {workflow.info().workflow_id}.", exc_info=e)
         raise e
+
+
+async def save_verification_report(output: VerifyWorkflowOutput) -> None:
+    """Best-effort save of a finished report, called at a workflow's exit points.
+
+    Three rules live here so both workflows cannot drift apart:
+
+    * The patch guard is inside, so a history recorded before this step replays
+      without the activity instead of failing non-determinism.
+    * Only a non-retryable failure reaches the logging branch. Transient errors
+      never get here: ``SAVE_REPORT_RETRY_POLICY`` has no attempt limit, so a
+      storage outage keeps the workflow retrying rather than closing it. What
+      lands in ``except`` is a failure a retry cannot fix -- no store configured,
+      or a ``ValueError`` such as an unfinished report -- and it is logged and
+      swallowed so the verification completes with its own status. The report is
+      then not stored, but the output is still in Temporal history, so a later
+      GET can save it while the history is retained.
+    * Cancellation is re-raised. ``is_cancelled_exception`` covers Temporal's
+      own ``CancelledError`` and an ``ActivityError`` wrapping one; plain
+      ``asyncio.CancelledError`` is a ``BaseException`` and already bypasses the
+      ``except Exception`` below.
+    """
+    if not workflow.patched(SAVE_REPORT_PATCH_ID):
+        return
+    try:
+        await workflow.execute_activity(
+            save_verification_report_activity,
+            arg=output,
+            start_to_close_timeout=SAVE_REPORT_START_TO_CLOSE_TIMEOUT,
+            retry_policy=SAVE_REPORT_RETRY_POLICY,
+        )
+    except Exception as e:
+        if is_cancelled_exception(e):
+            raise
+        workflow.logger.exception(
+            f"Failed to save verification report for workflow {output.workflow_id}; "
+            f"the verification result is unaffected.", exc_info=e)

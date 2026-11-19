@@ -26,6 +26,7 @@ from biosim_server.biosim_verify.models import (
     VerificationType,
     VerifyWorkflowStatus,
 )
+from biosim_server.biosim_verify.report_store import VerificationReportStore
 from biosim_server.common.auth import AuthenticatedUser, get_current_user, get_optional_user
 from tests.api.test_main import _make_temporal_for_runs, _make_verify_output, _temporal_with_describe, _verify_omex_mocks
 from tests.biosim_verify.test_compatibility import _file
@@ -330,6 +331,7 @@ async def test_real_temporal_and_mongo_roundtrip(
     client: AsyncClient,
     temporal_client: "Client",
     verification_database_service_mongo: VerificationDatabaseServiceMongo,
+    verification_report_store_mongo: VerificationReportStore,
     simulator_version_copasi: "BiosimulatorVersion",
     outcome: str,
 ) -> None:
@@ -337,7 +339,7 @@ async def test_real_temporal_and_mongo_roundtrip(
     from biosim_server.biosim_omex.models import OmexFile
     from biosim_server.biosim_runs.models import BiosimSimulationRun, BiosimSimulationRunStatus, BiosimulatorWorkflowRun, Hdf5DataValues
     from biosim_server.biosim_runs.activities import GetExistingBiosimSimulationRunActivityInput, GetExistingBiosimSimulationRunActivityOutput
-    from biosim_server.biosim_verify.activities import generate_statistics_activity
+    from biosim_server.biosim_verify.activities import generate_statistics_activity, save_verification_report_activity
     from biosim_server.biosim_verify.runs_verify_workflow import RunsVerifyWorkflow
     from temporalio import activity
     from temporalio.client import WorkflowFailureError
@@ -361,7 +363,8 @@ async def test_real_temporal_and_mongo_roundtrip(
         ))
 
     async with Worker(temporal_client, task_queue="verification_tasks", workflows=[RunsVerifyWorkflow],
-                      activities=[fetch_run, generate_statistics_activity], workflow_runner=UnsandboxedWorkflowRunner()):
+                      activities=[fetch_run, generate_statistics_activity, save_verification_report_activity],
+                      workflow_runner=UnsandboxedWorkflowRunner()):
         with patch("biosim_server.biosim_verify.activities.BiosimServiceRest.get_hdf5_data",
                    new=AsyncMock(return_value=Hdf5DataValues(shape=[2, 3], values=[0, 1, 2, 3, 4, 5]))):
             response = await client.post("/verify/runs", params={"biosimulations_run_ids": "run1"})
@@ -381,6 +384,17 @@ async def test_real_temporal_and_mongo_roundtrip(
             assert "private worker error" not in response.text
             if outcome == "completed":
                 assert body["workflow_results"]["comparison_statistics"]["shared"][0][0]["score"] == [0.0, 0.0]
+            # All three outcomes end up stored, but by different routes. The two
+            # that reach a finished return are saved by the workflow itself. The
+            # "failed" outcome raises inside fetch_run and never reaches one, so
+            # its report is written by the GET above, whose catch-up save stores
+            # the terminal output it recovered from history.
+            stored = await verification_report_store_mongo.get(workflow_id)
+            assert stored is not None
+            assert stored.workflow_id == workflow_id
+            # Compare against what the API reported, not a second copy of the
+            # mapping -- otherwise a wrong status passes both places at once.
+            assert stored.workflow_status.value == body["workflow_status"]
 
 
 @pytest.mark.integration_local
@@ -650,6 +664,15 @@ async def test_terminal_status_is_recorded_on_the_recovered_path(client: AsyncCl
         query_side_effect=RPCError("closed", RPCStatusCode.INTERNAL, b""))
     desc = temporal.get_workflow_handle.return_value.describe.return_value
     desc.id, desc.run_id, desc.close_time = "wf", "execution", datetime.now(UTC)
+    # A terminated workflow's history is still readable, so the recovery scan runs
+    # and finds no save event: that is NONE, not FAILED, and the status is recorded.
+    # Without this the handle's AsyncMock would make the scan raise, which is a
+    # different case (see test_failed_scan_does_not_store_the_rebuilt_shell).
+    async def _empty_history(*_args: object, **_kwargs: object) -> object:
+        return
+        yield  # pragma: no cover -- makes this an async generator that yields nothing
+
+    temporal.get_workflow_handle.return_value.fetch_history_events = _empty_history
     ledger = AsyncMock()
     with patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
          patch("biosim_server.api.main.get_verification_database_service", return_value=ledger), \
