@@ -4,7 +4,7 @@ import json
 import logging
 import time
 import zlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
@@ -117,17 +117,28 @@ def _failure(
 
 
 async def fetch_upstream_json(
-    client: httpx.AsyncClient, path: str, *, resource: str, page: str | None = None
+    client: httpx.AsyncClient,
+    path: str,
+    *,
+    resource: str,
+    page: str | None = None,
+    params: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Fetch one JSON object without caller headers, query parameters or pooled-client state."""
-    payload = await fetch_upstream_json_value(client, path, resource=resource, page=page)
+    """Fetch one JSON object without caller headers, query parameters or pooled-client state.
+
+    ``params`` are the one exception: query parameters the caller asks for by
+    name (plan §4.3's ``includeTests``), forwarded explicitly.
+    """
+    payload = await fetch_upstream_json_value(client, path, resource=resource, page=page, params=params)
     if not isinstance(payload, dict):
         raise HTTPException(502, f"The upstream service returned an unexpected {resource}.")
     return payload
 
 
 @asynccontextmanager
-async def _public_stream(client: httpx.AsyncClient, path: str) -> AsyncIterator[httpx.Response]:
+async def _public_stream(
+    client: httpx.AsyncClient, path: str, *, params: Mapping[str, str] | None = None
+) -> AsyncIterator[httpx.Response]:
     """Stream one GET that carries nothing from the pooled client but its pool.
 
     httpx's ``send`` stores every upstream ``Set-Cookie`` in the client's jar, and
@@ -137,8 +148,15 @@ async def _public_stream(client: httpx.AsyncClient, path: str) -> AsyncIterator[
     anonymous request. So the request is built afresh: the client contributes only
     its base URL (stripped of query defaults and credentials) and timeout, and the
     jar is never read. Clearing the jar instead would race concurrent requests.
+
+    ``params`` are explicit caller-requested query parameters, re-encoded after the
+    copy_with above has stripped the pooled client's query defaults: a query string
+    inside ``path`` would be silently dropped by that strip, so a caller who needs
+    one passes it here instead of building it into the path.
     """
     url = client.build_request("GET", path).url.copy_with(query=None, userinfo=b"")
+    if params is not None:
+        url = url.copy_with(query=str(httpx.QueryParams(params)).encode())
     request = httpx.Request(
         "GET", url, headers=_PUBLIC_FETCH_HEADERS, extensions={"timeout": client.timeout.as_dict()},
     )
@@ -239,7 +257,12 @@ async def _read_capped_body(response: httpx.Response, resource: str, limit: int)
 
 
 async def fetch_upstream_json_value(
-    client: httpx.AsyncClient, path: str, *, resource: str, page: str | None = None
+    client: httpx.AsyncClient,
+    path: str,
+    *,
+    resource: str,
+    page: str | None = None,
+    params: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | list[Any]:
     """Fetch an object or array with the same isolated request and error policy.
 
@@ -252,11 +275,15 @@ async def fetch_upstream_json_value(
 
     ``page`` labels the fetch for the page-phase instrumentation (a bounded
     enum-like string, e.g. ``"run"``); ordinary summary routes omit it.
+
+    ``params`` are explicit caller-requested query parameters (plan §4.3's
+    ``includeTests``); they are forwarded while every pooled-client query default
+    stays stripped.
     """
     limit = get_settings().upstream_max_response_bytes
     started = time.monotonic()
     try:
-        async with _public_stream(client, path) as response:
+        async with _public_stream(client, path, params=params) as response:
             if response.status_code >= 500:
                 raise _failure(
                     502, f"The upstream service failed while loading the {resource}.",

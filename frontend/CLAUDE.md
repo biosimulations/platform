@@ -44,7 +44,7 @@ npm run lint
 npm run typecheck
 npm run test:auth
 npm run test:verification
-npm run test:legacy-proxies
+npm run test:simulators
 ```
 
 CI runs these checks on every PR and push to main (see `.github/workflows/frontend-ci.yaml`). Verify UI changes manually in `npm run dev`.
@@ -80,20 +80,13 @@ frontend/
 │       │   └── check-status/[processing_id].vue  # Poll run status
 │       ├── simulators/         # get-started, validate, suggest, index
 │       └── utilities/          # validate-model, validate-metadata, etc.
-├── server/
-│   ├── routes/biosimulators-api/[...path].get.ts # Allowlisted GET proxy
-│   ├── routes/biosimulations-api/runs/[id].get.ts # Uncached run record GET
-│   ├── routes/simdata-api/datasets/[id]/metadata.get.ts # Uncached metadata GET
-│   ├── utils/upstream-passthrough.ts           # Fetch and relay without credentials
-│   ├── utils/legacy-run-id.ts                 # Single-segment run ID validation
-│   └── utils/legacy-simulators-proxy.ts         # Path rules and cache eligibility
 ├── public/                     # Static assets (images, fonts, lottie)
 ├── nuxt.config.ts
 ├── package.json
 ├── package-lock.json           # Authoritative lockfile (npm)
 ├── tsconfig.json
 ├── eslint.config.mjs
-└── tests/                     # Auth, verification, simulator proxy and run-ID unit tests
+└── tests/                     # Auth, verification and simulator-composable unit tests
 ```
 
 ## Runtime Config
@@ -108,10 +101,6 @@ Use Nuxt's `NUXT_PUBLIC_<KEY>` (public) and `NUXT_<KEY>` (server-only) env-var n
 | `NUXT_PUBLIC_API_URL`             | browser + server | Platform backend API base URL — points at the FastAPI service in `../backend/` |
 | `NUXT_API_URL`                    | server only      | In-cluster URL Nitro uses for SSR-time fetches to the backend (e.g., `http://api:8000`). Skips the public ingress when the frontend is deployed alongside `api`. Read via `useRuntimeConfig().apiUrl` from server-side code (`import.meta.server`); not exposed to the browser. |
 | `NUXT_PUBLIC_BIOSIMULATIONS_API_URL` | browser + server | Public biosimulations.org project DB API base URL (different service from the platform backend) — used by `pages/biosim-db.vue` |
-| `NUXT_PUBLIC_LEGACY_SIMULATORS_API_URL` | browser + server | Base URL the simulators pages fetch from; defaults to the same-origin `/biosimulators-api` proxy. Pointing it at the upstream breaks CORS on deployed hosts. |
-| `NUXT_LEGACY_SIMULATORS_API_URL`  | server only      | Upstream for the `/biosimulators-api` proxy; defaults to `https://api.biosimulators.org`. |
-| `NUXT_LEGACY_RUNS_API_URL`        | server only      | Upstream for the verify-model run-precheck proxy `/biosimulations-api/runs/{id}`; defaults to `https://api.biosimulations.org`. |
-| `NUXT_SIMDATA_API_URL`            | server only      | Upstream for the run-precheck proxy `/simdata-api/datasets/{id}/metadata`; defaults to `https://simdata.api.biosimulations.org`. |
 
 Local dev: copy `frontend/.env.example` → `frontend/.env` (or let `scripts/dev-up.sh` seed it). Loaded by Nuxt's built-in dotenv at dev-server startup. Deployed: the corresponding ConfigMap (`kustomize/config/<overlay>/frontend.env`) supplies the same names.
 
@@ -125,6 +114,9 @@ Backend endpoints consumed (see `../backend/CLAUDE.md` for the full list):
 | `pages/simulations/check-status/[processing_id].vue` | `GET /simulations/{processing_id}` (workflow-query + DB-fallback hybrid, since PR #53) |
 | `pages/simulations/index.vue` | `POST /simulations/runs` — **not wired on `main`** (renders hardcoded mock data via `setTimeout`); partial wire-up exists on remote branch `origin/feature/runs-page` with a known response-shape bug. See `docs/simulation-runs-api-plan.md` for the status. |
 | `pages/biosim-db.vue` | `GET /projects` (against `runtimeConfig.public.biosimulations_api_url` — the public biosimulations.org project DB API, not the platform backend) |
+| `pages/simulators/index.vue`, `suggest.vue` (via `useSimulators`) | `GET /simulators/latest` → `.simulators`; `GET /ontologies/{EDAM,SBO}` → `.terms` |
+| `pages/simulators/[id].vue` (via `useSimulators`) | `GET /simulators/{id}/{version}?include_tests=true` (a bare record), `GET /simulators/{id}` → `.versions`. The "Platform simulator record (JSON)" section shows that record and links to the canonical BioSimulators specification. |
+| `pages/utilities/verify-model.vue` (via `useVerificationAnalytics.precheckRunIds`) | `GET /verify/runs/precheck?biosimulations_run_ids=…` (trimmed, deduped, at most 10), mapped into `RunPrecheckResult`; then `POST /verify/runs` |
 
 ## Key Patterns
 
@@ -143,7 +135,7 @@ The repo-root `.github/workflows/frontend-ci.yaml` runs on every PR and push to 
 3. `npm run typecheck`
 4. `npm run test:auth`
 5. `npm run test:verification`
-6. `npm run test:legacy-proxies`
+6. `npm run test:simulators`
 
 ## Deploy
 
@@ -207,6 +199,5 @@ production-build SSR bugs that `npm run dev` hides — not for personal iteratio
 ## External Services
 
 - **`../backend/` FastAPI service** — primary backend for simulations and verification.
-- **api.biosimulations.org** — project list and detail API, also linked from the footer. The verify-model run precheck reads `/runs/{id}` through the same-origin `/biosimulations-api/runs/{id}` proxy.
-- **simdata.api.biosimulations.org** — the run precheck reads HDF5 metadata through `/simdata-api/datasets/{id}/metadata`. Both run-precheck proxies are GET-only, validate IDs as single literal segments, and never cache responses or forward caller credentials. They relay only status, content type and body; transport failures become 502.
-- **api.biosimulators.org** — simulator registry and ontologies, reached through the same-origin `/biosimulators-api` proxy because its CORS allowlist excludes our hosts. Only the registry list and four ontology dumps are cached for 10 minutes per pod (five fixed keys, about 2 MB), with stale-while-revalidate. Simulator details are uncached; request credentials are never forwarded.
+- **api.biosimulations.org** — project list and detail API, also linked from the footer. The verify-model run precheck no longer calls it from the browser: the backend's `GET /verify/runs/precheck` reads run records (and simdata metadata) server-side. Some components still fetch `NUXT_PUBLIC_LEGACY_API_URL` directly (`LogAlgorithm.vue` KISAO terms, `/results` in `useVisualizations.ts` and `DesignChart.vue`); those are outside the owned simulators contract.
+- **api.biosimulators.org** — simulator registry and ontologies, now read only through the backend's owned contract (`GET /simulators/*`, `/ontologies/*`; see `../backend/CLAUDE.md`). Neither it nor simdata allows our hosts in CORS, which is why the browser does not call them. The detail page's "Canonical specification" link opens `api.biosimulators.org/simulators/{id}/{version}` as a top-level navigation, which CORS does not govern.
