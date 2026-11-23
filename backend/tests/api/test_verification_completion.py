@@ -384,17 +384,23 @@ async def test_real_temporal_and_mongo_roundtrip(
             assert "private worker error" not in response.text
             if outcome == "completed":
                 assert body["workflow_results"]["comparison_statistics"]["shared"][0][0]["score"] == [0.0, 0.0]
-            # All three outcomes end up stored, but by different routes. The two
-            # that reach a finished return are saved by the workflow itself. The
-            # "failed" outcome raises inside fetch_run and never reaches one, so
-            # its report is written by the GET above, whose catch-up save stores
-            # the terminal output it recovered from history.
+            # All three outcomes are served, but only two are stored, and by
+            # different routes. "completed" and "missing" reach a finished return,
+            # so the workflow itself saves them. "failed" raises inside fetch_run
+            # and never reaches an exit point: its output stays IN_PROGRESS, the GET
+            # reconciles it to FAILED so the caller stops polling, and that
+            # synthesized status must NOT claim the write-once slot -- storing it
+            # would block the real result forever. The slot stays free for a later
+            # GET, which is what the recovery paths rely on.
             stored = await verification_report_store_mongo.get(workflow_id)
-            assert stored is not None
-            assert stored.workflow_id == workflow_id
-            # Compare against what the API reported, not a second copy of the
-            # mapping -- otherwise a wrong status passes both places at once.
-            assert stored.workflow_status.value == body["workflow_status"]
+            if outcome == "failed":
+                assert stored is None
+            else:
+                assert stored is not None
+                assert stored.workflow_id == workflow_id
+                # Compare against what the API reported, not a second copy of the
+                # mapping -- otherwise a wrong status passes both places at once.
+                assert stored.workflow_status.value == body["workflow_status"]
 
 
 @pytest.mark.integration_local

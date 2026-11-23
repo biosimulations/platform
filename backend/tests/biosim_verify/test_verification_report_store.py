@@ -324,6 +324,92 @@ async def test_get_rejects_a_replaced_payload(
         await verification_report_store_mongo.get(verify_workflow_output.workflow_id)
 
 
+# ---------------------------------------------------------------------------
+# The decoded report must belong to the row it was read from
+# ---------------------------------------------------------------------------
+
+
+async def _tamper(
+    mongo_test_client: AsyncIOMotorClient, row_id: str, **fields: Any,
+) -> None:
+    """Rewrite index fields behind the store's back, leaving the bytes and digest intact."""
+    await _reports_collection(mongo_test_client).update_one(
+        {"workflow_id": row_id}, {"$set": fields},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field, value, expected",
+    [
+        # workflow_id is covered by the dedicated test below: renaming the row's key
+        # makes get() miss, so the mismatch has to be built the other way round.
+        ("owner_sub", "auth0|intruder", "indexed as owned by auth0|intruder"),
+        ("workflow_run_id", "a-different-run", "indexed as run a-different-run"),
+        ("workflow_status", "FAILED", "indexed as FAILED"),
+    ],
+)
+async def test_get_rejects_a_document_whose_index_disagrees_with_its_bytes(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    mongo_test_client: AsyncIOMotorClient,
+    field: str,
+    value: str,
+    expected: str,
+) -> None:
+    """A valid digest over bytes that do not match the row's index fields is corruption.
+
+    The digest proves the bytes are intact, not that they belong to this row. GET
+    authorizes on the index ``owner_sub`` and copies the index ``workflow_status``
+    into the ledger, so serving a mismatched document would act on one
+    verification using another one's identity.
+    """
+    stored = verify_workflow_output.model_copy(deep=True)
+    stored.workflow_run_id = "run-1"
+    await verification_report_store_mongo.save(stored)
+    await _tamper(mongo_test_client, stored.workflow_id, **{field: value})
+
+    with pytest.raises(ReportCorrupt, match=expected):
+        await verification_report_store_mongo.get(stored.workflow_id)
+
+
+@pytest.mark.asyncio
+async def test_get_rejects_a_row_holding_another_workflows_report(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+    mongo_test_client: AsyncIOMotorClient,
+) -> None:
+    """A row whose bytes decode to a different workflow is corrupt, not a hit.
+
+    This is the case the requested-id check catches: the document is indexed under
+    the id the caller asked for, but the payload it holds belongs elsewhere.
+    """
+    stored = verify_workflow_output.model_copy(deep=True)
+    stored.workflow_run_id = "run-1"
+    await verification_report_store_mongo.save(stored)
+    # Move the document to another key while leaving its payload alone.
+    await _reports_collection(mongo_test_client).update_one(
+        {"workflow_id": stored.workflow_id}, {"$set": {"workflow_id": "someone-elses-workflow"}},
+    )
+
+    with pytest.raises(ReportCorrupt, match="belongs to workflow"):
+        await verification_report_store_mongo.get("someone-elses-workflow")
+
+
+@pytest.mark.asyncio
+async def test_a_consistent_report_still_round_trips(
+    verification_report_store_mongo: VerificationReportStore,
+    verify_workflow_output: VerifyWorkflowOutput,
+) -> None:
+    """The identity check must not reject a correctly associated report."""
+    stored = verify_workflow_output.model_copy(deep=True)
+    stored.workflow_run_id = "run-1"
+    stored.owner_sub = "auth0|owner"
+    await verification_report_store_mongo.save(stored)
+
+    assert await verification_report_store_mongo.get(stored.workflow_id) == stored
+
+
 @pytest.mark.asyncio
 async def test_second_save_keeps_the_original_report(
     verification_report_store_mongo: VerificationReportStore,

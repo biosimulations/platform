@@ -846,7 +846,7 @@ def _belongs_to_execution(
     output: VerifyWorkflowOutput, desc: WorkflowExecutionDescription,
     expected_owner_sub: str | None,
 ) -> bool:
-    """Whether a decoded output really came from this workflow execution.
+    """Whether a decoded output is this execution's own computed result.
 
     The caller was authorized against the shell rebuilt from the start input, and
     the decoded output then replaces that shell and is written to the write-once
@@ -855,11 +855,21 @@ def _belongs_to_execution(
     identity, so a mismatch is treated exactly like "no proof": serve the shell,
     write nothing.
 
-    ``workflow_run_id`` is compared whenever both sides have one. Every exit
-    point in both workflows sets it, so it is always compared in practice. The
-    owner is compared against the shell's, which came from the same start input
-    the workflow itself read, so the two agree unless the payload is not this
-    run's.
+    Three things must hold, and each is required rather than best-effort:
+
+    * the workflow id matches this execution;
+    * the run id matches. Both sides always have one -- every exit point in both
+      workflows sets it and the execution description carries it -- so a payload
+      without one cannot be proven to be this run's and is rejected. An earlier
+      version accepted a missing payload run id; that let a payload from another
+      run of the same workflow id through.
+    * the owner matches the shell's, which came from the same start input the
+      workflow itself read, so the two agree unless the payload is not this run's.
+
+    The output must also be terminal. The persist activity is scheduled only at a
+    finished exit point, so a non-terminal payload cannot be a real computed
+    result; accepting one would let a mid-flight snapshot claim the write-once
+    slot and block the real report forever.
     """
     if output.workflow_id != desc.id:
         logger.warning(
@@ -867,8 +877,13 @@ def _belongs_to_execution(
             desc.id, output.workflow_id,
         )
         return False
-    if output.workflow_run_id is not None and desc.run_id is not None \
-            and output.workflow_run_id != desc.run_id:
+    if output.workflow_run_id is None or desc.run_id is None:
+        logger.warning(
+            "Ignoring a computed result for %s: run id is missing on one side (%s vs %s)",
+            desc.id, output.workflow_run_id, desc.run_id,
+        )
+        return False
+    if output.workflow_run_id != desc.run_id:
         logger.warning(
             "Ignoring a computed result for %s: it belongs to run %s, not %s",
             desc.id, output.workflow_run_id, desc.run_id,
@@ -878,6 +893,12 @@ def _belongs_to_execution(
         logger.warning(
             "Ignoring a computed result for %s: it is owned by %s, not %s",
             desc.id, output.owner_sub, expected_owner_sub,
+        )
+        return False
+    if not output.workflow_status.is_done:
+        logger.warning(
+            "Ignoring a computed result for %s: its status %s is not terminal",
+            desc.id, output.workflow_status,
         )
         return False
     return True
@@ -900,13 +921,17 @@ async def _catch_up_save(
     could only return False. The next GET retries in both cases. The argument is
     required so a new call site cannot forget it.
 
-    ``has_computed_result`` says whether a computed result is known to exist. A
-    rebuilt output carries no results, and storing one would occupy the
-    write-once slot with a permanent FAILED report and make the real result
-    unstorable later. The recovery paths pass ``False`` whenever the scan did not
-    produce a result -- whether it searched and found none, or failed outright --
-    because neither case proves anything was computed. The shell is then served
-    but never persisted, and the next GET retries the write.
+    ``has_computed_result`` says whether the output came from a workflow exit
+    point, which is what makes it a computed result. A rebuilt or reconciled
+    output carries no results, and storing one would occupy the write-once slot
+    with a permanent FAILED report and make the real result unstorable later. The
+    recovery paths pass ``False`` whenever the scan did not produce a result --
+    whether it searched and found none, or failed outright -- because neither case
+    proves anything was computed. The successful-query path passes whether the
+    query answered with a terminal status, because a terminated execution whose
+    query still said IN_PROGRESS is reconciled to FAILED locally and that shell is
+    synthesized too. The shell is then served but never persisted, and the next
+    GET retries the write.
 
     The save is bounded by ``_STORE_CALL_TIMEOUT_SECONDS``. Abandoning it partway
     is safe: the store is write-once, so an insert that did land stands and one
@@ -1085,11 +1110,20 @@ async def get_verify_output(
     # Step 3: ownership check -- ownerless is public; owned is owner-or-admin.
     _authorize_verification_read(user, workflow_output.owner_sub)
 
+    # Remembered before reconciliation: a query that answered with a non-terminal
+    # status means the workflow never reached an exit point, so the FAILED status
+    # _reconcile_terminal_status may impose below is synthesized, not computed.
+    query_was_terminal = workflow_output.workflow_status.is_done
+
     # Step 4: D1 fix — reconcile a stuck IN_PROGRESS against Temporal's execution status.
     workflow_output = _reconcile_terminal_status(workflow_output, desc.status)
 
     # Step 5: remember the terminal status for the listing (after authorization).
-    await _catch_up_save(workflow_output, store_read=store_read)
+    # Only a workflow-produced terminal output may claim the write-once report slot:
+    # a terminated execution whose query still said IN_PROGRESS is served as FAILED,
+    # but that shell carries no result and storing it would block the real one.
+    await _catch_up_save(
+        workflow_output, store_read=store_read, has_computed_result=query_was_terminal)
     await _record_terminal_status(workflow_output)
 
     return workflow_output
@@ -1106,6 +1140,13 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None,
     because retrying will not repair the bytes. Telling a client to retry
     corruption would just make it poll a permanent failure.
 
+    The corruption diagnostic is itself a disclosure: it confirms a stored report
+    exists. So it is only served to a caller the ledger says may see this
+    verification. Anyone else gets the same generic 404 as a verification that
+    never existed, which keeps the store from becoming an existence oracle for
+    private reports. An unreachable store discloses nothing, so it needs no such
+    check.
+
     Otherwise raises HTTPException(404) with a detail that distinguishes:
     - "no longer retained" — ledger row exists and caller may see it
     - generic "not found" — no row, or belongs to someone else (no existence leak)
@@ -1116,15 +1157,19 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None,
             detail="Verification storage is unavailable; the report may still exist.",
             headers={"Retry-After": str(_STORE_UNAVAILABLE_RETRY_AFTER_SECONDS)},
         )
-    if store_read == _StoreRead.CORRUPT:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "The stored verification report is corrupt and cannot be read; "
-                "retrying will not repair it."
-            ),
-        )
     ledger = get_verification_database_service()
+    if store_read == _StoreRead.CORRUPT:
+        # Only a caller who may see this verification learns that a stored copy
+        # exists. Without ownership evidence the generic answer is the safe one.
+        if ledger is not None and await _caller_may_see_verification(ledger, workflow_id, user):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "The stored verification report is corrupt and cannot be read; "
+                    "retrying will not repair it."
+                ),
+            )
+        raise HTTPException(status_code=404, detail=f"Verification not found: {workflow_id}")
     if ledger is not None:
         try:
             row = await ledger.get_verification(workflow_id)
@@ -1147,6 +1192,31 @@ async def _ledger_fallback_404(workflow_id: str, user: AuthenticatedUser | None,
                 ledger_err,
             )
     raise HTTPException(status_code=404, detail=f"Verification not found: {workflow_id}")
+
+
+async def _caller_may_see_verification(
+    ledger: VerificationDatabaseService, workflow_id: str, user: AuthenticatedUser | None,
+) -> bool:
+    """Whether the ledger says *user* may know this verification exists.
+
+    The same visibility rule the 404 detail uses: an ownerless verification is
+    public, an owned one is owner-or-admin. A ledger that cannot answer is treated
+    as "no", so a lookup failure never turns into a disclosure.
+    """
+    try:
+        row = await ledger.get_verification(workflow_id)
+    except Exception as ledger_err:
+        logger.warning(
+            "Ledger lookup failed while authorizing a corruption diagnostic for %s: %s",
+            workflow_id,
+            ledger_err,
+        )
+        return False
+    if row is None:
+        return False
+    if row.owner_sub is None:
+        return True
+    return user is not None and (ADMIN_ROLE in user.roles or row.owner_sub == user.sub)
 
 
 @app.post(
