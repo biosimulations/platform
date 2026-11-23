@@ -1,14 +1,17 @@
 """GET /verify/{workflow_id} reads the durable report store first.
 
-Five behaviours, each guarding a decision that is easy to get wrong:
+Six behaviours, each guarding a decision that is easy to get wrong:
 
 1. a stored report is served even when Temporal is unavailable -- the whole point;
 2. a corrupt stored report falls back to Temporal instead of returning 500;
 3. ownership is enforced on a store hit, so the store is not a cross-user oracle;
 4. a finished report that was never saved is caught up, but only after authorization;
-5. a store outage falls back to Temporal instead of failing the request.
+5. a store outage falls back to Temporal instead of failing the request;
+6. that outage costs one bounded wait, because a store call that hangs is cut off
+   and a failed read skips the catch-up save.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -734,3 +737,128 @@ async def test_completed_scan_records_the_terminal_status() -> None:
     recorded = ledger.record_terminal_status.await_args.args
     assert recorded[0] == "omex-verification-terminated"
     assert recorded[1] == VerifyWorkflowStatus.FAILED
+
+
+# ---------------------------------------------------------------------------
+# Fix 6: a store outage costs the GET one bounded wait, not three
+# ---------------------------------------------------------------------------
+
+
+async def _hang(*_args: Any, **_kwargs: Any) -> Any:
+    """Never return, like a Motor call to an unreachable Mongo before its 30 s timeout.
+
+    A store that raises at once would pass these tests with or without the
+    timeout; only a call that hangs shows whether the GET waits it out.
+    """
+    await asyncio.Event().wait()
+
+
+async def _get_within(seconds: float, workflow_id: str, user: AuthenticatedUser | None) -> Any:
+    """``_get``, but fail the test instead of hanging if the endpoint never answers."""
+    return await asyncio.wait_for(_get(workflow_id, user), timeout=seconds)
+
+
+def _ledger() -> Any:
+    ledger = MagicMock()
+    ledger.record_terminal_status = AsyncMock()
+    return ledger
+
+
+@pytest.mark.asyncio
+async def test_hanging_store_read_falls_back_to_temporal_within_the_timeout() -> None:
+    """A store read that never returns is cut off and treated as an outage.
+
+    Temporal still answers, the caller gets the report, and the catch-up save is
+    not attempted: the store has just failed to answer, so a second call would
+    only spend a second timeout on the same request.
+    """
+    store = MagicMock()
+    store.get = AsyncMock(side_effect=_hang)
+    store.save = AsyncMock(return_value=True)
+    finished = _output(workflow_id="omex-verification-store-hangs")
+    ledger = _ledger()
+    with patch("biosim_server.api.main._STORE_CALL_TIMEOUT_SECONDS", 0.05), \
+         patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_owning(finished)), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        response = await _get_within(
+            5, finished.workflow_id, AuthenticatedUser(sub="auth0|owner", email="o@e.com"))
+
+    assert response.status_code == 200
+    assert response.json()["workflow_id"] == finished.workflow_id
+    store.save.assert_not_awaited()
+    ledger.record_terminal_status.assert_awaited_once_with(finished.workflow_id, finished.workflow_status)
+
+
+@pytest.mark.asyncio
+async def test_hanging_catch_up_save_does_not_hold_the_get() -> None:
+    """The read answered "nothing stored", then the save hangs: the save is cut off.
+
+    The report is still served and the ledger status still recorded; the next
+    GET finds no stored report and tries the save again.
+    """
+    store = MagicMock()
+    store.get = AsyncMock(return_value=None)
+    store.save = AsyncMock(side_effect=_hang)
+    finished = _output(workflow_id="omex-verification-save-hangs")
+    ledger = _ledger()
+    with patch("biosim_server.api.main._STORE_CALL_TIMEOUT_SECONDS", 0.05), \
+         patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_owning(finished)), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        response = await _get_within(
+            5, finished.workflow_id, AuthenticatedUser(sub="auth0|owner", email="o@e.com"))
+
+    assert response.status_code == 200
+    store.save.assert_awaited_once()
+    ledger.record_terminal_status.assert_awaited_once_with(finished.workflow_id, finished.workflow_status)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("mongo is down"), ReportCorrupt("payload is garbage")],
+    ids=["unavailable", "corrupt"],
+)
+async def test_failed_store_read_skips_the_catch_up_save(failure: Exception) -> None:
+    """Only a confirmed miss justifies a write.
+
+    After an outage the save would wait on the same unreachable store; after a
+    corrupt read a document already exists, so the write-once save could only
+    return False. Either way the report is served from Temporal.
+    """
+    store = MagicMock()
+    store.get = AsyncMock(side_effect=failure)
+    store.save = AsyncMock(return_value=True)
+    finished = _output(workflow_id="omex-verification-read-failed")
+    ledger = _ledger()
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_owning(finished)), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+        response = await _get(finished.workflow_id, AuthenticatedUser(sub="auth0|owner", email="o@e.com"))
+
+    assert response.status_code == 200
+    store.save.assert_not_awaited()
+    # Only the report write is skipped; the listing still learns the status.
+    ledger.record_terminal_status.assert_awaited_once_with(finished.workflow_id, finished.workflow_status)
+
+
+@pytest.mark.asyncio
+async def test_store_outage_skips_the_save_on_the_recovery_path_too() -> None:
+    """The recovery path passes its store read on, so an outage skips its save as well.
+
+    The scan finds the computed result and serves it, but does not try to store
+    it while the store is unreachable; a later GET can.
+    """
+    store = MagicMock()
+    store.get = AsyncMock(side_effect=RuntimeError("mongo is down"))
+    store.save = AsyncMock(return_value=True)
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client",
+               return_value=_temporal_terminated(with_computed=True)), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=_ledger()):
+        response = await _get("omex-verification-terminated", None)
+
+    assert response.status_code == 200
+    assert response.json()["workflow_results"] is not None
+    store.save.assert_not_awaited()

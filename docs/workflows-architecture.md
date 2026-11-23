@@ -453,11 +453,28 @@ also differs.
    contract is `start_workflow` / `query_workflow`, both of which remain shape-
    compatible.
 
-**The longer-term safe-rollout pattern** (deferred — adds significant
-maintenance cost for a one-time transition) is to wrap each restructure in
+**The `workflow.patched` alternative** is to guard the change with
 `workflow.patched("…")`, keep the old code path live until all pre-deploy
-histories are drained, then remove the patch. Worth doing if future workflow
-restructures are anticipated; not worth doing for PR2.5 alone.
+histories have closed and aged out of retention, then retire the patch. PR2.5
+did not use it: it was a one-time restructure, and keeping both activity
+shapes alive was not worth the maintenance cost.
+
+It is now in use for one step. Both verification workflows save their finished
+report through `save_verification_report_activity`, guarded by
+`workflow.patched("save-verification-report-v1")`. That release needs **no
+drain**:
+- A history recorded before the patch replays without the save, and an
+  execution in flight during the deploy runs the save when it reaches it.
+  `tests/biosim_verify/test_save_report_replay.py` pins both cases against a
+  copy of the pre-patch `RunsVerifyWorkflow`.
+- The worker Deployment is `strategy: Recreate`, so old and new workers never
+  poll the task queue at the same time.
+- **Rollback is not covered.** Once an execution has run the save, an older
+  worker replaying its history meets an activity it does not schedule, which
+  is non-deterministic. Roll forward, or drain before reverting.
+
+The drain procedure above still applies to any release that alters or removes
+an existing step without a patch guard.
 
 **Replay safety nets that the PR2.5 code already provides:**
 - `SimulationRunWorkflow.run` reads `output.biosimulations_run_id` *and* falls
@@ -577,4 +594,8 @@ when one starts firing in production.
 
 A start exception does not prove that Temporal rejected the workflow. The API deletes a ledger row only for a definitive invalid-request rejection. For uncertain outcomes it describes the same ID and verifies the original input/owner from the first history event. A matching accepted start returns its existing handle; otherwise the API retains the ledger and returns 503 with the workflow ID for polling, without starting another execution. A retained uncertain row may have no history, so the legacy “no longer retained” detail alone does not prove execution.
 
-If a failed/terminated/timed-out/canceled execution cannot answer its query (including termination before the first worker task), the API reconstructs a FAILED output from that same history event and the described terminal state. Original ownership checks apply before the output is returned. This needs retained Temporal history, not a worker replay or a ledger schema change.
+If a failed/terminated/timed-out/canceled execution cannot answer its query (including termination before the first worker task), the API reconstructs a FAILED output from that same history event and the described terminal state. Original ownership checks apply before the output is returned. This needs retained Temporal history, not a worker replay or a ledger schema change. Once a report has been saved to `BiosimVerifyReports` (see "Durable verification reports" below), the stored copy is served first and none of this is needed.
+
+### Durable verification reports
+
+Temporal deletes a workflow's history when its namespace retention period ends, and with it the only copy of the verification's result. Both verification workflows therefore save their finished report, once, through `save_verification_report_activity` (guarded by `workflow.patched("save-verification-report-v1")`; see "Deploy considerations"). The activity writes to the write-once `BiosimVerifyReports` collection, with reports over 1 MB compressed in the `biosim-verify-reports` GridFS bucket, and retries without an attempt limit so a storage outage keeps the workflow, and its history, open. `GET /verify/{workflow_id}` reads that store first and falls back to Temporal only when nothing is stored. The full read, recovery and 404/503 rules are in `backend/CLAUDE.md`.
