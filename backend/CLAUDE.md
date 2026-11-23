@@ -168,7 +168,8 @@ backend/
 
 - **BiosimOmex** - OMEX file metadata (file_hash_md5, gcs_path)
 - **BiosimSims** - Simulation workflow runs (workflow_id, status, results)
-- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created, omex_hash, status). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; `status` is written once by `GET /verify/{workflow_id}` when it first sees the workflow finished; read by `GET /verification_ids` and used as the ledger fallback in `GET /verify/{workflow_id}` when Temporal history has expired.
+- **BiosimCompare** - Verification ledger (workflow_id, verify_type, owner_sub, created, omex_hash, status). Written by `POST /verify/omex` and `POST /verify/runs` before `start_workflow`; `status` is written once by `GET /verify/{workflow_id}` when it first sees the workflow finished; read by `GET /verification_ids` and used by `GET /verify/{workflow_id}` to distinguish "exists but no longer retained" from "not found". The ledger carries identity and terminal status only; the report itself lives in **BiosimVerifyReports**.
+- **BiosimVerifyReports** - Durable verification reports (workflow_id, workflow_run_id, owner_sub, workflow_status, saved_at, encoding, uncompressed_bytes, sha256, and either an inline `payload` or a GridFS `file_id`). Written once by `save_verification_report_activity` (write-once: a second save returns False); read first by `GET /verify/{workflow_id}`, which falls back to Temporal when there is no stored report. Reports above `INLINE_PAYLOAD_MAX_BYTES` are stored in the **biosim-verify-reports** GridFS bucket (`.files` + `.chunks`).
 - **BiosimSimulationRuns** - User-facing run records for the `/simulations/runs` listing (one per submission × simulator; run_id, processing_id, name, simulator, email, status, timestamps)
 
 ## Key Patterns
@@ -613,13 +614,132 @@ the cached runs come from different archives. The parameter is pattern-validated
 **`status` on the ledger row** is the terminal `VerifyWorkflowStatus` (`COMPLETED`,
 `FAILED`, `RUN_ID_NOT_FOUND`), written **once** by `GET /verify/{workflow_id}` the
 first time it observes the workflow finished -- after the ownership check, on the
-recovered-from-history paths too, with a guarded `update_one({"status": None})` so
+recovered-from-history paths too (unless the history scan fails, in which case the
+status is a guess and is left unrecorded for a later GET to settle), with a guarded
+`update_one({"status": None})` so
 the first observed status sticks and rows written before the field existed are
 covered. Nothing is written at insert and a ledger error never fails the GET.
 `null` in the listing therefore means "not yet observed as finished": still running,
-never polled, or polled only after its Temporal history expired (that path 404s
-before any write). A client that needs a live status still has to poll
-`GET /verify/{workflow_id}`.
+never polled, or polled only after its Temporal history expired **and** with no stored
+report (a stored report is served and recorded, so that path no longer 404s). A client
+that needs a live status still has to poll `GET /verify/{workflow_id}`.
+
+**`GET /verify/{workflow_id}` reads the report store first.** A stored report is
+served even when Temporal is unreachable or has forgotten the workflow, and ownership
+is checked on the store hit before anything is returned. When there is no stored report
+the endpoint falls back to Temporal as before; if Temporal then answers NOT_FOUND, the
+answer depends on how the store read went:
+
+| store read | Temporal | answer |
+| --- | --- | --- |
+| miss (nothing stored) | NOT_FOUND | **404** -- "no longer retained" when the ledger row is visible, else generic "not found" |
+| store unreachable | NOT_FOUND | **503 with `Retry-After: 5`** -- waiting may fix it |
+| corrupt stored report | NOT_FOUND | **503 without `Retry-After`**, but only for a caller the ledger says may see it; anyone else gets the generic 404 |
+
+The 503 matters: a corrupt or unreadable store is repairable, and answering 404 there
+would make a client discard a verification that is still recoverable. The two 503s are
+deliberately not identical: only the outage carries a retry hint, because telling a
+client to retry corruption would just make it poll a permanent failure.
+
+The corruption diagnostic is itself a disclosure -- it confirms a stored report exists
+-- so `_caller_may_see_verification` applies the same visibility rule the 404 detail
+uses (ownerless is public, owned is owner-or-admin) before it is served. A ledger that
+cannot answer is treated as "no", so a failed lookup never becomes a disclosure. An
+unreachable store discloses nothing, which is why it needs no such check.
+
+**A store outage costs the GET one bounded wait.** The Mongo client sets no
+`serverSelectionTimeoutMS`, so each call to an unreachable Mongo would otherwise wait
+out pymongo's 30 s default. Each report-store call on this path (the read and the
+catch-up save) is wrapped in `asyncio.timeout(_STORE_CALL_TIMEOUT_SECONDS)` (5 s), and
+a read that runs past it counts as "store unreachable". The catch-up save runs only
+after a read that answered "nothing stored": after an outage it would wait on the same
+store again, and after a corrupt read a document already exists, so the write-once
+save could only return False. The pre-existing ledger status write is not bounded, so
+the worst case with Temporal healthy and Mongo down is about 5 s plus 30 s.
+
+**Recovery from a failed execution** rebuilds an output from the start input, which
+carries no results. Before persisting it, the endpoint scans the workflow history for
+the `save_verification_report_activity` scheduled event, whose argument is the output
+the workflow computed. What it serves and whether it writes:
+
+| scan result | serve | save report | record status |
+| --- | --- | --- | --- |
+| computed result found, identity matches, terminal | that result | yes | yes |
+| searched, found none | rebuilt shell | no | yes |
+| scan failed, or hit `_HISTORY_SCAN_EVENT_LIMIT` | rebuilt shell | no | **no** |
+| computed result found, identity differs (`MISMATCH`) | rebuilt shell | no | yes |
+| computed result found, not terminal | rebuilt shell | no | yes |
+
+The last four leave the write-once slot free so the real result can still be stored
+later; a skipped write is retried by the next GET, while a wrong write cannot be undone.
+Note that a history recorded before the save step existed never schedules the activity,
+so "searched, found none" is evidence rather than proof that nothing was computed.
+
+**A successful query can also produce a shell.** When the query answers but still says
+`IN_PROGRESS` for an execution Temporal reports as terminal, `_reconcile_terminal_status`
+synthesizes a `FAILED` status so the caller stops polling. That status was never
+computed by the workflow, so the GET remembers whether the query was terminal *before*
+reconciliation and passes that as `has_computed_result`; the reconciled shell is served
+but never stored. A genuine workflow-produced `FAILED` with empty statistics is still
+a computed result and is saved.
+
+The ledger status follows the same rule for the same reason: only the scan can tell
+whether a comparison finished, so when the scan fails the shell's `FAILED` status is a
+guess, and recording it would freeze that guess in the listing where nothing retries it.
+`_computed_output_from_history` therefore returns a `_HistoryScan` outcome alongside the
+output -- `FOUND`, `NONE`, `MISMATCH` or `FAILED` -- and only `FAILED` suppresses the
+status write. A later GET that can read the history records the real status instead.
+
+**A decoded result must belong to the execution it came from.** The caller is
+authorized against the shell rebuilt from the start input, and the decoded output then
+replaces that shell and is written to the write-once store, so `_belongs_to_execution`
+checks four things against that shell: `workflow_id`, `workflow_run_id`, `owner_sub`,
+and that the status is terminal. Any failure is treated exactly like "no proof": the
+shell is served and nothing is written. Otherwise a payload from another execution
+would be stored permanently under the wrong identity, and `owner_sub` is what the
+store's ownership check reads.
+
+All four are required rather than best-effort. `expected_owner_sub` is a required
+argument so a call site cannot silently omit it. The run id must be present on both
+sides and equal: every exit point in both workflows sets it and the execution
+description always carries it, so a payload without one cannot be proven to be this
+run's. The status must be terminal because the persist activity is scheduled only at a
+finished exit point, so a non-terminal payload is a mid-flight snapshot, not a result.
+The scan is also bounded by `_HISTORY_SCAN_EVENT_LIMIT` (5000 events), far above what
+the request limits (`MAX_VERIFY_RUN_IDS` and `MAX_VERIFY_SIMULATORS`, both 10) allow, so
+it only protects GET latency on a history that grew some other way; running past the cap
+counts as a failed scan.
+
+**A stored report must belong to the row it was read from.** The SHA-256 digest proves
+the bytes are intact, not that they belong to this document: a partial restore or a bad
+migration can pair one report's bytes with another's index fields. Every field the GET
+acts on comes from the index side -- `owner_sub` decides authorization,
+`workflow_status` is copied into the ledger, `workflow_id` is what the caller asked for
+-- so `_check_document_identity` compares the decoded report's `workflow_id`,
+`owner_sub`, `workflow_run_id` (when the payload carries one) and `workflow_status`
+against the document, and raises `ReportCorrupt` on any disagreement. That surfaces as
+the corrupt 503 rather than as a report served under another verification's identity.
+
+**Report persistence retries without a cap.** `SAVE_REPORT_RETRY_POLICY` sets
+`maximum_attempts=0`, so a transient storage failure keeps the workflow open instead of
+closing it. A cap would close the workflow during an outage and start the 24-hour
+Temporal retention clock with no stored report, turning a recoverable outage into
+permanent loss; a workflow that keeps retrying also keeps its history, so the result
+stays recoverable.
+
+Only a failure a retry cannot fix escapes that loop. `save_verification_report_activity`
+marks two cases non-retryable: a worker with no report store configured, and a
+`ValueError` from `VerificationReportStore.save` (an unfinished report, or one that
+cannot be serialized). `save_verification_report` catches either one, logs
+`Failed to save verification report for workflow <id>; the verification result is
+unaffected.`, and returns -- the workflow then completes with its own status
+(`COMPLETED`, `FAILED`, or `RUN_ID_NOT_FOUND`) rather than failing on the save. Nothing
+is marked blocked and nothing is retried further; the report is simply not stored yet.
+That is recoverable, because the output is still in Temporal history: a later
+`GET /verify/{workflow_id}` finds no stored report, reads the output from history, and
+saves it while the history is still retained. Watch for the
+`Failed to save verification report` log line rather than capping the retries: it is
+the only signal that a report was not stored.
 
 **Which token to send:** the Platform API is an OAuth resource server and
 accepts **access tokens** only. Do not send an OIDC ID token in
@@ -748,22 +868,40 @@ still applied by hand.
 > its GHCR push leaves the git tag and the GitHub Release in place, so neither
 > is proof the image exists — check the release run's job conclusion.
 
-> **Workflow-restructuring releases require a worker drain.** A release that
-> changes the activity sequence inside a Temporal workflow (e.g. PR #52, which
-> split the monolithic `submit_biosim_simulation_run_activity` into separate
-> submit + poll activities inside `OmexSimWorkflow`) will hit
-> `NonDeterministicWorkflowError` if a new worker replays an in-flight
-> workflow whose history was recorded against the old code. Drain in-flight
-> workflows (wait for them to complete, or `tctl workflow terminate`) BEFORE
-> rolling out the new `platform-worker` image. The `platform-api` image is
-> safe to deploy at any time — its only Temporal contract is `start_workflow`
-> / `query_workflow`. See `docs/workflows-architecture.md` → "Deploy
-> considerations" for the full rationale and the longer-term `workflow.patched`
-> pattern.
+> **Workflow-restructuring releases require a worker drain, unless the new step
+> is behind `workflow.patched`.** A release that changes the activity sequence
+> inside a Temporal workflow (e.g. PR #52, which split the monolithic
+> `submit_biosim_simulation_run_activity` into separate submit + poll activities
+> inside `OmexSimWorkflow`) will hit `NonDeterministicWorkflowError` if a new
+> worker replays an in-flight workflow whose history was recorded against the
+> old code. Drain in-flight workflows (wait for them to complete, or
+> `tctl workflow terminate`) BEFORE rolling out the new `platform-worker` image.
+> The `platform-api` image is safe to deploy at any time — its only Temporal
+> contract is `start_workflow` / `query_workflow`. See
+> `docs/workflows-architecture.md` → "Deploy considerations" for the full
+> rationale.
 >
 > Under Flux this needs an extra step, since merging the overlay bump would
 > otherwise roll the worker immediately: `flux suspend kustomization
 > platform-biosim-gke` before merging, drain, then `flux resume`.
+>
+> **Exception: a new step added behind `workflow.patched("<id>")` needs no
+> drain**, provided a replay test runs the new code over a history recorded by
+> the pre-patch class (see `tests/biosim_verify/test_save_report_replay.py`).
+> Such a history replays without the step, and an execution in flight during the
+> deploy runs the step when it reaches it. The worker runs `strategy: Recreate`
+> (`kustomize/base/worker.yaml`), so old and new workers never run side by side.
+> A change that alters or removes an existing step still needs the drain.
+>
+> **Rollback is not covered.** Once an execution has run the patched step, an
+> older worker replaying its history meets an activity it does not schedule and
+> fails as non-deterministic. Roll forward, or drain before reverting.
+>
+> **Active patches:** `save-verification-report-v1` (the report save in
+> `RunsVerifyWorkflow` and `OmexVerifyWorkflow`). To retire a patch, first
+> replace `workflow.patched` with `workflow.deprecate_patch` once every execution
+> recorded before the patch has closed and aged out of retention; delete the call
+> in a later release.
 
 <!-- -->
 

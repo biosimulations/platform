@@ -4,10 +4,13 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from biosim_server.biosim_runs import Hdf5DataValues, BiosimServiceRest
 from biosim_server.biosim_verify import CompareSettings, ComparisonStatistics
-from biosim_server.biosim_verify.models import SimulationRunInfo, GenerateStatisticsActivityOutput, RunData
+from biosim_server.biosim_verify.models import SimulationRunInfo, GenerateStatisticsActivityOutput, RunData, \
+    VerifyWorkflowOutput
+from biosim_server.dependencies import get_verification_report_store
 
 NDArray1b: TypeAlias = np.ndarray[tuple[int], np.dtype[np.bool]]
 NDArray1f: TypeAlias = np.ndarray[tuple[int], np.dtype[np.float64]]
@@ -151,6 +154,29 @@ async def generate_statistics_activity(gen_stats_input: GenerateStatisticsActivi
     except Exception as e:
         activity.logger.exception(f"Error in generate_statistics_activity: {e}", exc_info=e)
         raise e
+
+
+@activity.defn(name="save_verification_report_activity")
+async def save_verification_report_activity(output: VerifyWorkflowOutput) -> bool:
+    """Store a finished verification report; False means one was already stored.
+
+    Only errors a retry cannot fix are non-retryable: an unfinished report (the
+    store's contract guard) and a worker with no store configured. Everything
+    else -- a Mongo blip, a GridFS timeout -- propagates unchanged so the
+    workflow's retry policy can recover, which is safe because ``save`` is
+    write-once and a repeat attempt returns False rather than overwriting.
+    """
+    store = get_verification_report_store()
+    if store is None:
+        raise ApplicationError("Verification report store is not configured", non_retryable=True)
+    try:
+        return await store.save(output)
+    except ValueError as e:
+        # ValueError covers the store's contract and encoding failures (a report
+        # that is not finished, or one that cannot be serialized). Neither fixes
+        # itself on a retry, so surface it as non-retryable instead of spending
+        # the retry policy's attempts on it.
+        raise ApplicationError(str(e), non_retryable=True) from e
 
 
 def calc_stats(arr1: NDArray[np.float64], arr2: NDArray[np.float64],

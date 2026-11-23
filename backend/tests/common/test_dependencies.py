@@ -21,6 +21,7 @@ def _install_stub_services() -> tuple[AsyncMock, AsyncMock]:
     dependencies.set_simulation_run_database_service(AsyncMock())
     dependencies.set_project_database_service(AsyncMock())
     dependencies.set_verification_database_service(AsyncMock())
+    dependencies.set_verification_report_store(AsyncMock())
     dependencies.set_file_service(file_service)
     dependencies.set_biosim_service(AsyncMock())
     dependencies.set_temporal_client(AsyncMock())
@@ -42,6 +43,7 @@ async def test_shutdown_standalone_clears_every_service_handle() -> None:
     assert dependencies.get_simulation_run_database_service() is None
     assert dependencies.get_project_database_service() is None
     assert dependencies.get_verification_database_service() is None
+    assert dependencies.get_verification_report_store() is None
     assert dependencies.get_file_service() is None
     assert dependencies.get_biosim_service() is None
     assert dependencies.get_temporal_client() is None

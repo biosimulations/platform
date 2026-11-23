@@ -18,6 +18,9 @@ if TYPE_CHECKING:
     from biosim_server.simulations.database import SimulationRunDatabaseService
     from biosim_server.projects.database import ProjectDatabaseService
     from biosim_server.biosim_verify.database import VerificationDatabaseService
+    # Same reason: report_store imports biosim_verify.models, which imports
+    # biosim_runs, which imports this module.
+    from biosim_server.biosim_verify.report_store import VerificationReportStore
 
 #------ file service (standalone or pytest) ------
 
@@ -90,6 +93,22 @@ def set_verification_database_service(service: "VerificationDatabaseService | No
 def get_verification_database_service() -> "VerificationDatabaseService | None":
     global global_verification_database_service
     return global_verification_database_service
+
+#------- verification report store (standalone or pytest) ------
+# Same global-handle pattern as the services above: the store is created once at
+# startup and read through the getter, so callers never construct their own.
+
+global_verification_report_store: "VerificationReportStore | None" = None
+
+
+def set_verification_report_store(store: "VerificationReportStore | None") -> None:
+    global global_verification_report_store
+    global_verification_report_store = store
+
+
+def get_verification_report_store() -> "VerificationReportStore | None":
+    global global_verification_report_store
+    return global_verification_report_store
 
 #------- biosim service (standalone or pytest) ------
 
@@ -246,6 +265,9 @@ async def init_standalone() -> None:
     from biosim_server.simulations.database import SimulationRunDatabaseServiceMongo
     from biosim_server.projects.search import ProjectSearchServiceMongo
     from biosim_server.biosim_verify.database import VerificationDatabaseServiceMongo
+    # Imported here rather than at module scope: report_store pulls in
+    # biosim_verify.models, which imports biosim_runs, which imports this module.
+    from biosim_server.biosim_verify.report_store import VerificationReportStore
 
     motor_client = AsyncIOMotorClient(get_settings().mongodb_uri)
     set_mongo_client(motor_client)
@@ -256,6 +278,7 @@ async def init_standalone() -> None:
     # own $text index (see projects/search.py).
     projects_db_service = ProjectSearchServiceMongo(db_client=motor_client)
     verification_db_service = VerificationDatabaseServiceMongo(db_client=motor_client)
+    verification_report_store = VerificationReportStore(db_client=motor_client)
 
     # create_index is idempotent; calling on every start keeps schema in sync as
     # we add lookups. Each service knows which fields its queries hit.
@@ -267,12 +290,16 @@ async def init_standalone() -> None:
     # Populate the search index on first run (no-op once built); refresh on demand
     # via POST /projects/reindex.
     await projects_db_service.rebuild_index_if_empty()
+    # The unique workflow_id index is what makes the store write-once, so it has
+    # to exist before the first save.
+    await verification_report_store.ensure_indexes()
 
     set_database_service(db_service)
     set_omex_database_service(omex_db_service)
     set_simulation_run_database_service(runs_db_service)
     set_project_database_service(projects_db_service)
     set_verification_database_service(verification_db_service)
+    set_verification_report_store(verification_report_store)
 
 async def shutdown_standalone() -> None:
     db_service = get_database_service()
@@ -310,3 +337,5 @@ async def shutdown_standalone() -> None:
     set_project_database_service(None)
     set_verification_database_service(None)
     set_mongo_client(None)
+    # Clear the handle only; the store shares the motor client closed above.
+    set_verification_report_store(None)

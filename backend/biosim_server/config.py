@@ -389,6 +389,7 @@ class Settings(BaseSettings):
     mongodb_collection_omex: str = "BiosimOmex"
     mongodb_collection_sims: str = "BiosimSims"
     mongodb_collection_compare: str = "BiosimCompare"
+    mongodb_collection_verify_reports: str = "BiosimVerifyReports"
     mongodb_collection_simulation_runs: str = "BiosimSimulationRuns"
     mongodb_collection_projects: str = "Projects"
     mongodb_collection_metadata: str = "Metadata"

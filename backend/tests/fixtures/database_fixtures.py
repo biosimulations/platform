@@ -4,13 +4,14 @@ import pytest
 import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorCollection
 from testcontainers.mongodb import MongoDbContainer  # type: ignore
-
+from biosim_server.biosim_verify.report_store import VerificationReportStore
 from biosim_server.biosim_runs import DatabaseServiceMongo
 from biosim_server.config import get_settings
 from biosim_server.dependencies import set_database_service, get_database_service, set_omex_database_service, \
     get_omex_database_service, set_simulation_run_database_service, get_simulation_run_database_service, \
     set_project_database_service, get_project_database_service, \
-    set_verification_database_service, get_verification_database_service
+    set_verification_database_service, get_verification_database_service, \
+    get_verification_report_store, set_verification_report_store
 from biosim_server.biosim_omex import OmexDatabaseServiceMongo
 from biosim_server.simulations import SimulationRunDatabaseServiceMongo
 from biosim_server.projects import ProjectDatabaseServiceMongo, ProjectSearchServiceMongo
@@ -167,3 +168,23 @@ async def verification_database_service_mongo(
 
     await verification_db_service.delete_all_verifications()
     set_verification_database_service(old_service)
+
+# A store bound to the test database, with its unique index already created so
+# write-once behaviour is live. It also installs itself as the process-wide
+# store via set_verification_report_store(), so the save activity -- which reads
+# the global -- works without each test wiring it. The previous global is
+# restored and the collection and GridFS bucket are cleared on teardown.
+@pytest_asyncio.fixture(scope="function")
+async def verification_report_store_mongo(
+    mongo_test_client: AsyncIOMotorClient,
+) -> AsyncGenerator[VerificationReportStore, None]:
+    store = VerificationReportStore(db_client=mongo_test_client)
+    # Must run before the first save, or two writers can both insert.
+    await store.ensure_indexes()
+    old_store = get_verification_report_store()
+    set_verification_report_store(store)
+
+    yield store
+
+    await store.delete_all()
+    set_verification_report_store(old_store)

@@ -208,6 +208,7 @@ ComparisonStatistics:
 | BiosimOmex | OMEX file metadata | file_hash_md5, omex_gcs_path |
 | BiosimSims | Simulation workflow runs | workflow_id, status, hdf5_file |
 | BiosimCompare | Verification ledger | workflow_id, owner_sub, created |
+| BiosimVerifyReports | Durable verification reports, written once by `save_verification_report_activity` and read first by `GET /verify/{id}`; large reports in the `biosim-verify-reports` GridFS bucket | workflow_id (unique), owner_sub, workflow_status |
 
 ---
 

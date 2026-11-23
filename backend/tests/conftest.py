@@ -30,6 +30,7 @@ from tests.fixtures.database_fixtures import (  # noqa: F401
     project_database_service_mongo,
     project_search_service_mongo,
     verification_database_service_mongo,
+    verification_report_store_mongo,
 )
 from tests.fixtures.gcs_fixtures import (  # noqa: F401
     file_service_gcs,
