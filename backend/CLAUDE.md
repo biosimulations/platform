@@ -204,7 +204,9 @@ All I/O is async: FastAPI endpoints, MongoDB (Motor), HTTP (aiohttp), file ops.
 - Simulator versions cached in memory (aiocache, 1hr TTL) — `BiosimServiceRest`, for submission compatibility
 - The simulator registry list and the four ontology dumps cached in-process by `simulators/cache.py`
   (five fixed keys; 10 min fresh; up to 24 h stale-if-error measured from freshness expiry; single-flight
-  per key; errors never cached) — backs `GET /simulators/latest` and `GET /ontologies/{namespace}`
+  per key, including when the upstream is down: callers share one refresh task, and after a failed
+  refresh the stale value is served without a new upstream attempt for `FAILURE_BACKOFF_SECONDS`, 30 s;
+  errors never cached) — backs `GET /simulators/latest` and `GET /ontologies/{namespace}`
 - Per-simulator detail and version lists, and `GET /verify/runs/precheck`, are never cached
 
 ### Dependency Injection

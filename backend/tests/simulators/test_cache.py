@@ -12,7 +12,12 @@ from typing import Any
 
 import pytest
 
-from biosim_server.simulators.cache import CACHE_FRESH_SECONDS, CACHE_STALE_SECONDS, SimulatorsCache
+from biosim_server.simulators.cache import (
+    CACHE_FRESH_SECONDS,
+    CACHE_STALE_SECONDS,
+    FAILURE_BACKOFF_SECONDS,
+    SimulatorsCache,
+)
 
 KEY = "simulators/latest"
 
@@ -161,9 +166,156 @@ async def test_success_after_stale_serving_restarts_the_fresh_window() -> None:
     state["fails"] = True
     assert await cache.get(KEY, loader) == first  # stale served, timestamp untouched
     state["fails"] = False
+    clock.advance(FAILURE_BACKOFF_SECONDS)  # past the back-off, so the next call refreshes
+    refreshed_at = clock.now
     refreshed = await cache.get(KEY, loader)
     assert refreshed == "value-3"  # a successful fetch replaces the stale value
     state["fails"] = True
-    clock.now = 1601.0 + CACHE_FRESH_SECONDS + CACHE_STALE_SECONDS
+    clock.now = refreshed_at + CACHE_FRESH_SECONDS + CACHE_STALE_SECONDS
     with pytest.raises(RuntimeError):
         await cache.get(KEY, loader)  # the new fetch's own stale window has since expired
+
+
+# ---------------------------------------------------------------------------
+# Single-flight under failure: an outage is one upstream attempt, not one per caller
+# ---------------------------------------------------------------------------
+
+
+async def _expired_cache(clock: _FakeClock) -> SimulatorsCache:
+    """A cache holding one good value that has just gone stale."""
+    cache = _cache(clock)
+
+    async def good() -> str:
+        return "last-good"
+
+    await cache.get(KEY, good)
+    clock.advance(CACHE_FRESH_SECONDS + 1)
+    return cache
+
+
+def _failing_loader(calls: list[int], gate: asyncio.Event) -> Callable[[], Awaitable[str]]:
+    """A loader that fails only once ``gate`` opens, so callers pile up behind it."""
+
+    async def loader() -> str:
+        calls.append(len(calls) + 1)
+        await gate.wait()
+        raise RuntimeError("upstream down")
+
+    return loader
+
+
+async def _let_callers_queue() -> None:
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_callers_share_one_failed_refresh_and_all_get_the_stale_value() -> None:
+    """N callers during an outage make one upstream attempt and are all served stale.
+
+    Before the shared refresh task, each waiter took the lock after the previous
+    one failed and called upstream again, so caller k waited k attempts.
+    """
+    clock = _FakeClock()
+    cache = await _expired_cache(clock)
+    calls: list[int] = []
+    gate = asyncio.Event()
+    loader = _failing_loader(calls, gate)
+
+    results = asyncio.gather(*(cache.get(KEY, loader) for _ in range(5)))
+    await _let_callers_queue()
+    gate.set()
+
+    assert await results == ["last-good"] * 5
+    assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cold_callers_share_one_failed_attempt() -> None:
+    """With nothing stale to serve, every waiter gets the one attempt's error."""
+    clock = _FakeClock()
+    cache = _cache(clock)
+    calls: list[int] = []
+    gate = asyncio.Event()
+    loader = _failing_loader(calls, gate)
+
+    results = asyncio.gather(*(cache.get(KEY, loader) for _ in range(5)), return_exceptions=True)
+    await _let_callers_queue()
+    gate.set()
+
+    outcomes = await results
+    assert all(isinstance(outcome, RuntimeError) for outcome in outcomes)
+    assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_a_call_inside_the_back_off_makes_no_upstream_attempt() -> None:
+    """After a failed refresh, the stale value is served without calling a down upstream.
+
+    Once the back-off has passed, the next call tries upstream again.
+    """
+    clock = _FakeClock()
+    cache = await _expired_cache(clock)
+    state: dict[str, Any] = {"fails": True}
+    calls: list[int] = []
+    loader = _loader(state, calls)
+
+    assert await cache.get(KEY, loader) == "last-good"
+    assert calls == [1]
+
+    clock.advance(FAILURE_BACKOFF_SECONDS - 1)
+    assert await cache.get(KEY, loader) == "last-good"
+    assert calls == [1]  # inside the back-off: no attempt
+
+    clock.advance(1)
+    assert await cache.get(KEY, loader) == "last-good"
+    assert calls == [1, 2]  # back-off over: one new attempt, which failed again
+
+
+@pytest.mark.asyncio
+async def test_back_off_does_not_apply_without_a_stale_value() -> None:
+    """A cold failure is never cached, back-off included: the next caller retries."""
+    clock = _FakeClock()
+    cache = _cache(clock)
+    state: dict[str, Any] = {"fails": True}
+    calls: list[int] = []
+    loader = _loader(state, calls)
+
+    with pytest.raises(RuntimeError):
+        await cache.get(KEY, loader)
+    with pytest.raises(RuntimeError):
+        await cache.get(KEY, loader)
+    assert calls == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_first_caller_does_not_cancel_the_shared_refresh() -> None:
+    """The caller that started the refresh disconnects; the others still get the value.
+
+    The refresh runs in its own task, shielded from any one caller, so a
+    disconnecting client cannot make the remaining waiters redo the fetch.
+    """
+    clock = _FakeClock()
+    cache = _cache(clock)
+    calls: list[int] = []
+    gate = asyncio.Event()
+
+    async def loader() -> str:
+        calls.append(len(calls) + 1)
+        await gate.wait()
+        return "value"
+
+    first = asyncio.create_task(cache.get(KEY, loader))
+    await _let_callers_queue()
+    others = asyncio.gather(*(cache.get(KEY, loader) for _ in range(3)))
+    await _let_callers_queue()
+    first.cancel()
+    await _let_callers_queue()
+    gate.set()
+
+    assert await others == ["value"] * 3
+    assert first.cancelled()
+    assert calls == [1]
+    # The refresh also filled the cache: a later call needs no upstream attempt.
+    assert await cache.get(KEY, loader) == "value"
+    assert calls == [1]
