@@ -659,6 +659,16 @@ would make a client discard a verification that is still recoverable. The two 50
 deliberately not identical: only the outage carries a retry hint, because telling a
 client to retry corruption would just make it poll a permanent failure.
 
+**A store outage costs the GET one bounded wait.** The Mongo client sets no
+`serverSelectionTimeoutMS`, so each call to an unreachable Mongo would otherwise wait
+out pymongo's 30 s default. Each report-store call on this path (the read and the
+catch-up save) is wrapped in `asyncio.timeout(_STORE_CALL_TIMEOUT_SECONDS)` (5 s), and
+a read that runs past it counts as "store unreachable". The catch-up save runs only
+after a read that answered "nothing stored": after an outage it would wait on the same
+store again, and after a corrupt read a document already exists, so the write-once
+save could only return False. The pre-existing ledger status write is not bounded, so
+the worst case with Temporal healthy and Mongo down is about 5 s plus 30 s.
+
 **Recovery from a failed execution** rebuilds an output from the start input, which
 carries no results. Before persisting it, the endpoint scans the workflow history for
 the `save_verification_report_activity` scheduled event, whose argument is the output
@@ -858,22 +868,40 @@ still applied by hand.
 > its GHCR push leaves the git tag and the GitHub Release in place, so neither
 > is proof the image exists — check the release run's job conclusion.
 
-> **Workflow-restructuring releases require a worker drain.** A release that
-> changes the activity sequence inside a Temporal workflow (e.g. PR #52, which
-> split the monolithic `submit_biosim_simulation_run_activity` into separate
-> submit + poll activities inside `OmexSimWorkflow`) will hit
-> `NonDeterministicWorkflowError` if a new worker replays an in-flight
-> workflow whose history was recorded against the old code. Drain in-flight
-> workflows (wait for them to complete, or `tctl workflow terminate`) BEFORE
-> rolling out the new `platform-worker` image. The `platform-api` image is
-> safe to deploy at any time — its only Temporal contract is `start_workflow`
-> / `query_workflow`. See `docs/workflows-architecture.md` → "Deploy
-> considerations" for the full rationale and the longer-term `workflow.patched`
-> pattern.
+> **Workflow-restructuring releases require a worker drain, unless the new step
+> is behind `workflow.patched`.** A release that changes the activity sequence
+> inside a Temporal workflow (e.g. PR #52, which split the monolithic
+> `submit_biosim_simulation_run_activity` into separate submit + poll activities
+> inside `OmexSimWorkflow`) will hit `NonDeterministicWorkflowError` if a new
+> worker replays an in-flight workflow whose history was recorded against the
+> old code. Drain in-flight workflows (wait for them to complete, or
+> `tctl workflow terminate`) BEFORE rolling out the new `platform-worker` image.
+> The `platform-api` image is safe to deploy at any time — its only Temporal
+> contract is `start_workflow` / `query_workflow`. See
+> `docs/workflows-architecture.md` → "Deploy considerations" for the full
+> rationale.
 >
 > Under Flux this needs an extra step, since merging the overlay bump would
 > otherwise roll the worker immediately: `flux suspend kustomization
 > platform-biosim-gke` before merging, drain, then `flux resume`.
+>
+> **Exception: a new step added behind `workflow.patched("<id>")` needs no
+> drain**, provided a replay test runs the new code over a history recorded by
+> the pre-patch class (see `tests/biosim_verify/test_save_report_replay.py`).
+> Such a history replays without the step, and an execution in flight during the
+> deploy runs the step when it reaches it. The worker runs `strategy: Recreate`
+> (`kustomize/base/worker.yaml`), so old and new workers never run side by side.
+> A change that alters or removes an existing step still needs the drain.
+>
+> **Rollback is not covered.** Once an execution has run the patched step, an
+> older worker replaying its history meets an activity it does not schedule and
+> fails as non-deterministic. Roll forward, or drain before reverting.
+>
+> **Active patches:** `save-verification-report-v1` (the report save in
+> `RunsVerifyWorkflow` and `OmexVerifyWorkflow`). To retire a patch, first
+> replace `workflow.patched` with `workflow.deprecate_patch` once every execution
+> recorded before the patch has closed and aged out of retention; delete the call
+> in a later release.
 
 <!-- -->
 

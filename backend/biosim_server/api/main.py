@@ -1,4 +1,5 @@
 from enum import StrEnum
+import asyncio
 import logging
 import os
 import uuid
@@ -596,6 +597,14 @@ _HISTORY_SCAN_EVENT_LIMIT = 5_000
 # report store. Same value as the legacy download-cap 503
 # (biosim_runs/legacy_api.py); the cold-Auth0-cache 503 uses 10.
 _STORE_UNAVAILABLE_RETRY_AFTER_SECONDS = 5
+
+# Upper bound on each report-store call GET /verify/{id} makes. The Mongo client
+# sets no serverSelectionTimeoutMS, so against an unreachable Mongo every call
+# would wait out pymongo's 30 s default, and the read, the catch-up save and the
+# ledger write in a row add up to ~90 s, past ingress-nginx's default 60 s read
+# timeout. A healthy read or save of a report finishes well inside this; a call
+# that runs past it is treated as a store outage.
+_STORE_CALL_TIMEOUT_SECONDS = 5
 _FAILED_EXECUTION_STATUSES = frozenset({
     WorkflowExecutionStatus.FAILED,
     WorkflowExecutionStatus.TERMINATED,
@@ -739,6 +748,10 @@ async def _read_stored_report(
     The ``_StoreRead`` outcome is returned alongside the report so the caller can
     tell a genuine miss from a store it could not read: only the former justifies
     a 404 when Temporal has also forgotten the workflow.
+
+    The read is bounded by ``_STORE_CALL_TIMEOUT_SECONDS``. A read that runs past
+    it raises ``TimeoutError``, which lands in the outage branch: the store did
+    not answer, so it is ``UNAVAILABLE``, not a miss.
     """
     store = get_verification_report_store()
     if store is None:
@@ -747,7 +760,8 @@ async def _read_stored_report(
         # behaving exactly as it did before the store existed.
         return _StoreRead.MISS, None
     try:
-        stored = await store.get(workflow_id)
+        async with asyncio.timeout(_STORE_CALL_TIMEOUT_SECONDS):
+            stored = await store.get(workflow_id)
     except ReportCorrupt as e:
         logger.error(
             "Stored verification report is corrupt %s: %s", workflow_id, e,
@@ -865,7 +879,7 @@ def _belongs_to_execution(
 
 
 async def _catch_up_save(
-    output: VerifyWorkflowOutput, *, has_computed_result: bool = True,
+    output: VerifyWorkflowOutput, *, store_read: _StoreRead, has_computed_result: bool = True,
 ) -> None:
     """
     Store a finished report that was never saved.
@@ -874,6 +888,13 @@ async def _catch_up_save(
     Only a finished output is stored, and a failure never fails the GET -- the
     same rule the ledger status write follows.
 
+    ``store_read`` is how this request's store read went, and only a confirmed
+    ``MISS`` justifies a write. After ``UNAVAILABLE`` the store has just failed to
+    answer, and trying again would only spend another timeout on the same
+    request. After ``CORRUPT`` a document already exists, so the write-once save
+    could only return False. The next GET retries in both cases. The argument is
+    required so a new call site cannot forget it.
+
     ``has_computed_result`` says whether a computed result is known to exist. A
     rebuilt output carries no results, and storing one would occupy the
     write-once slot with a permanent FAILED report and make the real result
@@ -881,8 +902,16 @@ async def _catch_up_save(
     produce a result -- whether it searched and found none, or failed outright --
     because neither case proves anything was computed. The shell is then served
     but never persisted, and the next GET retries the write.
+
+    The save is bounded by ``_STORE_CALL_TIMEOUT_SECONDS``. Abandoning it partway
+    is safe: the store is write-once, so an insert that did land stands and one
+    that did not is retried by a later GET. A GridFS upload cut off before its
+    insert leaves one unreferenced file, the leak ``VerificationReportStore.save``
+    already documents for any interrupted save.
     """
     if not output.workflow_status.is_done:
+        return
+    if store_read is not _StoreRead.MISS:
         return
     if not has_computed_result and output.workflow_results is None:
         logger.info(
@@ -894,7 +923,8 @@ async def _catch_up_save(
     if store is None:
         return
     try:
-        await store.save(output)
+        async with asyncio.timeout(_STORE_CALL_TIMEOUT_SECONDS):
+            await store.save(output)
     except Exception as e:
         logger.warning(
             "Could not catch up verification report for %s: %s", output.workflow_id, e,
@@ -938,7 +968,8 @@ async def _serve_recovered(
     if computed is not None:
         recovered = computed
     # Only a computed result justifies consuming the write-once slot.
-    await _catch_up_save(recovered, has_computed_result=computed is not None)
+    await _catch_up_save(
+        recovered, store_read=store_read, has_computed_result=computed is not None)
     if scan is not _HistoryScan.FAILED:
         await _record_terminal_status(recovered)
     return recovered
@@ -1053,7 +1084,7 @@ async def get_verify_output(
     workflow_output = _reconcile_terminal_status(workflow_output, desc.status)
 
     # Step 5: remember the terminal status for the listing (after authorization).
-    await _catch_up_save(workflow_output)
+    await _catch_up_save(workflow_output, store_read=store_read)
     await _record_terminal_status(workflow_output)
 
     return workflow_output
