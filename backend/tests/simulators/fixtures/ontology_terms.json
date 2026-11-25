@@ -1,0 +1,30 @@
+{
+  "EDAM": [
+    {"id": "format_2585", "name": "SBML"},
+    {"id": "format_3685", "name": "SED-ML"},
+    {"id": "format_3240", "name": "CellML"},
+    {"id": "format_3971", "name": "NeuroML"},
+    {"id": "format_9002", "name": "Morpheus Markup Language"}
+  ],
+  "SBO": [
+    {"id": "SBO_0000292", "name": "Spatial continuous"},
+    {"id": "SBO_0000293", "name": "Non-spatial continuous"},
+    {"id": "SBO_0000294", "name": "Spatial discrete"},
+    {"id": "SBO_0000624", "name": "Flux balance"},
+    {"id": "SBO_0000675", "name": "Deterministic continuous"}
+  ],
+  "KISAO": [
+    {"id": "KISAO_0000019", "name": "CVODE"},
+    {"id": "KISAO_0000021", "name": "Gillespie algorithm"},
+    {"id": "KISAO_0000088", "name": "LSODA"},
+    {"id": "KISAO_0000498", "name": "Rosenbrock"},
+    {"id": "KISAO_0000703", "name": "Fraction of optimum"}
+  ],
+  "SPDX": [
+    {"id": "GPL-3.0", "name": "GNU General Public License v3.0"},
+    {"id": "MIT", "name": "MIT License"},
+    {"id": "BSD-3-Clause", "name": "BSD 3-Clause License"},
+    {"id": "Apache-2.0", "name": "Apache License 2.0"},
+    {"id": "LGPL-3.0", "name": "GNU Lesser General Public License v3.0"}
+  ]
+}

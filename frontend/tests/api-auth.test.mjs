@@ -8,17 +8,26 @@ import { isPlatformApiRequest } from '../app/utils/api-auth.ts'
 const api = 'https://api.biosim.example/api/v1'
 const page = 'https://biosim.example'
 
+// The simulators pages and the verify-model run precheck call these Platform routes
+const publicReads = [
+  `${api}/simulators/latest`,
+  `${api}/simulators/vcell/latest?include_tests=true`,
+  `${api}/ontologies/EDAM`,
+  `${api}/verify/runs/precheck?biosimulations_run_ids=a&biosimulations_run_ids=b`
+]
+
 test('only the configured API origin and path receive its token', () => {
-  for (const request of [api, `${api}/me`, new Request(`${api}/me`)]) {
+  for (const request of [api, `${api}/me`, new Request(`${api}/me`), ...publicReads]) {
     assert.equal(isPlatformApiRequest(request, undefined, api, page), true)
   }
   for (const request of [
     'https://compose.example/simulation/run',
     'https://tenant.auth0.com/dbconnections/change_password',
     'https://legacy.example/projects',
-    '/biosimulators-api/simulators/latest',
-    '/biosimulations-api/runs/67817a2e1f52f47f628af971',
-    '/simdata-api/datasets/67817a2e1f52f47f628af971/metadata',
+    // The legacy upstreams the Platform API now reads server-side never see the token
+    'https://api.biosimulators.org/simulators/latest',
+    'https://api.biosimulations.org/runs/67817a2e1f52f47f628af971',
+    'https://simdata.api.biosimulations.org/datasets/67817a2e1f52f47f628af971/metadata',
     'https://api.biosim.example.evil.test/api/v1/me',
     'https://api.biosim.example/api/v10/me',
     'https://api.biosim.example/api/v1/../../other',
@@ -87,16 +96,15 @@ test('the actual plugin attaches the right token only to Platform requests', asy
   const external = {}
   await hook({ request: 'https://compose.example/simulation/run', options: external })
   assert.deepEqual(external, {})
-  for (const request of [
-    '/biosimulators-api/simulators/latest',
-    '/biosimulations-api/runs/67817a2e1f52f47f628af971',
-    '/simdata-api/datasets/67817a2e1f52f47f628af971/metadata'
-  ]) {
-    const proxy = { credentials: 'omit' }
-    await hook({ request, options: proxy })
-    assert.deepEqual(proxy, { credentials: 'omit' })
+  // Public reads count as Platform requests: they get the token (the routes ignore it), and
+  // the composables' credentials: 'omit' survives
+  for (const request of publicReads) {
+    const read = { credentials: 'omit' }
+    await hook({ request, options: read })
+    assert.equal(read.headers.get('Authorization'), 'Bearer test-token')
+    assert.equal(read.credentials, 'omit')
   }
-  assert.equal(tokenCalls, 1)
+  assert.equal(tokenCalls, 1 + publicReads.length)
   const explicit = { headers: new Headers({ Authorization: 'Bearer explicit' }) }
   await hook({ request: `${api}/me`, options: explicit })
   assert.equal(explicit.headers.get('Authorization'), 'Bearer explicit')

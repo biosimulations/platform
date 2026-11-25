@@ -213,7 +213,7 @@ async function loadData() {
   error.value = null;
 
   try {
-    // 1. Fetch latest simulators through the same-origin legacy BioSimulators proxy
+    // 1. Fetch the latest simulators from the Platform API's owned registry contract
     const rawSimulators = await fetchRawSimulators();
 
     const simMap = new Map<string, SimulatorItem>();

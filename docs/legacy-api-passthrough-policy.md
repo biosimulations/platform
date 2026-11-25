@@ -71,6 +71,27 @@ it is not a passthrough and is not permission to re-host arbitrary legacy
 endpoints. Any future migration must define its model, centralized mapping,
 OpenAPI contract, drift tests, and consumer migration explicitly.
 
+## Platform-owned simulator registry and run-precheck contracts
+
+`/simulators/latest`, `/simulators/{simulator_id}`, `/simulators/{simulator_id}/{version}`,
+`/ontologies/{namespace}` and `GET /verify/runs/precheck` are platform-owned contracts, not
+passthroughs — they replace the same-origin Nitro proxies the frontend shipped as a CORS
+stop-gap. Against the migration checklist:
+
+| Requirement | Where |
+| --- | --- |
+| Model | `biosim_server/simulators/models.py` (camelCase wire names, unknown upstream fields dropped, `null` versus `[]` preserved) and `biosim_server/biosim_verify/precheck.py` (`RunPrecheckResult`) |
+| Centralized mapping | `biosim_server/simulators/service.py` (fetch → validate → trim → cache) and the precheck loader/decision |
+| OpenAPI contract | Committed `biosim_server/api/spec/openapi_3_1_0_generated.yaml`; operation IDs `get-latest-simulators`, `list-simulator-versions`, `get-simulator-version`, `get-ontology-terms`, `precheck-verify-runs` |
+| Drift tests | Trimmed fixtures in `backend/tests/simulators/fixtures/` plus the live `integration` drift test `backend/tests/simulators/test_live_contract.py` |
+| Consumer migration | The frontend reads `${api_url}/simulators/*`, `${api_url}/ontologies/*` and `${api_url}/verify/runs/precheck` instead of the same-origin proxies |
+
+Validation policy: list entries and ontology terms that fail validation are skipped with a
+WARNING naming them; an invalid detail — or a non-empty upstream list with zero valid entries —
+is a sanitized 502, so the in-process cache can serve the last good list. The precheck loader
+classifies every upstream outcome (`not_found`, `not_succeeded`, `upstream_unavailable`) and
+never reads or echoes the upstream run record's `email`.
+
 ## Platform-owned page aggregation
 
 `GET /projects/{project_id}/page` and `GET /runs/{run_id}/page` are

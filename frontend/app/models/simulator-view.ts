@@ -158,5 +158,8 @@ export interface SimulatorDetail {
   algorithms: SimulatorAlgorithm[]
   versions: SimulatorVersionItem[]
   validationTests: SimulatorValidationTests | null
+  // The Platform's validated record of this version, which omits upstream fields the Platform
+  // does not use. It is not the canonical BioSimulators specification; that is canonicalSpecificationUrl.
   rawJson: string
+  canonicalSpecificationUrl: string
 }
