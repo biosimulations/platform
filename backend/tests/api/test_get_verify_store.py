@@ -30,6 +30,7 @@ from biosim_server.biosim_omex import OmexFile
 from biosim_server.biosim_verify.omex_verify_workflow import OmexVerifyWorkflowInput
 from biosim_server.biosim_verify.report_store import ReportCorrupt
 from biosim_server.common.auth import AuthenticatedUser, get_current_user, get_optional_user
+from biosim_server.common.auth.roles import ADMIN_ROLE
 
 
 def _output(
@@ -326,21 +327,136 @@ async def test_store_unavailable_and_temporal_not_found_is_503() -> None:
 
 @pytest.mark.asyncio
 async def test_corrupt_store_and_temporal_not_found_is_503() -> None:
-    """A corrupt stored report plus a missing history is a 503, not "no longer retained".
+    """A corrupt stored report plus a missing history is a 503 for a caller who may see it.
 
     No Retry-After here: retrying cannot repair corrupt bytes, so a hint would
     only make the client poll a permanent failure.
     """
     store = MagicMock()
     store.get = AsyncMock(side_effect=ReportCorrupt("payload is garbage"))
+    ledger = _ledger(owner_sub=None)
     with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
          patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_describe_not_found()), \
-         patch("biosim_server.api.main.get_verification_database_service", return_value=MagicMock()):
+         patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
         response = await _get("omex-verification-corrupt-gone", None)
 
     assert response.status_code == 503
     assert "corrupt" in response.json()["detail"]
     assert "Retry-After" not in response.headers
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: a corruption diagnostic must not disclose a private report's existence
+# ---------------------------------------------------------------------------
+
+
+def _corrupt_store_and_missing_history() -> Any:
+    store = MagicMock()
+    store.get = AsyncMock(side_effect=ReportCorrupt("payload is garbage"))
+    return store
+
+
+@pytest.mark.asyncio
+async def test_corruption_diagnostic_is_served_to_the_owner() -> None:
+    """The owner of a corrupt report learns it is corrupt, not that it vanished."""
+    with patch("biosim_server.api.main.get_verification_report_store",
+               return_value=_corrupt_store_and_missing_history()), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_describe_not_found()), \
+         patch("biosim_server.api.main.get_verification_database_service",
+               return_value=_ledger(owner_sub="auth0|owner")):
+        response = await _get("omex-verification-private-report",
+                              AuthenticatedUser(sub="auth0|owner", email="o@e.com"))
+
+    assert response.status_code == 503
+    assert "corrupt" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_corruption_diagnostic_is_served_to_an_admin() -> None:
+    """An admin may see any verification, so the diagnostic is theirs too."""
+    admin = AuthenticatedUser(sub="auth0|admin", email="a@e.com", roles=[ADMIN_ROLE])
+    with patch("biosim_server.api.main.get_verification_report_store",
+               return_value=_corrupt_store_and_missing_history()), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_describe_not_found()), \
+         patch("biosim_server.api.main.get_verification_database_service",
+               return_value=_ledger(owner_sub="auth0|owner")):
+        response = await _get("omex-verification-private-report", admin)
+
+    assert response.status_code == 503
+    assert "corrupt" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", [None, "other"])
+async def test_corruption_diagnostic_is_withheld_from_others(caller: str | None) -> None:
+    """A private report's corruption is not disclosed to an anonymous or unrelated caller.
+
+    The generic 404 is the same answer a verification that never existed gets, so
+    the store cannot be used to probe for private reports.
+    """
+    user = None if caller is None else AuthenticatedUser(sub="auth0|intruder", email="i@e.com")
+    with patch("biosim_server.api.main.get_verification_report_store",
+               return_value=_corrupt_store_and_missing_history()), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_describe_not_found()), \
+         patch("biosim_server.api.main.get_verification_database_service",
+               return_value=_ledger(owner_sub="auth0|owner")):
+        response = await _get("omex-verification-private-report", user)
+
+    assert response.status_code == 404
+    assert "corrupt" not in response.json()["detail"]
+    assert "no longer retained" not in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_corruption_diagnostic_is_served_for_a_public_report() -> None:
+    """An ownerless verification is public, so anyone may learn it is corrupt."""
+    with patch("biosim_server.api.main.get_verification_report_store",
+               return_value=_corrupt_store_and_missing_history()), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_describe_not_found()), \
+         patch("biosim_server.api.main.get_verification_database_service",
+               return_value=_ledger(owner_sub=None)):
+        response = await _get("omex-verification-public-report", None)
+
+    assert response.status_code == 503
+    assert "corrupt" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_corruption_diagnostic_is_withheld_when_ownership_is_unknown() -> None:
+    """A ledger that cannot answer is not evidence, so the diagnostic is withheld.
+
+    Two cases: no ledger configured at all, and a ledger whose lookup raises.
+    Neither may turn a failed lookup into a disclosure.
+    """
+    for ledger in (None, _ledger(raises=RuntimeError("mongo is down"))):
+        with patch("biosim_server.api.main.get_verification_report_store",
+                   return_value=_corrupt_store_and_missing_history()), \
+             patch("biosim_server.api.main.get_temporal_client",
+                   return_value=_temporal_describe_not_found()), \
+             patch("biosim_server.api.main.get_verification_database_service", return_value=ledger):
+            response = await _get("omex-verification-unknown-owner", None)
+
+        assert response.status_code == 404
+        assert "corrupt" not in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_unreachable_store_still_answers_503_without_ownership_evidence() -> None:
+    """An unreachable store discloses nothing, so it needs no ownership check.
+
+    This is the deliberate asymmetry with CORRUPT: "the store is down" says
+    nothing about whether a report exists.
+    """
+    store = MagicMock()
+    store.get = AsyncMock(side_effect=RuntimeError("mongo is down"))
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=_temporal_describe_not_found()), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=None):
+        response = await _get("omex-verification-unreachable", None)
+
+    assert response.status_code == 503
+    assert "storage is unavailable" in response.json()["detail"]
+    assert response.headers["Retry-After"] == "5"
 
 
 @pytest.mark.asyncio
@@ -758,9 +874,24 @@ async def _get_within(seconds: float, workflow_id: str, user: AuthenticatedUser 
     return await asyncio.wait_for(_get(workflow_id, user), timeout=seconds)
 
 
-def _ledger() -> Any:
+def _ledger(
+    owner_sub: str | None = None, *, row: Any = "default", raises: Exception | None = None,
+) -> Any:
+    """A ledger mock whose get_verification answers with a row owned by *owner_sub*.
+
+    ``row=None`` means the ledger has no record of the verification. ``raises``
+    makes the lookup fail, which is the "ownership evidence unavailable" case.
+    """
     ledger = MagicMock()
     ledger.record_terminal_status = AsyncMock()
+    if raises is not None:
+        ledger.get_verification = AsyncMock(side_effect=raises)
+    elif row is None:
+        ledger.get_verification = AsyncMock(return_value=None)
+    else:
+        record = MagicMock()
+        record.owner_sub = owner_sub
+        ledger.get_verification = AsyncMock(return_value=record)
     return ledger
 
 
@@ -861,4 +992,129 @@ async def test_store_outage_skips_the_save_on_the_recovery_path_too() -> None:
 
     assert response.status_code == 200
     assert response.json()["workflow_results"] is not None
+    store.save.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: a reconciled shell must not claim the write-once slot
+# ---------------------------------------------------------------------------
+
+
+def _temporal_terminated_with_stuck_query(
+    *, status: VerifyWorkflowStatus, with_results: bool,
+) -> Any:
+    """A TERMINATED execution whose query *answers*, with a non-terminal status.
+
+    This is the case the recovery scan never sees: the query succeeded, so no
+    history scan runs. The workflow was terminated before it reached an exit
+    point, so its own output still says IN_PROGRESS and carries no result.
+    """
+    from temporalio.client import WorkflowExecutionStatus
+
+    stuck = _output(workflow_id="omex-verification-stuck", status=status, owner_sub=None)
+    stuck.workflow_run_id = "run-1"
+    if with_results:
+        stuck.workflow_results = GenerateStatisticsActivityOutput(
+            sims_run_info=[], comparison_statistics={"shared": []})
+
+    handle = MagicMock()
+    handle.describe = AsyncMock(return_value=MagicMock(
+        workflow_type="OmexVerifyWorkflow", status=WorkflowExecutionStatus.TERMINATED,
+        id=stuck.workflow_id, run_id="run-1",
+        close_time=datetime(2025, 1, 1, tzinfo=UTC),
+        start_time=datetime(2025, 1, 1, tzinfo=UTC)))
+    handle.query = AsyncMock(return_value=stuck)
+
+    temporal = MagicMock()
+    temporal.get_workflow_handle.return_value = handle
+    return temporal
+
+
+@pytest.mark.asyncio
+async def test_reconciled_shell_does_not_claim_the_write_once_slot() -> None:
+    """A terminated execution whose query said IN_PROGRESS is served FAILED, not stored.
+
+    The FAILED status is synthesized by _reconcile_terminal_status, not computed by
+    the workflow. Storing it would occupy the write-once slot with a permanent
+    FAILED report and make the real result unstorable forever.
+    """
+    store = _store_returning(None)
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client",
+               return_value=_temporal_terminated_with_stuck_query(
+                   status=VerifyWorkflowStatus.IN_PROGRESS, with_results=False)), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=_ledger()):
+        response = await _get("omex-verification-stuck", None)
+
+    assert response.status_code == 200
+    # The caller still sees a terminal status, so it stops polling.
+    assert response.json()["workflow_status"] == "FAILED"
+    store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_workflow_produced_terminal_failure_with_no_statistics_is_still_saved() -> None:
+    """A real FAILED exit point with empty statistics is a computed result and is stored.
+
+    This is the other half of fix 1: the guard must not become "never save a FAILED
+    report", which would lose the genuine failures the workflow itself recorded.
+    """
+    store = _store_returning(None)
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client",
+               return_value=_temporal_terminated_with_stuck_query(
+                   status=VerifyWorkflowStatus.FAILED, with_results=False)), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=_ledger()):
+        response = await _get("omex-verification-stuck", None)
+
+    assert response.status_code == 200
+    assert response.json()["workflow_status"] == "FAILED"
+    store.save.assert_awaited_once()
+    saved = store.save.await_args.args[0]
+    assert saved.workflow_status == VerifyWorkflowStatus.FAILED
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: a recovered result must be this run's, and terminal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_computed_result_without_a_run_id_is_not_served_or_stored() -> None:
+    """A payload with no run id cannot be proven to be this run's, so it is rejected.
+
+    An earlier version accepted a missing payload run id whenever the execution
+    description supplied one, which let another run's payload through.
+    """
+    store = _store_returning(None)
+    no_run = _mismatched()
+    no_run.workflow_run_id = None
+    temporal = _temporal_terminated(with_computed=True, computed_override=no_run)
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=_ledger()):
+        response = await _get("omex-verification-terminated", None)
+
+    assert response.status_code == 200
+    assert response.json()["workflow_status"] == "FAILED"
+    store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_nonterminal_computed_result_is_not_served_or_stored() -> None:
+    """The persist activity runs only at an exit point, so a non-terminal payload is not a result.
+
+    Accepting one would let a mid-flight snapshot claim the write-once slot.
+    """
+    store = _store_returning(None)
+    nonterminal = _mismatched()
+    nonterminal.workflow_status = VerifyWorkflowStatus.IN_PROGRESS
+    temporal = _temporal_terminated(with_computed=True, computed_override=nonterminal)
+    with patch("biosim_server.api.main.get_verification_report_store", return_value=store), \
+         patch("biosim_server.api.main.get_temporal_client", return_value=temporal), \
+         patch("biosim_server.api.main.get_verification_database_service", return_value=_ledger()):
+        response = await _get("omex-verification-terminated", None)
+
+    assert response.status_code == 200
+    assert response.json()["workflow_status"] == "FAILED"
     store.save.assert_not_awaited()

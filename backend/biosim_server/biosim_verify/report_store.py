@@ -28,6 +28,7 @@ served as a plausible report.
 """
 
 import asyncio
+from collections.abc import Mapping
 from datetime import datetime, UTC
 import gzip
 import hashlib
@@ -96,6 +97,49 @@ def decode_report(compressed: bytes, expected_sha256: str) -> VerifyWorkflowOutp
     except Exception as e:
         raise ReportCorrupt(f"JSON validation failed: {e}") from e
     return output
+
+
+def _check_document_identity(
+    document: Mapping[str, Any], output: VerifyWorkflowOutput, requested_workflow_id: str,
+) -> None:
+    """Refuse a document whose index fields disagree with the payload it holds.
+
+    The digest proves the bytes are intact; it says nothing about whether they
+    belong to this row. A document can be assembled from one report's bytes and
+    another report's index fields -- a partial restore, a bad migration, a manual
+    edit -- and every field GET acts on comes from the index side: ``owner_sub``
+    decides authorization, ``workflow_status`` is copied into the ledger, and
+    ``workflow_id`` is what the caller asked for. Serving that mix would authorize
+    and record one verification using another one's identity.
+
+    ``workflow_run_id`` is compared only when the payload carries one, because a
+    report written before that field existed decodes with it unset; the other
+    three are always present on a document this store wrote.
+    """
+    if output.workflow_id != requested_workflow_id:
+        raise ReportCorrupt(
+            f"Stored report belongs to workflow {output.workflow_id}, not {requested_workflow_id}"
+        )
+    if document.get("workflow_id") != output.workflow_id:
+        raise ReportCorrupt(
+            f"Stored document is indexed as {document.get('workflow_id')} "
+            f"but holds the report for {output.workflow_id}"
+        )
+    if document.get("owner_sub") != output.owner_sub:
+        raise ReportCorrupt(
+            f"Stored document is indexed as owned by {document.get('owner_sub')} "
+            f"but holds a report owned by {output.owner_sub}"
+        )
+    if output.workflow_run_id is not None and document.get("workflow_run_id") != output.workflow_run_id:
+        raise ReportCorrupt(
+            f"Stored document is indexed as run {document.get('workflow_run_id')} "
+            f"but holds the report for run {output.workflow_run_id}"
+        )
+    if document.get("workflow_status") != output.workflow_status.value:
+        raise ReportCorrupt(
+            f"Stored document is indexed as {document.get('workflow_status')} "
+            f"but holds a {output.workflow_status.value} report"
+        )
 
 
 class VerificationReportStore:
@@ -196,7 +240,13 @@ class VerificationReportStore:
         if not isinstance(sha256, str):
             raise ReportCorrupt("Report document has no sha256")
         # Decompression is CPU-bound, so keep it off the event loop.
-        return await asyncio.to_thread(decode_report, payload, sha256)
+        output = await asyncio.to_thread(decode_report, payload, sha256)
+        # The digest proves the bytes are intact, not that they belong to this row.
+        # A document whose index fields disagree with the payload it points at is
+        # damaged in a way the digest cannot see, and GET would then authorize and
+        # record a ledger status from the wrong report's identity.
+        _check_document_identity(document, output, workflow_id)
+        return output
 
     async def delete_all(self) -> None:
         # Tests only: production code never removes a stored report.

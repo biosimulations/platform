@@ -652,12 +652,18 @@ answer depends on how the store read went:
 | --- | --- | --- |
 | miss (nothing stored) | NOT_FOUND | **404** -- "no longer retained" when the ledger row is visible, else generic "not found" |
 | store unreachable | NOT_FOUND | **503 with `Retry-After: 5`** -- waiting may fix it |
-| corrupt stored report | NOT_FOUND | **503 without `Retry-After`** -- retrying cannot repair the bytes |
+| corrupt stored report | NOT_FOUND | **503 without `Retry-After`**, but only for a caller the ledger says may see it; anyone else gets the generic 404 |
 
 The 503 matters: a corrupt or unreadable store is repairable, and answering 404 there
 would make a client discard a verification that is still recoverable. The two 503s are
 deliberately not identical: only the outage carries a retry hint, because telling a
 client to retry corruption would just make it poll a permanent failure.
+
+The corruption diagnostic is itself a disclosure -- it confirms a stored report exists
+-- so `_caller_may_see_verification` applies the same visibility rule the 404 detail
+uses (ownerless is public, owned is owner-or-admin) before it is served. A ledger that
+cannot answer is treated as "no", so a failed lookup never becomes a disclosure. An
+unreachable store discloses nothing, which is why it needs no such check.
 
 **A store outage costs the GET one bounded wait.** The Mongo client sets no
 `serverSelectionTimeoutMS`, so each call to an unreachable Mongo would otherwise wait
@@ -676,15 +682,24 @@ the workflow computed. What it serves and whether it writes:
 
 | scan result | serve | save report | record status |
 | --- | --- | --- | --- |
-| computed result found, identity matches | that result | yes | yes |
+| computed result found, identity matches, terminal | that result | yes | yes |
 | searched, found none | rebuilt shell | no | yes |
 | scan failed, or hit `_HISTORY_SCAN_EVENT_LIMIT` | rebuilt shell | no | **no** |
 | computed result found, identity differs (`MISMATCH`) | rebuilt shell | no | yes |
+| computed result found, not terminal | rebuilt shell | no | yes |
 
-The last three leave the write-once slot free so the real result can still be stored
+The last four leave the write-once slot free so the real result can still be stored
 later; a skipped write is retried by the next GET, while a wrong write cannot be undone.
 Note that a history recorded before the save step existed never schedules the activity,
 so "searched, found none" is evidence rather than proof that nothing was computed.
+
+**A successful query can also produce a shell.** When the query answers but still says
+`IN_PROGRESS` for an execution Temporal reports as terminal, `_reconcile_terminal_status`
+synthesizes a `FAILED` status so the caller stops polling. That status was never
+computed by the workflow, so the GET remembers whether the query was terminal *before*
+reconciliation and passes that as `has_computed_result`; the reconciled shell is served
+but never stored. A genuine workflow-produced `FAILED` with empty statistics is still
+a computed result and is saved.
 
 The ledger status follows the same rule for the same reason: only the scan can tell
 whether a comparison finished, so when the scan fails the shell's `FAILED` status is a
@@ -696,16 +711,32 @@ status write. A later GET that can read the history records the real status inst
 **A decoded result must belong to the execution it came from.** The caller is
 authorized against the shell rebuilt from the start input, and the decoded output then
 replaces that shell and is written to the write-once store, so `_belongs_to_execution`
-compares its `workflow_id`, `workflow_run_id` and `owner_sub` against that shell. A
-mismatch is treated exactly like "no proof": the shell is served and nothing is written.
-Otherwise a payload from another execution would be stored permanently under the wrong
-identity, and `owner_sub` is what the store's ownership check reads. `expected_owner_sub`
-is a required argument so a call site cannot silently omit it, and the run id is compared
-whenever both sides have one (every exit point sets it, so in practice always). The scan
-is also bounded by `_HISTORY_SCAN_EVENT_LIMIT` (5000 events), far above what the request
-limits (`MAX_VERIFY_RUN_IDS` and `MAX_VERIFY_SIMULATORS`, both 10) allow, so it only
-protects GET latency on a history that grew some other way; running past the cap counts
-as a failed scan.
+checks four things against that shell: `workflow_id`, `workflow_run_id`, `owner_sub`,
+and that the status is terminal. Any failure is treated exactly like "no proof": the
+shell is served and nothing is written. Otherwise a payload from another execution
+would be stored permanently under the wrong identity, and `owner_sub` is what the
+store's ownership check reads.
+
+All four are required rather than best-effort. `expected_owner_sub` is a required
+argument so a call site cannot silently omit it. The run id must be present on both
+sides and equal: every exit point in both workflows sets it and the execution
+description always carries it, so a payload without one cannot be proven to be this
+run's. The status must be terminal because the persist activity is scheduled only at a
+finished exit point, so a non-terminal payload is a mid-flight snapshot, not a result.
+The scan is also bounded by `_HISTORY_SCAN_EVENT_LIMIT` (5000 events), far above what
+the request limits (`MAX_VERIFY_RUN_IDS` and `MAX_VERIFY_SIMULATORS`, both 10) allow, so
+it only protects GET latency on a history that grew some other way; running past the cap
+counts as a failed scan.
+
+**A stored report must belong to the row it was read from.** The SHA-256 digest proves
+the bytes are intact, not that they belong to this document: a partial restore or a bad
+migration can pair one report's bytes with another's index fields. Every field the GET
+acts on comes from the index side -- `owner_sub` decides authorization,
+`workflow_status` is copied into the ledger, `workflow_id` is what the caller asked for
+-- so `_check_document_identity` compares the decoded report's `workflow_id`,
+`owner_sub`, `workflow_run_id` (when the payload carries one) and `workflow_status`
+against the document, and raises `ReportCorrupt` on any disagreement. That surfaces as
+the corrupt 503 rather than as a report served under another verification's identity.
 
 **Report persistence retries without a cap.** `SAVE_REPORT_RETRY_POLICY` sets
 `maximum_attempts=0`, so a transient storage failure keeps the workflow open instead of
